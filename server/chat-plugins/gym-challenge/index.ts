@@ -1,88 +1,48 @@
 /**
  * pokemon-showdown-custom: Desafio de Ginásios.
  *
- * Fase 1 (prova de conceito): o botão "Battle!" num formato de desafio
- * (formatos com `gymChallenge` em config/custom-formats.ts) inicia uma batalha
- * contra um treinador NPC fixo, controlado pelo bot aleatório.
+ * Cada desafio aberto vira um formato (formats.ts + config/custom-formats.ts). O
+ * botão "Battle!" num desses formatos não procura outro jogador: o plugin assume a
+ * busca (handler onSearchOverride). Por enquanto (fase 2) ele só valida o time; as
+ * jornadas e as batalhas contra os treinadores NPC entram na fase 3.
  *
  * Desenho completo: docs/arquitetura-desafio-ginasios.md (repo pokemon-showdown-custom).
  *
  * @license MIT
  */
-import { createNpcBattle, NpcBattle } from './npc-battle';
-import { createAI } from './ai';
+import { getStore } from './state';
 
-/** Treinador fixo da prova de conceito (na fase 2 vem do banco de treinadores). */
-const POC_TRAINER = {
-	name: 'Líder Blaine (POC)',
-	teamExport: `
-Charizard @ Charizardite Y
-Ability: Blaze
-EVs: 252 SpA / 4 SpD / 252 Spe
-Timid Nature
-- Flamethrower
-- Solar Beam
-- Focus Blast
-- Roost
-
-Arcanine @ Leftovers
-Ability: Intimidate
-EVs: 252 HP / 252 Atk / 4 Spe
-Adamant Nature
-- Flare Blitz
-- Extreme Speed
-- Wild Charge
-- Morning Sun
-
-Ninetales @ Heat Rock
-Ability: Drought
-EVs: 252 SpA / 4 SpD / 252 Spe
-Timid Nature
-- Fire Blast
-- Solar Beam
-- Will-O-Wisp
-- Nasty Plot
-`,
-};
-
-function isGymFormat(formatid: string) {
+function gymChallengeId(formatid: string) {
 	const format = Dex.formats.get(formatid);
-	return format.exists && !!format.gymChallenge;
+	return format.exists && format.gymChallenge ? Number(format.gymChallenge) : null;
 }
 
-async function startPocBattle(user: User, connection: Connection, formatid: string) {
+async function checkChallengeTeam(user: User, connection: Connection, formatid: string, challengeId: number) {
+	const TL = Chat.getTranslator(user.language);
 	// Mesma validação de uma busca normal: formato, time, punições, limites de batalhas
 	const ready = await Ladders(formatid).prepBattle(connection, 'challenge');
-	if (!ready) {
-		// prepBattle já mostrou o motivo; garante que o cliente saia do estado "buscando"
-		Ladders.cancelSearches(user);
+	// O cliente fica em "buscando" até a busca ser cancelada
+	Ladders.cancelSearches(user);
+	if (!ready || !user.connected) return; // prepBattle já mostrou o motivo
+	const challenge = getStore().getChallenge(challengeId);
+	if (challenge?.status !== 'open') {
+		connection.popup(TL`This challenge is not open.`);
 		return;
 	}
-	if (!user.connected) return;
-	const npcTeam = Teams.pack(Teams.import(POC_TRAINER.teamExport));
-	if (!npcTeam) throw new Error(`Time inválido no treinador ${POC_TRAINER.name}`);
-	createNpcBattle(user, {
-		format: ready.formatid,
-		team: ready.settings.team,
-		npc: { name: POC_TRAINER.name, team: npcTeam, ai: createAI('random') },
-	});
+	const name = challenge.name;
+	connection.popup(TL`Your team is valid for the challenge ${name}. Journeys and battles against the trainers are coming soon.`);
 }
 
 export const handlers: Chat.Handlers = {
 	onSearchOverride(user, connection, formatid) {
-		if (!isGymFormat(formatid)) return false;
-		void startPocBattle(user, connection, formatid).catch(err => {
-			Monitor.crashlog(err, 'A gym challenge battle start', { formatid, userid: user.id });
+		const challengeId = gymChallengeId(formatid);
+		if (challengeId === null) return false;
+		void checkChallengeTeam(user, connection, formatid, challengeId).catch(err => {
+			Monitor.crashlog(err, 'A gym challenge search', { formatid, userid: user.id });
 			Ladders.cancelSearches(user);
-			connection.popup(`Não foi possível iniciar a batalha do desafio.`);
+			const TL = Chat.getTranslator(user.language);
+			connection.popup(TL`The challenge could not be started.`);
 		});
 		return true;
-	},
-	onBattleEnd(battle, winner, players) {
-		if (!(battle instanceof NpcBattle)) return;
-		// Fase 1: só mostra o resultado; na fase 3 isso atualiza a jornada do jogador
-		const challenger = players[0];
-		const result = !winner ? 'empate' : winner === challenger ? 'vitória do desafiante' : 'vitória do NPC';
-		battle.room.add(`|html|<div class="broadcast-blue"><strong>[POC] Resultado registrado:</strong> ${result}</div>`).update();
 	},
 };

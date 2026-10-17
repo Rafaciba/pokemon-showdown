@@ -2,8 +2,11 @@
 // (ver o comentário no topo de config/formats.ts e sim/dex-formats.ts → mergeFormatLists).
 //
 // Formatos com o campo `gymChallenge` são assumidos pelo plugin
-// server/chat-plugins/gym-challenge: o botão "Battle!" inicia uma batalha contra
-// um treinador NPC em vez de procurar outro jogador.
+// server/chat-plugins/gym-challenge: o botão "Battle!" não procura outro jogador
+// (na fase 3, inicia a batalha da jornada contra um treinador NPC).
+
+import { Formats as OfficialFormats } from './formats';
+import { buildChallengeFormats, FORMAT_SECTION } from '../server/chat-plugins/gym-challenge/formats';
 
 declare module '../sim/dex-formats' {
 	interface Format {
@@ -19,29 +22,24 @@ declare module '../sim/dex-formats' {
 }
 
 type FormatList = import('../sim/dex-formats').FormatList;
+type FormatData = import('../sim/dex-formats').FormatData;
 
 /** Marca como nossos todos os formatos da lista (as seções passam como estão). */
 function markCustom(list: FormatList): FormatList {
 	return list.map(entry => ('name' in entry ? { ...entry, customFormat: true } : entry));
 }
 
+/**
+ * Desafio de Ginásios: um formato por desafio aberto, gerado a partir do banco do
+ * plugin (server/chat-plugins/gym-challenge/formats.ts). O plugin recarrega os
+ * formatos quando o admin abre, encerra, reabre ou altera um desafio aberto.
+ */
+const officialFormats = OfficialFormats.filter((entry): entry is FormatData => 'name' in entry);
+
 export const Formats: FormatList = markCustom([
 	{
-		section: "Desafio de Ginásios",
+		section: FORMAT_SECTION,
 		column: 4,
 	},
-	{
-		// Fase 1 (prova de conceito): formato fixo de teste. Na fase 2, cada desafio
-		// criado pelo admin vira um formato gerado a partir do banco do plugin.
-		name: "[Desafio] Teste POC",
-		desc: `Prova de conceito do Desafio de Ginásios: batalha contra um treinador NPC.`,
-		mod: 'gen9',
-		// Padrão do projeto: Pokédex completa (National Dex), Mega liberada, sem Z-Moves, Dynamax e Tera
-		ruleset: ['Standard NatDex', 'Terastal Clause', 'Z-Move Clause', 'Dynamax Clause'],
-		searchShow: true,
-		challengeShow: false,
-		tournamentShow: false,
-		rated: false,
-		gymChallenge: 'poc',
-	},
+	...buildChallengeFormats(officialFormats),
 ]);

@@ -11,6 +11,7 @@ const rules = require('../../../dist/server/chat-plugins/gym-challenge/rules');
 const { effectiveAILevel, isAILevel } = require('../../../dist/server/chat-plugins/gym-challenge/levels');
 const teams = require('../../../dist/server/chat-plugins/gym-challenge/teams');
 const challenges = require('../../../dist/server/chat-plugins/gym-challenge/challenges');
+const formats = require('../../../dist/server/chat-plugins/gym-challenge/formats');
 
 const FIRE_TEAM = `
 Charizard @ Charizardite Y
@@ -256,11 +257,6 @@ describe('Gym Challenge', () => {
 			assert.equal(challenges.DEFAULT_CHALLENGE.hasElite4, false);
 		});
 
-		it('marks our formats as custom', () => {
-			assert.equal(Dex.formats.get('desafiotestepoc').customFormat, true);
-			assert.equal(Dex.formats.get('gen9ou').customFormat, undefined);
-		});
-
 		it('uses a valid default format', () => {
 			assert.equal(teams.checkFormat(challenges.DEFAULT_CHALLENGE), null);
 			assert.deepEqual(rules.checkChallengeSettings({ ...challenges.DEFAULT_CHALLENGE, name: 'Liga' }), []);
@@ -311,6 +307,80 @@ describe('Gym Challenge', () => {
 			const keys = Array.from({ length: 500 }, (_, i) => challenges.fieldKey(i + 1));
 			assert(keys.every(key => /^[a-z]+$/.test(key)));
 			assert.equal(new Set(keys).size, keys.length);
+		});
+	});
+
+	describe('formats', function () {
+		// Bancos em arquivo (o gerador abre o arquivo só para leitura): criar um pode levar segundos no container
+		this.timeout(20000);
+		const os = require('os');
+		const path = require('path');
+		const fs = require('fs');
+		const known = [
+			{ name: '[Gen 9] National Dex AG', mod: 'gen9' },
+			{ name: '[Gen 9] National Dex Doubles', mod: 'gen9', gameType: 'doubles' },
+			{ name: '[Gen 9] Random Battle', mod: 'gen9', team: 'random' },
+			{ name: '[Desafio] Liga Repetida', mod: 'gen9' },
+		];
+		let dir, dbPath, store;
+		beforeEach(() => {
+			dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gym-formats-'));
+			dbPath = path.join(dir, 'gym.db');
+			store = new GymStore(dbPath);
+		});
+		afterEach(() => {
+			store.close();
+			fs.rmSync(dir, { recursive: true, force: true });
+		});
+		const open = input => {
+			const challenge = store.createChallenge(challengeInput(input));
+			store.setChallengeStatus(challenge.id, 'open');
+			return challenge;
+		};
+
+		it('generates one format per open challenge', () => {
+			const kanto = open({ name: 'Kanto', baseFormat: 'gen9nationaldexag', customRules: 'Terastal Clause, - Mega' });
+			store.createChallenge(challengeInput({ name: 'Rascunho' }));
+			const closed = open({ name: 'Encerrado' });
+			store.setChallengeStatus(closed.id, 'closed');
+			const list = formats.buildChallengeFormats(known, dbPath);
+			assert.equal(list.length, 1);
+			assert.equal(list[0].name, '[Desafio] Kanto');
+			assert.deepEqual(list[0].ruleset, ['[Gen 9] National Dex AG', 'Terastal Clause', '- Mega']);
+			assert.equal(list[0].gymChallenge, String(kanto.id));
+			assert.equal(list[0].mod, 'gen9');
+			assert.equal(list[0].searchShow, true);
+			assert.equal(list[0].challengeShow, false);
+		});
+
+		it('keeps the base game type', () => {
+			open({ name: 'Duplas', baseFormat: 'gen9nationaldexdoubles' });
+			assert.equal(formats.buildChallengeFormats(known, dbPath)[0].gameType, 'doubles');
+		});
+
+		it('skips challenges that would break the format list', () => {
+			open({ name: 'Liga Repetida', baseFormat: 'gen9nationaldexag' });
+			open({ name: 'Sem Base', baseFormat: 'formatoremovido' });
+			open({ name: 'Aleatoria', baseFormat: 'gen9randombattle' });
+			open({ name: 'Valida', baseFormat: 'gen9nationaldexag' });
+			const errors = [];
+			const consoleError = console.error;
+			console.error = (...args) => errors.push(args.join(' '));
+			try {
+				assert.deepEqual(formats.buildChallengeFormats(known, dbPath).map(f => f.name), ['[Desafio] Valida']);
+			} finally {
+				console.error = consoleError;
+			}
+			assert.equal(errors.length, 3);
+		});
+
+		it('returns nothing without a database', () => {
+			assert.deepEqual(formats.buildChallengeFormats(known, path.join(dir, 'nao-existe.db')), []);
+		});
+
+		it('marks the generated formats as custom', () => {
+			assert.equal(Dex.formats.get('gen9ou').customFormat, undefined);
+			assert(Dex.formats.all().filter(f => f.section === formats.FORMAT_SECTION).every(f => f.customFormat));
 		});
 	});
 });

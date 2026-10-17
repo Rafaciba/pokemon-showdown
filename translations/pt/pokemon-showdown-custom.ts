@@ -159,4 +159,9 @@ export const translations: TranslationCatalog = {
 	"Only closed challenges can be reopened.": "Só desafios encerrados podem ser reabertos.",
 	"The challenge was not reopened:": "O desafio não foi reaberto:",
 	"Challenge reopened.": "Desafio reaberto.",
+	"The challenge formats could not be updated. The previous formats remain in use; see the crash log.": "Não foi possível atualizar os formatos dos desafios. Os formatos anteriores continuam valendo; veja o crash log.",
+	"This name conflicts with an existing format.": "Este nome conflita com um formato existente.",
+	"This challenge is not open.": "Este desafio não está aberto.",
+	"Your team is valid for the challenge {name}. Journeys and battles against the trainers are coming soon.": "Seu time é válido para o desafio {name}. As jornadas e as batalhas contra os treinadores chegam em breve.",
+	"The challenge could not be started.": "Não foi possível iniciar o desafio.",
 };

@@ -159,4 +159,9 @@ export const translations: TranslationCatalog = {
 	"Only closed challenges can be reopened.": null,
 	"The challenge was not reopened:": null,
 	"Challenge reopened.": null,
+	"The challenge formats could not be updated. The previous formats remain in use; see the crash log.": null,
+	"This name conflicts with an existing format.": null,
+	"This challenge is not open.": null,
+	"Your team is valid for the challenge {name}. Journeys and battles against the trainers are coming soon.": null,
+	"The challenge could not be started.": null,
 };

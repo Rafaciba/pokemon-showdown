@@ -19,6 +19,8 @@ import { checkChallengeSettings, checkName, ELITE4_SIZE, NAME_MAX_LENGTH, type P
 import { checkFormat, importTeam, checkTeamType, trainerTypes } from './teams';
 import { activeStages, challengeProblems, DEFAULT_CHALLENGE, fieldKey } from './challenges';
 import { AI_LEVELS, isAILevel } from './levels';
+import { challengeFormatName } from './formats';
+import { reloadFormats } from './reload';
 import type {
 	Challenge, ChallengeInput, ChallengeStatus, GymStore, StageKind, Trainer, TrainerInput,
 } from './store';
@@ -342,6 +344,12 @@ function stagesSummary(TL: Translator, store: GymStore, challenge: Challenge) {
 
 function problemsOf(store: GymStore, challenge: Challenge) {
 	return challengeProblems(challenge, store.getStages(challenge.id), store.getPool(challenge.id), trainerMap(store));
+}
+
+/** Atualiza os formatos de desafio para todos; avisa o admin se a recarga falhar. */
+function reloadChallengeFormats(context: Chat.CommandContext, connection: Connection) {
+	if (reloadFormats()) return;
+	connection.popup(context.TL`The challenge formats could not be updated. The previous formats remain in use; see the crash log.`);
 }
 
 /** Erro de validação: desfaz a transação em andamento sem tratar como falha do servidor. */
@@ -668,6 +676,10 @@ export const commands: Chat.ChatCommands = {
 			if (store.listChallenges().some(c => c.id !== id && toID(c.name) === toID(input.name))) {
 				problems.push({ message: TLkey`There is already a challenge with this name.`, args: [] });
 			}
+			const existing = Dex.formats.get(challengeFormatName(input.name));
+			if (input.name && existing.exists && existing.gymChallenge !== String(id)) {
+				problems.push({ message: TLkey`This name conflicts with an existing format.`, args: [] });
+			}
 
 			let saved: Challenge | null = null;
 			if (!problems.length) {
@@ -697,6 +709,8 @@ export const commands: Chat.ChatCommands = {
 			}
 			this.globalModlog('GYMCHALLENGE', null, `${isNew ? 'created' : 'updated'} #${saved.id}`);
 			this.sendReply(this.TL`Challenge saved.`);
+			// Nome, formato base e regras de um desafio aberto definem o formato dele
+			if (saved.status === 'open') reloadChallengeFormats(this, connection);
 			if (isNew) connection.send(`>${PAGE}-desafio-novo\n|deinit`);
 			return this.parse(`/join ${PAGE}-desafio-${saved.id}`);
 		},
@@ -790,10 +804,11 @@ export const commands: Chat.ChatCommands = {
 			store.setChallengeStatus(id, 'open');
 			this.globalModlog('GYMCHALLENGE', null, `opened #${id}`);
 			this.sendReply(this.TL`Challenge opened.`);
+			reloadChallengeFormats(this, connection);
 			return this.parse(`/join ${PAGE}-desafio-${id}`);
 		},
 
-		encerrardesafio(target, room, user) {
+		encerrardesafio(target, room, user, connection) {
 			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
 			const id = Number(target);
 			const store = getStore();
@@ -804,6 +819,7 @@ export const commands: Chat.ChatCommands = {
 			store.setChallengeStatus(id, 'closed');
 			this.globalModlog('GYMCHALLENGE', null, `closed #${id}`);
 			this.sendReply(this.TL`Challenge closed.`);
+			reloadChallengeFormats(this, connection);
 			return this.parse(`/join ${PAGE}-desafio-${id}`);
 		},
 
@@ -824,6 +840,7 @@ export const commands: Chat.ChatCommands = {
 			store.setChallengeStatus(id, 'open');
 			this.globalModlog('GYMCHALLENGE', null, `reopened #${id}`);
 			this.sendReply(this.TL`Challenge reopened.`);
+			reloadChallengeFormats(this, connection);
 			return this.parse(`/join ${PAGE}-desafio-${id}`);
 		},
 

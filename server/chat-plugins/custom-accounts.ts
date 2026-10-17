@@ -65,12 +65,13 @@ export const commands: Chat.ChatCommands = {
 		if (!reply.ok || !reply.code || !reply.url || !reply.expiresAt) {
 			throw new Chat.ErrorMessage(reply.error || this.TL`Could not create the invite.`);
 		}
+		const expiry = formatExpiry(reply.expiresAt);
 		const reserved = reply.userid ?
 			`${this.TL`Reserved for the username`}: <strong>${Utils.escapeHTML(reply.userid)}</strong><br />` : '';
 		this.sendReplyBox(
 			`<strong>${this.TL`Invite code`}:</strong> <code>${Utils.escapeHTML(reply.code)}</code><br />` +
 			reserved +
-			`${this.TL`Valid until ${formatExpiry(reply.expiresAt)} (single use).`}<br />` +
+			`${this.TL`Valid until ${expiry} (single use).`}<br />` +
 			`${this.TL`Sign-up link`}: <a href="${Utils.escapeHTML(reply.url)}">${Utils.escapeHTML(reply.url)}</a><br />` +
 			`<small>${this.TL`Only you can see this message. Send the code privately.`}</small>`
 		);
@@ -90,10 +91,12 @@ export const commands: Chat.ChatCommands = {
 		if (!reply.ok || !reply.code || !reply.url || !reply.expiresAt) {
 			throw new Chat.ErrorMessage(reply.error || this.TL`Could not create the reset code.`);
 		}
+		const expiry = formatExpiry(reply.expiresAt);
+		const player = Utils.escapeHTML(reply.username || username);
 		this.sendReplyBox(
-			`<strong>${this.TL`Password reset code for ${Utils.escapeHTML(reply.username || username)}`}:</strong> ` +
+			`<strong>${this.TL`Password reset code for ${player}`}:</strong> ` +
 			`<code>${Utils.escapeHTML(reply.code)}</code><br />` +
-			`${this.TL`Valid until ${formatExpiry(reply.expiresAt)} (single use).`}<br />` +
+			`${this.TL`Valid until ${expiry} (single use).`}<br />` +
 			`${this.TL`The player must use it at`} <a href="${Utils.escapeHTML(reply.url)}">${Utils.escapeHTML(reply.url)}</a><br />` +
 			`<small>${this.TL`Only you can see this message. Send the code privately.`}</small>`
 		);

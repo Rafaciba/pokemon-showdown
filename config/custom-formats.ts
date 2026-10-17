@@ -9,10 +9,23 @@ declare module '../sim/dex-formats' {
 	interface Format {
 		/** pokemon-showdown-custom: id do desafio de ginásio deste formato (ver plugin gym-challenge) */
 		gymChallenge?: string;
+		/**
+		 * pokemon-showdown-custom: formato nosso (não oficial). O servidor sinaliza isso ao
+		 * cliente (bit 512 do código de exibição em server/rooms.ts → formatListText), e o
+		 * menu de formatos do nosso cliente mostra esses formatos antes dos oficiais.
+		 */
+		customFormat?: boolean;
 	}
 }
 
-export const Formats: import('../sim/dex-formats').FormatList = [
+type FormatList = import('../sim/dex-formats').FormatList;
+
+/** Marca como nossos todos os formatos da lista (as seções passam como estão). */
+function markCustom(list: FormatList): FormatList {
+	return list.map(entry => ('name' in entry ? { ...entry, customFormat: true } : entry));
+}
+
+export const Formats: FormatList = markCustom([
 	{
 		section: "Desafio de Ginásios",
 		column: 4,
@@ -31,4 +44,4 @@ export const Formats: import('../sim/dex-formats').FormatList = [
 		rated: false,
 		gymChallenge: 'poc',
 	},
-];
+]);

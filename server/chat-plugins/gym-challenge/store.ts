@@ -299,7 +299,10 @@ export class GymStore {
 
 	setChallengeStatus(id: number, status: ChallengeStatus) {
 		const column = status === 'open' ? 'opened_at' : status === 'closed' ? 'closed_at' : null;
-		if (column) {
+		if (status === 'open') {
+			// Abrir (ou reabrir um encerrado): opened_at passa a ser a abertura mais recente
+			this.db.prepare(`UPDATE challenges SET status = 'open', opened_at = ?, closed_at = NULL WHERE id = ?`).run(now(), id);
+		} else if (column) {
 			this.db.prepare(`UPDATE challenges SET status = ?, ${column} = ? WHERE id = ?`).run(status, now(), id);
 		} else {
 			this.db.prepare('UPDATE challenges SET status = ? WHERE id = ?').run(status, id);
@@ -352,5 +355,10 @@ export class GymStore {
 
 	removePoolEntry(challengeId: number, trainerId: number) {
 		this.db.prepare('DELETE FROM challenge_pool WHERE challenge_id = ? AND trainer_id = ?').run(challengeId, trainerId);
+	}
+
+	/** Esvazia o banco de sorteio (ex.: o desafio passou para tipos fixos). */
+	clearPool(challengeId: number) {
+		this.db.prepare('DELETE FROM challenge_pool WHERE challenge_id = ?').run(challengeId);
 	}
 }

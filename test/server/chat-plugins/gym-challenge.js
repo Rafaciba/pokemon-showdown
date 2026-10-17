@@ -10,6 +10,7 @@ const { GymStore } = require('../../../dist/server/chat-plugins/gym-challenge/st
 const rules = require('../../../dist/server/chat-plugins/gym-challenge/rules');
 const { effectiveAILevel, isAILevel } = require('../../../dist/server/chat-plugins/gym-challenge/levels');
 const teams = require('../../../dist/server/chat-plugins/gym-challenge/teams');
+const challenges = require('../../../dist/server/chat-plugins/gym-challenge/challenges');
 
 const FIRE_TEAM = `
 Charizard @ Charizardite Y
@@ -70,6 +71,17 @@ describe('Gym Challenge', () => {
 			assert.equal(store.listChallenges('draft').length, 0);
 		});
 
+		it('reopens closed challenges', () => {
+			const challenge = store.createChallenge(challengeInput());
+			store.setChallengeStatus(challenge.id, 'open');
+			store.setChallengeStatus(challenge.id, 'closed');
+			assert(store.getChallenge(challenge.id).closedAt > 0);
+			store.setChallengeStatus(challenge.id, 'open');
+			const reopened = store.getChallenge(challenge.id);
+			assert.equal(reopened.status, 'open');
+			assert.equal(reopened.closedAt, null);
+		});
+
 		it('only deletes draft challenges', () => {
 			const draft = store.createChallenge(challengeInput({ name: 'Rascunho' }));
 			const open = store.createChallenge(challengeInput({ name: 'Aberto' }));
@@ -103,6 +115,14 @@ describe('Gym Challenge', () => {
 			assert.equal(store.getStages(challenge.id).find(s => s.kind === 'gym' && s.position === 1).aiLevel, 'random');
 			store.pruneStages(challenge.id, 2, false);
 			assert.deepEqual(store.getStages(challenge.id).map(s => `${s.kind}${s.position}`), ['gym1', 'gym2']);
+		});
+
+		it('clears the random pool', () => {
+			const misty = store.createTrainer(trainerInput('Misty', 'Water'));
+			const challenge = store.createChallenge(challengeInput());
+			store.setPoolEntry(challenge.id, { trainerId: misty.id, aiLevel: null });
+			store.clearPool(challenge.id);
+			assert.deepEqual(store.getPool(challenge.id), []);
 		});
 
 		it('rejects duplicate challenge names', () => {
@@ -214,6 +234,83 @@ describe('Gym Challenge', () => {
 			assert(teams.checkFormat({ baseFormat: 'formatoquenaoexiste', customRules: '' }).message.includes('not found'));
 			assert(teams.checkFormat({ baseFormat: 'gen9randombattle', customRules: '' }).message.includes('generated teams'));
 			assert(teams.checkFormat({ ...challenge, customRules: 'Regra Inventada' }).message.includes('Invalid rules'));
+		});
+	});
+
+	describe('challenges', () => {
+		let trainers;
+		before(() => {
+			const { team } = teams.importTeam(FIRE_TEAM);
+			trainers = new Map([
+				[1, { id: 1, name: 'Blaine', type: 'Fire', team }],
+				[2, { id: 2, name: 'Misty', type: 'Water', team }],
+				[3, { id: 3, name: 'Red', type: null, team }],
+			]);
+		});
+		const ready = (overrides = {}) => ({
+			...challenges.DEFAULT_CHALLENGE, gymCount: 1, hasElite4: false, ...overrides,
+			name: 'Liga', id: 1, status: 'draft',
+		});
+
+		it('starts new challenges without an Elite Four', () => {
+			assert.equal(challenges.DEFAULT_CHALLENGE.hasElite4, false);
+		});
+
+		it('marks our formats as custom', () => {
+			assert.equal(Dex.formats.get('desafiotestepoc').customFormat, true);
+			assert.equal(Dex.formats.get('gen9ou').customFormat, undefined);
+		});
+
+		it('uses a valid default format', () => {
+			assert.equal(teams.checkFormat(challenges.DEFAULT_CHALLENGE), null);
+			assert.deepEqual(rules.checkChallengeSettings({ ...challenges.DEFAULT_CHALLENGE, name: 'Liga' }), []);
+		});
+
+		it('validates the trainers teams in the challenge format', () => {
+			const challenge = ready({ gymCount: 1, hasElite4: false });
+			const stages = [
+				{ kind: 'gym', position: 1, trainerId: 1, aiLevel: null },
+				{ kind: 'champion', position: 1, trainerId: 3, aiLevel: null },
+			];
+			assert.deepEqual(challenges.challengeProblems(challenge, stages, [], trainers), []);
+			// Time de Fogo num ginásio de Água
+			stages[0].trainerId = 2;
+			const problems = challenges.challengeProblems(challenge, stages, [], trainers);
+			assert(problems.length > 0);
+			assert(problems.every(p => p.message === 'Team of {0}: {1}' && p.args[0] === 'Misty'));
+			// Regras do desafio valem para todos, inclusive o Campeão
+			stages[0].trainerId = 1;
+			const noMega = challenges.challengeProblems(ready({ customRules: '- Mega' }), stages, [], trainers);
+			assert.deepEqual([...new Set(noMega.map(p => p.args[0]))].sort(), ['Blaine', 'Red']);
+		});
+
+		it('validates the random pool teams with each trainer type', () => {
+			const challenge = ready({ typeMode: 'random', gymCount: 2 });
+			const stages = [{ kind: 'champion', position: 1, trainerId: 3, aiLevel: null }];
+			const pool = [{ trainerId: 1, aiLevel: null }, { trainerId: 2, aiLevel: null }];
+			const problems = challenges.challengeProblems(challenge, stages, pool, trainers);
+			assert(problems.length > 0 && problems.every(p => p.args[0] === 'Misty'));
+		});
+
+		it('ignores stages outside the current settings', () => {
+			const stages = [
+				{ kind: 'gym', position: 1, trainerId: 1, aiLevel: null },
+				{ kind: 'gym', position: 2, trainerId: 2, aiLevel: null },
+				{ kind: 'elite4', position: 1, trainerId: 1, aiLevel: null },
+				{ kind: 'champion', position: 1, trainerId: 3, aiLevel: null },
+			];
+			const active = challenges.activeStages(ready({ gymCount: 1, hasElite4: false }), stages);
+			assert.deepEqual(active.map(s => `${s.kind}${s.position}`), ['gym1', 'champion1']);
+			const random = challenges.activeStages(ready({ typeMode: 'random', hasElite4: true }), stages);
+			assert.deepEqual(random.map(s => `${s.kind}${s.position}`), ['elite41', 'champion1']);
+		});
+
+		it('builds letter-only form keys', () => {
+			assert.equal(challenges.fieldKey(1), 'b');
+			assert.equal(challenges.fieldKey(26), 'ba');
+			const keys = Array.from({ length: 500 }, (_, i) => challenges.fieldKey(i + 1));
+			assert(keys.every(key => /^[a-z]+$/.test(key)));
+			assert.equal(new Set(keys).size, keys.length);
 		});
 	});
 });

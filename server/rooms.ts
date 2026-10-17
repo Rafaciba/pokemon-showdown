@@ -1501,6 +1501,8 @@ export class GlobalRoomState {
 			if (format.bestOfDefault) displayCode |= 64;
 			if (format.teraPreviewDefault) displayCode |= 128;
 			if (format.itemClauseDefault) displayCode |= 256;
+			// pokemon-showdown-custom: formato nosso, listado antes dos oficiais no nosso cliente
+			if (format.customFormat) displayCode |= 512;
 			this.formatList += ',' + displayCode.toString(16);
 
 			// virtual formats don't support challengeShow or tournamentShow

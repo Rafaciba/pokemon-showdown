@@ -320,7 +320,8 @@ describe('Gym Challenge', () => {
 			{ name: '[Gen 9] National Dex AG', mod: 'gen9' },
 			{ name: '[Gen 9] National Dex Doubles', mod: 'gen9', gameType: 'doubles' },
 			{ name: '[Gen 9] Random Battle', mod: 'gen9', team: 'random' },
-			{ name: '[Desafio] Liga Repetida', mod: 'gen9' },
+			{ name: '[Gen 9] [Desafio] Liga Repetida', mod: 'gen9' },
+			{ name: '[Gen 7] Ubers', mod: 'gen7' },
 		];
 		let dir, dbPath, store;
 		beforeEach(() => {
@@ -345,7 +346,8 @@ describe('Gym Challenge', () => {
 			store.setChallengeStatus(closed.id, 'closed');
 			const list = formats.buildChallengeFormats(known, dbPath);
 			assert.equal(list.length, 1);
-			assert.equal(list[0].name, '[Desafio] Kanto');
+			assert.equal(list[0].name, '[Gen 9] [Desafio] Kanto');
+			assert.equal(list[0].teambuilderBase, 'gen9nationaldexag');
 			assert.deepEqual(list[0].ruleset, ['[Gen 9] National Dex AG', 'Terastal Clause', '- Mega']);
 			assert.equal(list[0].gymChallenge, String(kanto.id));
 			assert.equal(list[0].mod, 'gen9');
@@ -367,11 +369,19 @@ describe('Gym Challenge', () => {
 			const consoleError = console.error;
 			console.error = (...args) => errors.push(args.join(' '));
 			try {
-				assert.deepEqual(formats.buildChallengeFormats(known, dbPath).map(f => f.name), ['[Desafio] Valida']);
+				assert.deepEqual(formats.buildChallengeFormats(known, dbPath).map(f => f.name), ['[Gen 9] [Desafio] Valida']);
 			} finally {
 				console.error = consoleError;
 			}
 			assert.equal(errors.length, 3);
+		});
+
+		it('names the format with the base generation', () => {
+			open({ name: 'Johto', baseFormat: 'gen7ubers' });
+			const [format] = formats.buildChallengeFormats(known, dbPath);
+			assert.equal(format.name, '[Gen 7] [Desafio] Johto');
+			assert.equal(format.mod, 'gen7');
+			assert.equal(format.teambuilderBase, 'gen7ubers');
 		});
 
 		it('returns nothing without a database', () => {

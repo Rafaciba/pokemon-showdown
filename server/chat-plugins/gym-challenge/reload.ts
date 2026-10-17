@@ -59,5 +59,6 @@ export function reloadFormats(): boolean {
 	void Rooms.PM.respawn();
 	void Chat.plugins.datasearch?.PM?.respawn();
 	Rooms.global.sendAll(Rooms.global.formatListText);
+	Rooms.global.sendAll(Rooms.global.customFormatsText);
 	return true;
 }

@@ -18,6 +18,12 @@ declare module '../sim/dex-formats' {
 		 * menu de formatos do nosso cliente mostra esses formatos antes dos oficiais.
 		 */
 		customFormat?: boolean;
+		/**
+		 * pokemon-showdown-custom: id do formato que o teambuilder do nosso cliente usa
+		 * para geração, Pokédex e busca (o formato base de um desafio). Enviado ao
+		 * cliente em `|customformats|` (server/rooms.ts → customFormatsText).
+		 */
+		teambuilderBase?: string;
 	}
 }
 

@@ -676,7 +676,7 @@ export const commands: Chat.ChatCommands = {
 			if (store.listChallenges().some(c => c.id !== id && toID(c.name) === toID(input.name))) {
 				problems.push({ message: TLkey`There is already a challenge with this name.`, args: [] });
 			}
-			const existing = Dex.formats.get(challengeFormatName(input.name));
+			const existing = Dex.formats.get(challengeFormatName(input.name, Dex.formats.get(input.baseFormat).mod));
 			if (input.name && existing.exists && existing.gymChallenge !== String(id)) {
 				problems.push({ message: TLkey`This name conflicts with an existing format.`, args: [] });
 			}

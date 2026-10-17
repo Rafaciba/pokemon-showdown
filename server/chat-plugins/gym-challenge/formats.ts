@@ -36,9 +36,18 @@ interface OpenChallengeRow {
 	custom_rules: string;
 }
 
-/** Nome do formato de um desafio (o id é toID deste nome). */
-export function challengeFormatName(challengeName: string) {
-	return `${FORMAT_PREFIX}${challengeName}`;
+/**
+ * Nome do formato de um desafio (o id é toID deste nome), começando pela geração
+ * do formato base: "[Gen 9] [Desafio] Liga Kanto" → gen9desafioligakanto.
+ *
+ * O id precisa começar com "gen": ao carregar os times salvos no navegador, o
+ * cliente põe "gen6" na frente de formatos sem geração (storage.js), e o time
+ * deixaria de pertencer ao formato. Na tela, o cliente omite o prefixo da geração
+ * atual, então aparece só "[Desafio] Liga Kanto".
+ */
+export function challengeFormatName(challengeName: string, baseMod = 'gen9') {
+	const gen = /^gen(\d+)/.exec(baseMod)?.[1] || '9';
+	return `[Gen ${gen}] ${FORMAT_PREFIX}${challengeName}`;
 }
 
 function readOpenChallenges(dbPath: string): OpenChallengeRow[] {
@@ -73,9 +82,9 @@ export function buildChallengeFormats(knownFormats: BaseFormatData[], dbPath = D
 	const used = new Set(known.keys());
 	const formats = [];
 	for (const row of rows) {
-		const name = challengeFormatName(row.name);
-		const id = toID(name);
 		const base = known.get(toID(row.base_format));
+		const name = challengeFormatName(row.name, base?.mod);
+		const id = toID(name);
 		if (used.has(id)) {
 			console.error(`[gym-challenge] desafio #${row.id} sem formato: o id "${id}" já existe`);
 			continue;
@@ -99,6 +108,8 @@ export function buildChallengeFormats(knownFormats: BaseFormatData[], dbPath = D
 			tournamentShow: false,
 			rated: false,
 			gymChallenge: String(row.id),
+			// O teambuilder do cliente decide geração e Pokédex pelo id do formato
+			teambuilderBase: toID(base.name),
 		});
 	}
 	return formats;

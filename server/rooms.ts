@@ -1761,8 +1761,21 @@ export class GlobalRoomState {
 			}
 		}
 	}
+	/**
+	 * pokemon-showdown-custom: formato base de cada formato nosso que tem um
+	 * (`teambuilderBase`), para o teambuilder do nosso cliente usar a geração e a
+	 * Pokédex certas. Mensagem própria, enviada depois da lista de formatos.
+	 */
+	get customFormatsText() {
+		const bases: { [formatid: string]: string } = {};
+		for (const format of Dex.formats.all()) {
+			if (format.customFormat && format.teambuilderBase) bases[format.id] = format.teambuilderBase;
+		}
+		return `|customformats|${JSON.stringify(bases)}`;
+	}
 	handleConnect(user: User, connection: Connection) {
 		connection.send(user.getUpdateuserText() + '\n' + this.configRankList + this.formatListText);
+		connection.send(this.customFormatsText);
 		if (Users.users.size > this.maxUsers) {
 			this.maxUsers = Users.users.size;
 			this.maxUsersDate = Date.now();

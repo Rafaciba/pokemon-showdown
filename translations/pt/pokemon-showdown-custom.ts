@@ -67,4 +67,6 @@ export const translations: TranslationCatalog = {
 	"Base format \"{0}\" uses generated teams and cannot be used in a challenge.": "O formato base \"{0}\" usa times gerados e não pode ser usado num desafio.",
 	"Invalid rules: {0}": "Regras inválidas: {0}",
 	"Trainer type": "Tipo",
+	"Build in the teambuilder": "Montar no teambuilder",
+	"Import from my teams": "Importar dos meus times",
 };

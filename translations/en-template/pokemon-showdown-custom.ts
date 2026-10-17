@@ -67,4 +67,6 @@ export const translations: TranslationCatalog = {
 	"Base format \"{0}\" uses generated teams and cannot be used in a challenge.": null,
 	"Invalid rules: {0}": null,
 	"Trainer type": null,
+	"Build in the teambuilder": null,
+	"Import from my teams": null,
 };

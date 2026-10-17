@@ -48,6 +48,8 @@ function navButtons(TL: Translator) {
 export const pages: Chat.PageTable = {
 	ginasiosadmin: {
 		default(query, user) {
+			// Página aberta antes do login terminar (link direto, recarga): o cliente pede de novo após logar
+			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
 			if (!isAdmin(user)) this.pageDoesNotExist();
 			this.title = this.TL`Gym Challenge: admin`;
 			const trainerCount = getStore().listTrainers().length;
@@ -62,6 +64,8 @@ export const pages: Chat.PageTable = {
 		},
 
 		treinadores(query, user) {
+			// Página aberta antes do login terminar (link direto, recarga): o cliente pede de novo após logar
+			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
 			if (!isAdmin(user)) this.pageDoesNotExist();
 			this.title = this.TL`Gym Challenge: trainers`;
 			const store = getStore();
@@ -94,6 +98,8 @@ export const pages: Chat.PageTable = {
 		},
 
 		treinador(query, user) {
+			// Página aberta antes do login terminar (link direto, recarga): o cliente pede de novo após logar
+			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
 			if (!isAdmin(user)) this.pageDoesNotExist();
 			const store = getStore();
 			const isNew = query[0] === 'novo';
@@ -125,6 +131,12 @@ export const pages: Chat.PageTable = {
 				`<p><label class="label">${this.TL`Trainer type`}:<br /><select name="type">${typeOptions}</select></label>` +
 				`<br /><small>${this.TL`Gym leaders and Elite Four members need a type; every Pokémon in the team must have it.`}` +
 				`</small></p>` +
+				// Botões tratados pelo nosso fork do cliente (client-custom.js): montar no
+				// teambuilder ao lado e trazer um dos times salvos para a textarea abaixo
+				`<p><button class="button" type="button" name="gymOpenTeambuilder">` +
+				`${this.TL`Build in the teambuilder`}</button> ` +
+				`<button class="button" type="button" name="gymImportTeam">` +
+				`${this.TL`Import from my teams`}</button></p>` +
 				`<p><label class="label">${this.TL`Team (paste the teambuilder export)`}:<br />` +
 				`<textarea name="team" class="textbox" style="width: 100%; height: 320px">${teamText}</textarea>` +
 				`</label></p>` +
@@ -197,6 +209,8 @@ export const commands: Chat.ChatCommands = {
 			}
 			this.globalModlog('GYMTRAINER', null, `${isNew ? 'created' : 'updated'} #${trainer!.id}`);
 			this.sendReply(this.TL`Trainer saved.`);
+			// O formulário "novo" deixa de servir: fecha a aba e abre a do treinador salvo
+			if (isNew) connection.send(`>${PAGE}-treinador-novo\n|deinit`);
 			return this.parse(`/join ${PAGE}-treinador-${trainer!.id}`);
 		},
 

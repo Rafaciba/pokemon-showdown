@@ -93,6 +93,8 @@ interface Handlers {
 	onBattleEnd: (battle: RoomBattle, winner: ID, players: ID[]) => void;
 	onBattleCreate: (battle: RoomBattle, players: ID[]) => void;
 	onLadderSearch: (user: User, connection: Connection, format: ID) => void;
+	/** pokemon-showdown-custom: devolve true para assumir um /search (ex.: batalhas contra NPC) */
+	onSearchOverride: (user: User, connection: Connection, format: ID) => boolean;
 	onBattleRanked: (
 		battle: Rooms.RoomBattle, winner: ID, ratings: (LadderRating | null)[], players: ID[]
 	) => void;

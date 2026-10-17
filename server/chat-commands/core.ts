@@ -1475,6 +1475,10 @@ export const commands: Chat.ChatCommands = {
 				);
 				return false;
 			}
+			// pokemon-showdown-custom: um plugin pode assumir a busca dos seus próprios formatos
+			// (ex.: Desafio de Ginásios, batalhas contra NPC). Formatos oficiais não são afetados.
+			const overrides = Chat.handlers['onSearchOverride'] || [];
+			if (overrides.some(handler => handler.call(Chat, user, connection, ladder.formatid as ID))) return;
 			Chat.runHandlers('onLadderSearch', user, connection, ladder.formatid as ID);
 			return ladder.searchBattle(user, connection);
 		}

@@ -138,6 +138,11 @@ describe('Gym Challenge', () => {
 			const messages = input => rules.checkChallengeSettings(challengeInput(input)).map(p => p.message);
 			assert(messages({ name: '' }).some(m => m.includes('empty')));
 			assert(messages({ name: 'a|b' }).some(m => m.includes('cannot contain')));
+			// Texto que iria para o protocolo, HTML ou nome de formato
+			for (const name of ['Liga\nNova', 'Liga <b>', 'Liga & Cia', 'Liga "X"', 'Liga@@@Mega', 'Liga\\X', 'Liga\u0000']) {
+				assert(messages({ name }).some(m => m.includes('cannot contain')), JSON.stringify(name));
+			}
+			assert.deepEqual(messages({ name: "Liga Kanto (Fácil) - Lt. Surge's" }), [], 'acentos, parênteses, hífen e apóstrofo valem');
 			assert(messages({ gymCount: 0 }).some(m => m.includes('number of gyms')));
 			assert(messages({ gymCount: 19 }).some(m => m.includes('number of gyms')));
 			assert(messages({ timerMode: 'turn', turnSeconds: null }).some(m => m.includes('turn time')));

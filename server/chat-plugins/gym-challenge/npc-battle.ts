@@ -37,10 +37,18 @@ export interface NpcBattleHooks {
 interface NpcBattleOptions extends RoomBattleOptions {
 	npc: NpcSpec;
 	hooks: NpcBattleHooks;
+	/** Desafiante dono da batalha (o resultado só vale para ele). */
+	ownerid: ID;
 }
 
 /** O NPC é sempre o jogador 2; o desafiante, o jogador 1. */
 const NPC_SLOT = 'p2';
+/**
+ * Batalhas contra NPC são sempre públicas (requisito do Desafio de Ginásios). O PS
+ * já tem o mecanismo: com forcedSettings.privacy, /private, /hidden e /modjoin são
+ * recusados na batalha.
+ */
+const FORCED_PUBLIC = 'Gym Challenge';
 /** Jogadas inválidas seguidas antes de cair na jogada padrão do simulador. */
 const MAX_INVALID_CHOICES = 3;
 
@@ -73,6 +81,30 @@ export class NpcBattle extends RoomBattle {
 		Rooms.global.onCreateBattleRoom(human ? [human, npcIdentity] : [], this.room, { rated: this.rated });
 		this.started = true;
 		this.checkActive();
+		this.forcedSettings.privacy = FORCED_PUBLIC;
+	}
+
+	override checkForcedUserSettings(user: User) {
+		super.checkForcedUserSettings(user);
+		// O PS só força a privacidade em batalhas com ranking; aqui ela é sempre forçada
+		this.forcedSettings.privacy = FORCED_PUBLIC;
+	}
+
+	/**
+	 * Ninguém entra na batalha. O lado do NPC não tem usuário, e o PS o trataria como
+	 * vaga livre: o desafiante (rank ☆, que tem joinbattle) poderia colocar um amigo
+	 * no lugar do NPC com /addplayer, e o amigo daria forfeit. /addplayer,
+	 * /acceptbattle, /joingame e /restoreplayers passam todos por aqui.
+	 */
+	override joinGame(user: User) {
+		user.popup(`Battles against gym trainers can't be joined.`);
+		return false;
+	}
+
+	/** O desafiante não sai da batalha (passar o lado 1 para outra pessoa); para desistir, /forfeit. */
+	override leaveGame(user: User) {
+		user.popup(`You can't leave a battle against a gym trainer. Use /forfeit to give up.`);
+		return false;
 	}
 
 	/**
@@ -99,6 +131,11 @@ export class NpcBattle extends RoomBattle {
 		const winnerid = toID(winnerName);
 		const result: NpcBattleResult = !winnerid ? 'tie' : winnerid === challenger ? 'win' : 'loss';
 		try {
+			// Defesa extra: o resultado só conta se quem jogou foi o dono da jornada
+			if (challenger !== this.options.ownerid) {
+				this.options.hooks.onInterrupted?.();
+				return;
+			}
 			this.options.hooks.onEnd?.(result);
 		} catch (err: any) {
 			Monitor.crashlog(err, 'A gym challenge battle end', { roomid: this.roomid });
@@ -207,6 +244,7 @@ export function createNpcBattle(human: User, settings: NpcBattleSettings): GameR
 		challengeType: 'challenge',
 		npc: settings.npc,
 		hooks: settings.hooks || {},
+		ownerid: human.id,
 	};
 	const title = settings.title || `${human.name} vs. ${settings.npc.name}`;
 	const roomid = Rooms.global.prepBattleRoom(settings.format);

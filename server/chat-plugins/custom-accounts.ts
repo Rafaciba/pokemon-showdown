@@ -14,6 +14,7 @@
  *
  * @license MIT
  */
+import * as fs from 'node:fs/promises';
 import { FS, Utils } from '../../lib';
 import { LadderStore } from '../ladders-local';
 
@@ -85,6 +86,67 @@ async function removeFromLadders(userid: ID) {
 	}
 }
 
+// --- Logs de batalha: retenção de 30 dias e exclusão com a conta -------------
+// O PS grava as batalhas da ladder em logs/AAAA-MM/<formato>/AAAA-MM-DD/*.log.json,
+// com os nomes e os times dos jogadores. Retenção definida pelo usuário (2026-10-18):
+// 30 dias, e os logs de quem exclui a conta saem junto.
+
+export const BATTLE_LOG_RETENTION_DAYS = 30;
+const MONTH_DIR = /^\d{4}-\d{2}$/;
+const DAY_DIR = /^\d{4}-\d{2}-\d{2}$/;
+
+// Aqui usamos o fs do Node, e não o FS do PS: o FS ignora gravações e remoções com
+// Config.nofswriting (ligado nos testes), e estas funções agem numa pasta explícita.
+const listDir = (dir: string) => fs.readdir(dir).catch(() => [] as string[]);
+
+/** Pastas de cada dia de logs de batalha. */
+async function battleLogDays(logsDir: string) {
+	const days: { path: string, date: string }[] = [];
+	for (const month of await listDir(logsDir)) {
+		if (!MONTH_DIR.test(month)) continue;
+		for (const format of await listDir(`${logsDir}/${month}`)) {
+			for (const day of await listDir(`${logsDir}/${month}/${format}`)) {
+				if (DAY_DIR.test(day)) days.push({ path: `${logsDir}/${month}/${format}/${day}`, date: day });
+			}
+		}
+	}
+	return days;
+}
+
+/** Apaga os dias de logs de batalha mais antigos que a retenção. Devolve quantos dias saíram. */
+export async function cleanupBattleLogs(logsDir = Monitor.logPath('').path, now = new Date()) {
+	const limit = new Date(now.getTime() - BATTLE_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+	let removed = 0;
+	for (const day of await battleLogDays(logsDir)) {
+		if (day.date >= limit) continue;
+		await fs.rm(day.path, { recursive: true, force: true });
+		removed++;
+	}
+	return removed;
+}
+
+/** Apaga os logs de batalha em que o usuário jogou. Devolve quantos arquivos saíram. */
+export async function removeBattleLogsOf(userid: ID, logsDir = Monitor.logPath('').path) {
+	let removed = 0;
+	for (const day of await battleLogDays(logsDir)) {
+		for (const file of await listDir(day.path)) {
+			if (!file.endsWith('.log.json')) continue;
+			const path = `${day.path}/${file}`;
+			let data: { [key: string]: unknown };
+			try {
+				data = JSON.parse(await fs.readFile(path, 'utf8'));
+			} catch {
+				continue;
+			}
+			if (['p1', 'p2', 'p3', 'p4'].some(slot => typeof data[slot] === 'string' && toID(data[slot]) === userid)) {
+				await fs.rm(path, { force: true });
+				removed++;
+			}
+		}
+	}
+	return removed;
+}
+
 async function purgeAccountData(userid: ID) {
 	// Sessão ainda aberta com o nome da conta excluída: volta a ser visitante
 	const user = Users.getExact(userid);
@@ -94,6 +156,7 @@ async function purgeAccountData(userid: ID) {
 		if (room.auth.has(userid)) room.auth.delete(userid);
 	}
 	await removeFromLadders(userid);
+	await removeBattleLogsOf(userid);
 	// Dados dos outros plugins (ex.: jornadas e conquistas do Desafio de Ginásios)
 	Chat.runHandlers('onAccountPurge', userid);
 }
@@ -120,22 +183,33 @@ export async function purgeDeletedAccounts() {
 	if (purged) Monitor.notice(`[contas] dados de jogo de ${purged} conta(s) excluída(s) apagados`);
 }
 
-/** O timer fica num global para um hotpatch do chat não criar um segundo. */
+async function runBattleLogCleanup() {
+	try {
+		const removed = await cleanupBattleLogs();
+		const days = BATTLE_LOG_RETENTION_DAYS;
+		if (removed) Monitor.notice(`[privacidade] ${removed} dia(s) de logs de batalha com mais de ${days} dias apagados`);
+	} catch (err: any) {
+		Monitor.crashlog(err, 'A battle log cleanup');
+	}
+}
+
+const DAY = 24 * 60 * 60 * 1000;
+
+/** Os timers ficam num global para um hotpatch do chat não criar outros. */
 const PURGE_TIMER = Symbol.for('pokemon-showdown-custom.accountPurgeTimer');
-const timers = global as unknown as { [PURGE_TIMER]?: { first: NodeJS.Timeout, every: NodeJS.Timeout } };
+const timers = global as unknown as { [PURGE_TIMER]?: NodeJS.Timeout[] };
 
 export function start() {
-	const previous = timers[PURGE_TIMER];
-	if (previous) {
-		clearTimeout(previous.first);
-		clearInterval(previous.every);
-	}
+	for (const timer of timers[PURGE_TIMER] || []) clearTimeout(timer);
 	if (!Config.customlogin?.internalUrl) return; // sem login próprio (ex.: testes)
-	const first = setTimeout(() => void purgeDeletedAccounts(), PURGE_FIRST_DELAY);
-	const every = setInterval(() => void purgeDeletedAccounts(), PURGE_INTERVAL);
-	first.unref();
-	every.unref();
-	timers[PURGE_TIMER] = { first, every };
+	const list = [
+		setTimeout(() => void purgeDeletedAccounts(), PURGE_FIRST_DELAY),
+		setInterval(() => void purgeDeletedAccounts(), PURGE_INTERVAL),
+		setTimeout(() => void runBattleLogCleanup(), PURGE_FIRST_DELAY),
+		setInterval(() => void runBattleLogCleanup(), DAY),
+	];
+	for (const timer of list) timer.unref();
+	timers[PURGE_TIMER] = list;
 }
 
 function formatExpiry(expiresAt: number) {
@@ -161,7 +235,8 @@ export const commands: Chat.ChatCommands = {
 			`${this.TL`Sign-up link`}: <a href="${Utils.escapeHTML(reply.url)}">${Utils.escapeHTML(reply.url)}</a><br />` +
 			`<small>${this.TL`Only you can see this message. Send the code privately.`}</small>`
 		);
-		this.globalModlog('INVITE', null, username ? `reserved for ${toID(username)}` : 'open');
+		// LGPD: o modlog fica depois da exclusão da conta; não guarda o nome de jogadores
+		this.globalModlog('INVITE', null, username ? 'reserved name' : 'open');
 	},
 	convitehelp: [
 		`/convite - Gera um código de convite de uso único (válido por 3 dias). Requer: ~`,
@@ -186,7 +261,7 @@ export const commands: Chat.ChatCommands = {
 			`${this.TL`The player must use it at`} <a href="${Utils.escapeHTML(reply.url)}">${Utils.escapeHTML(reply.url)}</a><br />` +
 			`<small>${this.TL`Only you can see this message. Send the code privately.`}</small>`
 		);
-		this.globalModlog('PASSWORDRESET', toID(username), 'reset code issued');
+		this.globalModlog('PASSWORDRESET', null, 'reset code issued');
 	},
 	redefinirsenhahelp: [
 		`/redefinirsenha [nome] - Gera um código de uso único (válido por 24h) para o jogador redefinir a senha. Requer: ~`,

@@ -517,6 +517,12 @@ export class GymStore {
 		return rows.map(toRun);
 	}
 
+	/** Jornadas que o jogador começou desde `since` (segundos), em qualquer desafio. */
+	countRunsSince(userid: string, since: number): number {
+		return Number((this.db.prepare('SELECT count(*) AS n FROM runs WHERE userid = ? AND started_at >= ?')
+			.get(userid, since) as Row).n);
+	}
+
 	/** Todas as jornadas do jogador, em todos os desafios, da mais recente para a mais antiga. */
 	listUserRuns(userid: string): Run[] {
 		return (this.db.prepare('SELECT * FROM runs WHERE userid = ? ORDER BY id DESC').all(userid) as Row[]).map(toRun);

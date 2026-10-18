@@ -29,7 +29,7 @@ export const handlers: Chat.Handlers = {
 			Ladders.cancelSearches(user);
 			if (problem) connection.popup(renderProblem(TL, problem));
 		}, err => {
-			Monitor.crashlog(err, 'A gym challenge battle start', { formatid, userid: user.id });
+			Monitor.crashlog(err, 'A gym challenge battle start', { formatid });
 			Ladders.cancelSearches(user);
 			connection.popup(TL`The challenge could not be started.`);
 		});

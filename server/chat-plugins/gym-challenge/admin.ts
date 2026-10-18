@@ -16,7 +16,9 @@
 import { Utils } from '../../../lib';
 import { TLkey, type Translator } from '../../../sim/dex-text';
 import { getStore, isAdmin } from './state';
-import { checkChallengeSettings, checkName, ELITE4_SIZE, NAME_MAX_LENGTH, type Problem } from './rules';
+import {
+	checkChallengeSettings, checkName, ELITE4_SIZE, hasForbiddenChars, NAME_MAX_LENGTH, type Problem,
+} from './rules';
 import { checkFormat, importTeam, checkTeamType, trainerTypes } from './teams';
 import { activeStages, challengeProblems, DEFAULT_CHALLENGE, fieldKey } from './challenges';
 import { AI_LEVELS, isAILevel } from './levels';
@@ -624,7 +626,7 @@ export const commands: Chat.ChatCommands = {
 			const title = (rawTitle || '').trim();
 			const type = (rawType || '').trim() || null;
 			problems.push(...checkName(name).map(p => renderProblem(this.TL, p)));
-			if (title.length > TITLE_MAX_LENGTH || /[|,]/.test(title)) {
+			if (title.length > TITLE_MAX_LENGTH || /[|,]/.test(title) || hasForbiddenChars(title)) {
 				problems.push(this.TL`The title can be at most ${TITLE_MAX_LENGTH} characters long and cannot contain | or ,.`);
 			}
 			if (type && !trainerTypes().includes(type)) problems.push(this.TL`Invalid type.`);
@@ -895,7 +897,8 @@ export const commands: Chat.ChatCommands = {
 			if (!run) throw new Chat.ErrorMessage(this.TL`Journey not found.`);
 			if (run.status !== 'active') throw new Chat.ErrorMessage(this.TL`This journey has already ended.`);
 			closeRun(run);
-			this.globalModlog('GYMRUN', run.userid as ID, `closed #${run.id} (challenge #${run.challengeId})`);
+			// LGPD: o modlog fica depois da exclusão da conta; registra a jornada, não o jogador
+			this.globalModlog('GYMRUN', null, `closed run #${run.id} (challenge #${run.challengeId})`);
 			this.sendReply(this.TL`Journey closed.`);
 			return this.parse(`/join ${PAGE}-jornadas-${run.challengeId}`);
 		},

@@ -1899,10 +1899,11 @@ export const Chat = new class {
 		if (timeUsed < 1000) return;
 		if (context.cmd === 'search' || context.cmd === 'savereplay') return;
 
+		// pokemon-showdown-custom (LGPD): sem nome, IP nem o texto da mensagem (pode ser uma PM);
+		// para investigar lentidão bastam o tempo, a sala e o comando
 		const logMessage = (
-			`[slow command] ${timeUsed}ms - ${context.user.name} (${context.connection.ip}): ` +
-			`<${context.room ? context.room.roomid : context.pmTarget ? `PM:${context.pmTarget?.name}` : 'CMD'}> ` +
-			`${context.message.replace(/\n/ig, ' ')}`
+			`[slow command] ${timeUsed}ms - ` +
+			`<${context.room ? context.room.roomid : context.pmTarget ? 'PM' : 'CMD'}> /${context.cmd}`
 		);
 
 		Monitor.slow(logMessage);

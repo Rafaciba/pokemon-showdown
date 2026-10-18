@@ -26,6 +26,19 @@ export interface Problem {
 
 const problem = (message: string, ...args: (string | number)[]): Problem => ({ message, args });
 
+/**
+ * Caracteres proibidos em textos que o admin digita e que vão para o protocolo, o
+ * HTML ou nomes de formato: controle (inclui quebra de linha, que injetaria linhas
+ * no protocolo), < > & " (HTML em pontos do PS que não escapam, como /formathelp),
+ * @ ("@@@" separa regras no nome de formato) e barra invertida.
+ */
+// eslint-disable-next-line no-control-regex -- os caracteres de controle são justamente o que é recusado
+const FORBIDDEN_CHARS = /[\x00-\x1f\x7f<>&"@\\]/;
+
+export function hasForbiddenChars(text: string) {
+	return FORBIDDEN_CHARS.test(text);
+}
+
 /** Nome exibido do treinador ou do desafio (vira nome de formato no caso do desafio). */
 export function checkName(name: string): Problem[] {
 	const trimmed = name.trim();
@@ -34,7 +47,9 @@ export function checkName(name: string): Problem[] {
 		return [problem(TLkey`The name can be at most {0} characters long.`, NAME_MAX_LENGTH)];
 	}
 	// | , ; e [ ] têm significado no protocolo/nome de formato do PS
-	if (/[|,;[\]]/.test(trimmed)) return [problem(TLkey`The name cannot contain | , ; [ or ].`)];
+	if (/[|,;[\]]/.test(trimmed) || hasForbiddenChars(name)) {
+		return [problem(TLkey`The name cannot contain line breaks or the characters | , ; [ ] < > & " @ or a backslash.`)];
+	}
 	return [];
 }
 

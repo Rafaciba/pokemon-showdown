@@ -46,7 +46,6 @@ export const translations: TranslationCatalog = {
 	"Trainer deleted.": null,
 	"The name cannot be empty.": null,
 	"The name can be at most {0} characters long.": null,
-	"The name cannot contain | , ; [ or ].": null,
 	"Choose a base format.": null,
 	"The number of gyms must be between 1 and {0}.": null,
 	"Invalid base difficulty.": null,
@@ -245,4 +244,6 @@ export const translations: TranslationCatalog = {
 	"Easy": null,
 	"Medium": null,
 	"Hard": null,
+	"The name cannot contain line breaks or the characters | , ; [ ] < > & \" @ or a backslash.": null,
+	"You started too many journeys in a short time. Wait a few minutes.": null,
 };

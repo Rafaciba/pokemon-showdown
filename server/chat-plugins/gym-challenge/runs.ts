@@ -21,6 +21,10 @@ import type { Challenge, Run, RunStage, RunStatus } from './store';
 
 const problem = (message: string, ...args: (string | number)[]): Problem => ({ message, args });
 
+/** No máximo RUN_START_LIMIT jornadas novas por jogador a cada RUN_START_WINDOW segundos. */
+const RUN_START_LIMIT = 5;
+const RUN_START_WINDOW = 10 * 60;
+
 function trainerMap() {
 	return new Map(getStore().listTrainers().map(trainer => [trainer.id, trainer]));
 }
@@ -31,6 +35,10 @@ export function startRun(userid: string, challengeId: number): Run | Problem {
 	const challenge = store.getChallenge(challengeId);
 	if (challenge?.status !== 'open') return problem(TLkey`This challenge is not open.`);
 	if (store.getActiveRun(challengeId, userid)) return problem(TLkey`You already have a journey in this challenge.`);
+	// Evita criar jornadas sem fim (desistir e recomeçar em loop)
+	if (store.countRunsSince(userid, Math.floor(Date.now() / 1000) - RUN_START_WINDOW) >= RUN_START_LIMIT) {
+		return problem(TLkey`You started too many journeys in a short time. Wait a few minutes.`);
+	}
 	const stages = drawRunStages(challenge, store.getStages(challengeId), store.getPool(challengeId), trainerMap());
 	if (!stages) return problem(TLkey`This challenge is not ready. Tell an administrator.`);
 	return store.createRun(challengeId, userid, stages);

@@ -46,7 +46,6 @@ export const translations: TranslationCatalog = {
 	"Trainer deleted.": "Treinador apagado.",
 	"The name cannot be empty.": "O nome não pode ficar vazio.",
 	"The name can be at most {0} characters long.": "O nome pode ter no máximo {0} caracteres.",
-	"The name cannot contain | , ; [ or ].": "O nome não pode conter | , ; [ ou ].",
 	"Choose a base format.": "Escolha um formato base.",
 	"The number of gyms must be between 1 and {0}.": "A quantidade de ginásios deve ficar entre 1 e {0}.",
 	"Invalid base difficulty.": "Dificuldade base inválida.",
@@ -245,4 +244,6 @@ export const translations: TranslationCatalog = {
 	"Easy": "Fácil",
 	"Medium": "Médio",
 	"Hard": "Difícil",
+	"The name cannot contain line breaks or the characters | , ; [ ] < > & \" @ or a backslash.": "O nome não pode ter quebras de linha nem os caracteres | , ; [ ] < > & \" @ ou barra invertida.",
+	"You started too many journeys in a short time. Wait a few minutes.": "Você começou jornadas demais em pouco tempo. Aguarde alguns minutos.",
 };

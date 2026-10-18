@@ -242,4 +242,7 @@ export const translations: TranslationCatalog = {
 	"Score by challenge": null,
 	"History": null,
 	"Challenge page": null,
+	"Easy": null,
+	"Medium": null,
+	"Hard": null,
 };

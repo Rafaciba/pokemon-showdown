@@ -589,4 +589,152 @@ describe('Gym Challenge', () => {
 			});
 		});
 	});
+
+	describe('AI', () => {
+		const { readBattleState, remainingCount } = require('../../../dist/server/chat-plugins/gym-challenge/battle-view');
+		const { HeuristicAI } = require('../../../dist/server/chat-plugins/gym-challenge/heuristic-ai');
+		const { createAI } = require('../../../dist/server/chat-plugins/gym-challenge/ai');
+
+		/** Pokémon do nosso lado (p2) num pedido do simulador. */
+		const mon = (species, moves, options = {}) => {
+			const level = options.level || 100;
+			const base = Dex.species.get(species).baseStats;
+			const stat = b => Math.floor((2 * b + 31 + 21) * level / 100) + 5;
+			const maxHP = Math.floor((2 * base.hp + 31 + 21) * level / 100) + level + 10;
+			const hp = options.hp === undefined ? maxHP : Math.floor(maxHP * options.hp / 100);
+			return {
+				ident: `p2: ${species}`, details: `${species}, L${level}`, condition: hp ? `${hp}/${maxHP}${options.status ? ` ${options.status}` : ''}` : '0 fnt',
+				active: !!options.active, moves: moves.map(toID), baseAbility: toID(options.ability || Dex.species.get(species).abilities[0]),
+				ability: toID(options.ability || Dex.species.get(species).abilities[0]), item: '', pokeball: 'pokeball',
+				stats: { atk: stat(base.atk), def: stat(base.def), spa: stat(base.spa), spd: stat(base.spd), spe: stat(base.spe) },
+			};
+		};
+		const moveRequest = (team, extra = {}) => {
+			const active = team.find(m => m.active);
+			return {
+				active: [{ moves: active.moves.map(id => ({ move: id, id, pp: 10, maxpp: 10, target: 'normal', disabled: false })), ...extra }],
+				side: { name: 'NPC', id: 'p2', pokemon: team },
+			};
+		};
+		/** Log com o adversário (p1) em campo. */
+		const logWith = (species, condition = '100/100', more = []) => [
+			'|teamsize|p1|6', `|switch|p1a: ${species}|${species}, L100|${condition}`, '|turn|1', ...more,
+		];
+		const choose = (level, request, log) => new HeuristicAI(level, () => 0.99).choose(request, { log });
+
+		it('reads the public battle log', () => {
+			const state = readBattleState([
+				'|teamsize|p1|3', '|switch|p1a: Chomp|Garchomp, L80, M|100/100', '|move|p1a: Chomp|Earthquake|p2a: X',
+				'|-damage|p1a: Chomp|45/100', '|-status|p1a: Chomp|brn', '|-boost|p1a: Chomp|atk|2',
+				'|-sidestart|p1: Ash|move: Stealth Rock', '|-sidestart|p1: Ash|Spikes', '|-sidestart|p1: Ash|Spikes',
+				'|switch|p1a: Bird|Skarmory, L80|100/100', '|faint|p1a: Bird', '|turn|3',
+			]);
+			const chomp = state.sides.p1.pokemon.get('Chomp');
+			assert.equal(chomp.species, 'Garchomp');
+			assert.equal(chomp.level, 80);
+			assert.equal(chomp.hp, 45);
+			assert.equal(chomp.status, 'brn');
+			assert.deepEqual(chomp.boosts, {}, 'boosts zeram ao sair');
+			assert(chomp.moves.has('earthquake'));
+			assert.equal(state.sides.p1.conditions.get('stealthrock'), 1);
+			assert.equal(state.sides.p1.conditions.get('spikes'), 2);
+			assert.equal(remainingCount(state.sides.p1), 2);
+			assert.equal(state.turn, 3);
+		});
+
+		it('easy goes for raw damage, medium checks types', () => {
+			const team = [mon('Garchomp', ['earthquake', 'dragonclaw'], { active: true }), mon('Starmie', ['surf'])];
+			const log = logWith('Skarmory');
+			assert.equal(choose('easy', moveRequest(team), log), 'move 1', 'Fácil ignora a imunidade de Skarmory a Terra');
+			assert.equal(choose('medium', moveRequest(team), log), 'move 2');
+		});
+
+		it('medium switches out of a bad type matchup', () => {
+			const team = [mon('Charizard', ['flamethrower', 'airslash'], { active: true }), mon('Starmie', ['surf', 'psychic'])];
+			assert.equal(choose('medium', moveRequest(team), logWith('Golem')), 'switch 2');
+			assert.equal(choose('easy', moveRequest(team), logWith('Golem')), 'move 1', 'Fácil não troca por tipo');
+			const trapped = moveRequest(team, { trapped: true });
+			assert(choose('medium', trapped, logWith('Golem')).startsWith('move'), 'preso não troca');
+		});
+
+		it('picks the best matchup on forced switches and team preview', () => {
+			const team = [
+				mon('Charizard', ['flamethrower'], { hp: 0 }), mon('Venusaur', ['tackle']), mon('Starmie', ['surf', 'psychic']),
+			];
+			const request = { forceSwitch: [true], side: { name: 'NPC', id: 'p2', pokemon: team } };
+			assert.equal(choose('medium', request, logWith('Golem')), 'switch 3');
+			assert.equal(choose('easy', request, logWith('Golem')), 'switch 2', 'Fácil: o primeiro mais saudável');
+
+			const preview = { teamPreview: true, side: { name: 'NPC', id: 'p2', pokemon: team.map(m => ({ ...m, condition: '300/300' })) } };
+			const previewLog = ['|poke|p1|Golem, L100|', '|poke|p1|Rhydon, L100|', '|teampreview'];
+			assert.equal(choose('easy', preview, previewLog), 'team 123');
+			assert.equal(choose('medium', preview, previewLog), 'team 312', 'Médio abre com quem vai bem contra Pedra/Terra');
+		});
+
+		it('hard sets hazards and inflicts status, respecting immunities', () => {
+			const team = [mon('Skarmory', ['stealthrock', 'toxic', 'bravebird'], { active: true }), mon('Starmie', ['surf'])];
+			assert.equal(choose('hard', moveRequest(team), logWith('Snorlax')), 'move 1', 'Stealth Rock com o adversário inteiro');
+			assert.equal(choose('medium', moveRequest(team), logWith('Snorlax')), 'move 3', 'Médio não usa hazards nem status');
+			const rocksUp = logWith('Snorlax', '100/100', ['|-sidestart|p1: Ash|move: Stealth Rock']);
+			assert.equal(choose('hard', moveRequest(team), rocksUp), 'move 2', 'Toxic depois do Stealth Rock');
+			assert.notEqual(choose('hard', moveRequest(team), [...rocksUp.slice(0, 1), '|switch|p1a: Muk|Muk, L100|100/100']), 'move 2',
+				'Muk (Veneno) é imune a Toxic');
+		});
+
+		it('hard respects the Sleep Clause and Ground immunity to Thunder Wave', () => {
+			const team = [mon('Breloom', ['spore', 'machpunch'], { active: true }), mon('Jolteon', ['thunderwave', 'thunderbolt'])];
+			const asleep = ['|teamsize|p1|6', '|switch|p1a: Lapras|Lapras, L100|100/100', '|-status|p1a: Lapras|slp',
+				'|switch|p1a: Snorlax|Snorlax, L100|100/100', '|turn|2'];
+			assert.equal(choose('hard', moveRequest(team), logWith('Snorlax')), 'move 1', 'Spore sem ninguém dormindo');
+			assert.equal(choose('hard', moveRequest(team), asleep), 'move 2', 'Sleep Clause');
+			const jolteon = [mon('Breloom', ['spore']), mon('Jolteon', ['thunderwave', 'shadowball'], { active: true })];
+			const stuck = moveRequest(jolteon, { trapped: true });
+			assert.equal(choose('hard', stuck, logWith('Golem')), 'move 2', 'Golem (Terra) é imune a Thunder Wave');
+		});
+
+		it('hard skips status moves when about to be knocked out', () => {
+			const team = [mon('Skarmory', ['toxic', 'bravebird'], { active: true, hp: 10 }), mon('Starmie', ['surf'])];
+			assert.equal(choose('hard', moveRequest(team, { trapped: true }), logWith('Magnezone')), 'move 2');
+		});
+
+		it('hard sets up with stat boosts when it is safe', () => {
+			// Garchomp contra Ferrothorn (aguenta golpes físicos e quase não causa dano): Swords Dance antes de atacar
+			const team = [mon('Garchomp', ['swordsdance', 'earthquake'], { active: true }), mon('Starmie', ['surf'])];
+			assert.equal(choose('hard', moveRequest(team), logWith('Ferrothorn')), 'move 1');
+			assert.equal(choose('medium', moveRequest(team), logWith('Ferrothorn')), 'move 2', 'Médio não usa buffs');
+			// Já com +4 de ataque: ataca
+			const boosted = logWith('Ferrothorn', '100/100', [
+				'|switch|p2a: Garchomp|Garchomp, L100|100/100', '|-boost|p2a: Garchomp|atk|4',
+			]);
+			assert.equal(choose('hard', moveRequest(team), boosted), 'move 2', 'atributo já alto');
+			// Com o adversário quase derrotado: nocauteia em vez de se fortalecer
+			assert.equal(choose('hard', moveRequest(team), logWith('Ferrothorn', '10/100')), 'move 2');
+			// Com pouco HP: não é seguro
+			const hurt = [mon('Garchomp', ['swordsdance', 'earthquake'], { active: true, hp: 40 }), mon('Starmie', ['surf'])];
+			assert.equal(choose('hard', moveRequest(hurt), logWith('Ferrothorn')), 'move 2');
+		});
+
+		it('hard answers the opponent boosts and uses debuffs', () => {
+			const team = [mon('Skarmory', ['haze', 'bravebird'], { active: true, ability: 'Sturdy' }), mon('Starmie', ['surf'])];
+			const boostedFoe = logWith('Dragonite', '100/100', ['|-boost|p1a: Dragonite|atk|2']);
+			assert.equal(choose('hard', moveRequest(team, { trapped: true }), boostedFoe), 'move 1', 'Haze contra +2');
+			assert.equal(choose('hard', moveRequest(team, { trapped: true }), logWith('Dragonite')), 'move 2', 'sem buffs: ataca');
+			// Debuff: Charm corta o ataque de um atacante físico que ameaça
+			const charm = [mon('Clefable', ['charm', 'moonblast'], { active: true }), mon('Starmie', ['surf'])];
+			assert.equal(choose('hard', moveRequest(charm, { trapped: true }), logWith('Snorlax')), 'move 1');
+		});
+
+		it('mega evolves and defers doubles to the default choice', () => {
+			const team = [mon('Charizard', ['flamethrower'], { active: true })];
+			assert.equal(choose('medium', moveRequest(team, { canMegaEvo: true }), logWith('Snorlax')), 'move 1 mega');
+			const doubles = moveRequest(team);
+			doubles.active.push(doubles.active[0]);
+			assert.equal(choose('hard', doubles, logWith('Snorlax')), 'default');
+		});
+
+		it('creates the AI for each level', () => {
+			assert.equal(createAI('random').level, 'random');
+			for (const level of ['easy', 'medium', 'hard']) assert.equal(createAI(level).level, level);
+		});
+	});
 });

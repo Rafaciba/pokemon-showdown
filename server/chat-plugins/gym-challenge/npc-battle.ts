@@ -119,9 +119,20 @@ export class NpcBattle extends RoomBattle {
 	override receive(lines: string[]) {
 		super.receive(lines);
 		if (lines[0] === 'update') {
-			// Log público (o que um espectador vê): base para IAs que avaliam a batalha
+			// Log público (o que um espectador vê): base para IAs que avaliam a batalha.
+			// Cada "|split|<lado>" vem seguido da linha privada daquele lado (ex.: HP exato
+			// do jogador) e depois da pública: a privada fica de fora.
+			let skipSecret = false;
 			for (const line of lines.slice(1)) {
-				if (line.startsWith('|') && !line.startsWith('|split|')) this.npcLog.push(line);
+				if (line.startsWith('|split|')) {
+					skipSecret = true;
+					continue;
+				}
+				if (skipSecret) {
+					skipSecret = false;
+					continue;
+				}
+				if (line.startsWith('|')) this.npcLog.push(line);
 			}
 		} else if (lines[0] === 'sideupdate' && lines[1] === NPC_SLOT) {
 			if (lines[2].startsWith('|request|')) {

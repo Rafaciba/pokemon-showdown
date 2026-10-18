@@ -100,6 +100,9 @@ function statusLabel(TL: Translator, status: ChallengeStatus) {
 
 function aiLevelLabel(TL: Translator, level: string) {
 	if (level === 'random') return TL`Random (default bot)`;
+	if (level === 'easy') return TL`Easy`;
+	if (level === 'medium') return TL`Medium`;
+	if (level === 'hard') return TL`Hard`;
 	return Utils.escapeHTML(level);
 }
 

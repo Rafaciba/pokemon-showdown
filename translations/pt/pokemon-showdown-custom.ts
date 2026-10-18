@@ -242,4 +242,7 @@ export const translations: TranslationCatalog = {
 	"Score by challenge": "Placar por desafio",
 	"History": "Histórico",
 	"Challenge page": "Página do desafio",
+	"Easy": "Fácil",
+	"Medium": "Médio",
+	"Hard": "Difícil",
 };

@@ -558,6 +558,25 @@ describe('Gym Challenge', () => {
 				assert.equal(store.getRun(gary.id).status, 'won');
 			});
 
+			it('lists and deletes the data of a player', () => {
+				const a = store.createChallenge(challengeInput({ name: 'A' }));
+				const b = store.createChallenge(challengeInput({ name: 'B' }));
+				const first = store.createRun(a.id, 'ash', [runStage('gym', 1), runStage('champion', 1)]);
+				store.startBattle(first.id, 'gym', 1, 'battle-1');
+				store.setRunStatus(first.id, 'won');
+				const second = store.createRun(b.id, 'ash', [runStage('gym', 1)]);
+				const gary = store.createRun(a.id, 'gary', [runStage('gym', 1)]);
+				assert.deepEqual(store.listUserRuns('ash').map(r => r.id), [second.id, first.id]);
+
+				assert.equal(store.deleteUserData('ash'), 2);
+				assert.deepEqual(store.listUserRuns('ash'), []);
+				const orphans = store.db.prepare(
+					'SELECT (SELECT count(*) FROM run_stages WHERE run_id IN (?, ?)) + (SELECT count(*) FROM run_battles WHERE run_id IN (?, ?)) AS n'
+				).get(first.id, second.id, first.id, second.id);
+				assert.equal(orphans.n, 0, 'etapas e batalhas apagadas em cascata');
+				assert.equal(store.getRun(gary.id).userid, 'gary', 'outros jogadores não são afetados');
+			});
+
 			it('rolls back nested transactions together', () => {
 				const c = store.createChallenge(challengeInput());
 				assert.throws(() => store.transaction(() => {

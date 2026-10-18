@@ -95,6 +95,8 @@ interface Handlers {
 	onLadderSearch: (user: User, connection: Connection, format: ID) => void;
 	/** pokemon-showdown-custom: devolve true para assumir um /search (ex.: batalhas contra NPC) */
 	onSearchOverride: (user: User, connection: Connection, format: ID) => boolean;
+	/** pokemon-showdown-custom: conta excluída no login server; apague os dados do usuário */
+	onAccountPurge: (userid: ID) => void;
 	onBattleRanked: (
 		battle: Rooms.RoomBattle, winner: ID, ratings: (LadderRating | null)[], players: ID[]
 	) => void;

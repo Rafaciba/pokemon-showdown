@@ -23,7 +23,7 @@ import { AI_LEVELS, isAILevel } from './levels';
 import { challengeFormatName } from './formats';
 import { reloadFormats } from './reload';
 import { closeRun, runState } from './runs';
-import { formatDate, runStatusLabel } from './player';
+import { formatDate, profileButton, runStatusLabel } from './player';
 import type {
 	Challenge, ChallengeInput, ChallengeStatus, GymStore, StageKind, Trainer, TrainerInput,
 } from './store';
@@ -591,7 +591,7 @@ export const pages: Chat.PageTable = {
 						`<button class="button" name="send" value="/ginasioadmin encerrarjornada ${run.id}">` +
 						`${this.TL`Confirm closing`}</button></details>`;
 				}
-				buf += `<tr><td>${Utils.escapeHTML(run.userid)}</td><td>${runStatusLabel(this.TL, run.status)}</td>` +
+				buf += `<tr><td>${profileButton(this.TL, run.userid)}</td><td>${runStatusLabel(this.TL, run.status)}</td>` +
 					`<td>${progress.badges.length}/${progress.gymCount}</td><td>${progress.losses}</td>` +
 					`<td>${formatDate(run.startedAt)}</td><td>${formatDate(run.endedAt)}</td><td>${action}</td></tr>`;
 			}

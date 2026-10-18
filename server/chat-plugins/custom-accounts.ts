@@ -4,6 +4,8 @@
  * - /convite [nome]      (admin) gera um código de convite de uso único
  * - /redefinirsenha nome (admin) gera um código para o jogador redefinir a senha
  * - /conta               link para a página da conta (trocar senha, excluir conta)
+ * - exclusão dos dados de jogo de contas excluídas no login (ladder, ranks e o
+ *   handler onAccountPurge para os outros plugins), consultada a cada minuto
  *
  * Os códigos são gerados pelo login server (API interna, rede do Docker) e
  * mostrados só para quem executou o comando; nunca vão para logs ou modlog.
@@ -13,6 +15,7 @@
  * @license MIT
  */
 import { FS, Utils } from '../../lib';
+import { LadderStore } from '../ladders-local';
 
 interface InternalReply {
 	ok: boolean;
@@ -22,6 +25,8 @@ interface InternalReply {
 	url?: string;
 	userid?: string | null;
 	username?: string;
+	/** /internal/purges: contas excluídas cujos dados de jogo ainda precisam ser apagados */
+	userids?: string[];
 }
 
 function isAdmin(user: User) {
@@ -50,6 +55,87 @@ async function callLoginServer(path: string, body: Record<string, string>): Prom
 	const reply = await response.json().catch(() => null) as InternalReply | null;
 	if (!reply) throw new Chat.ErrorMessage(`Invalid response from the login server.`);
 	return reply;
+}
+
+// --- Exclusão dos dados de jogo de contas excluídas -------------------------
+// O login server guarda o userid de cada conta excluída numa fila. Aqui, a cada
+// minuto, apagamos os dados de jogo dessas contas e confirmamos para o login, que
+// tira o userid da fila (e libera o nome para um novo cadastro).
+
+const PURGE_INTERVAL = 60 * 1000;
+const PURGE_FIRST_DELAY = 10 * 1000;
+
+/**
+ * Tira o usuário de todas as ladders locais (config/ladders/*.tsv). O projeto usa a
+ * ladder local (sem Config.remoteladder); o LadderStore local divide o cache com ela.
+ */
+async function removeFromLadders(userid: ID) {
+	const files = await FS('config/ladders').readdirIfExists();
+	for (const file of files) {
+		if (!file.endsWith('.tsv')) continue;
+		const formatid = file.slice(0, -4);
+		const ladder = new LadderStore(formatid);
+		const rows = await ladder.getLadder();
+		const index = ladder.indexOfUser(userid);
+		if (index < 0) continue;
+		rows.splice(index, 1);
+		// O save() da ladder não grava uma ladder vazia: o arquivo antigo (com o usuário) ficaria
+		if (rows.length) await ladder.save();
+		else await FS(`config/ladders/${file}`).unlinkIfExists();
+	}
+}
+
+async function purgeAccountData(userid: ID) {
+	// Sessão ainda aberta com o nome da conta excluída: volta a ser visitante
+	const user = Users.getExact(userid);
+	if (user?.named) user.resetName();
+	if (Users.globalAuth.has(userid)) Users.globalAuth.delete(userid);
+	for (const room of Rooms.rooms.values()) {
+		if (room.auth.has(userid)) room.auth.delete(userid);
+	}
+	await removeFromLadders(userid);
+	// Dados dos outros plugins (ex.: jornadas e conquistas do Desafio de Ginásios)
+	Chat.runHandlers('onAccountPurge', userid);
+}
+
+export async function purgeDeletedAccounts() {
+	let reply: InternalReply;
+	try {
+		reply = await callLoginServer('/internal/purges', {});
+	} catch {
+		return; // login server fora do ar: tenta de novo no próximo ciclo
+	}
+	let purged = 0;
+	for (const rawUserid of reply.userids || []) {
+		const userid = toID(rawUserid);
+		try {
+			await purgeAccountData(userid);
+			await callLoginServer('/internal/purges/done', { userid });
+			purged++;
+		} catch (err: any) {
+			Monitor.crashlog(err, 'An account data purge');
+		}
+	}
+	// LGPD: o log não registra quais contas foram apagadas
+	if (purged) Monitor.notice(`[contas] dados de jogo de ${purged} conta(s) excluída(s) apagados`);
+}
+
+/** O timer fica num global para um hotpatch do chat não criar um segundo. */
+const PURGE_TIMER = Symbol.for('pokemon-showdown-custom.accountPurgeTimer');
+const timers = global as unknown as { [PURGE_TIMER]?: { first: NodeJS.Timeout, every: NodeJS.Timeout } };
+
+export function start() {
+	const previous = timers[PURGE_TIMER];
+	if (previous) {
+		clearTimeout(previous.first);
+		clearInterval(previous.every);
+	}
+	if (!Config.customlogin?.internalUrl) return; // sem login próprio (ex.: testes)
+	const first = setTimeout(() => void purgeDeletedAccounts(), PURGE_FIRST_DELAY);
+	const every = setInterval(() => void purgeDeletedAccounts(), PURGE_INTERVAL);
+	first.unref();
+	every.unref();
+	timers[PURGE_TIMER] = { first, every };
 }
 
 function formatExpiry(expiresAt: number) {

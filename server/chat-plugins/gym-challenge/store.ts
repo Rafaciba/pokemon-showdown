@@ -517,6 +517,19 @@ export class GymStore {
 		return rows.map(toRun);
 	}
 
+	/** Todas as jornadas do jogador, em todos os desafios, da mais recente para a mais antiga. */
+	listUserRuns(userid: string): Run[] {
+		return (this.db.prepare('SELECT * FROM runs WHERE userid = ? ORDER BY id DESC').all(userid) as Row[]).map(toRun);
+	}
+
+	/**
+	 * Apaga os dados de jogo do usuário (conta excluída): jornadas e, em cascata,
+	 * as etapas e batalhas delas. As conquistas vêm das jornadas, então somem junto.
+	 */
+	deleteUserData(userid: string): number {
+		return Number(this.db.prepare('DELETE FROM runs WHERE userid = ?').run(userid).changes);
+	}
+
 	setRunStatus(id: number, status: RunStatus) {
 		this.db.prepare(`UPDATE runs SET status = ?, ended_at = ? WHERE id = ?`)
 			.run(status, status === 'active' ? null : now(), id);

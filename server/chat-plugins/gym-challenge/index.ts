@@ -11,6 +11,7 @@
  * @license MIT
  */
 import { startStageBattle } from './runs';
+import { getStore } from './state';
 import { renderProblem } from './admin';
 
 function gymChallengeId(formatid: string) {
@@ -33,5 +34,9 @@ export const handlers: Chat.Handlers = {
 			connection.popup(TL`The challenge could not be started.`);
 		});
 		return true;
+	},
+	onAccountPurge(userid) {
+		// Conta excluída: jornadas, batalhas e conquistas (que vêm das jornadas vencidas)
+		getStore().deleteUserData(userid);
 	},
 };

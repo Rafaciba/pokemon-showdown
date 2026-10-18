@@ -4,9 +4,12 @@
  * Páginas (visitantes veem só para leitura):
  *   view-ginasios                   desafios abertos e encerrados, com a jornada de cada um
  *   view-ginasios-desafio-<id>      regras, jornada atual (insígnias, próxima batalha) e jornadas anteriores
+ *   view-ginasios-perfil-<usuário>  conquistas, jornadas em andamento e placar por desafio (só logados)
+ *   view-ginasios-historico-<desafio>-<usuário>  jornadas do jogador no desafio, com placar (só logados)
  *
  * Comandos:
  *   /ginasio                               abre a lista
+ *   /ginasio perfil [usuário]              perfil do jogador (sem nome: o próprio)
  *   /ginasio iniciar <desafio>             começa uma jornada
  *   /ginasio escolher <desafio>,<ginásio>  ordem livre: o ginásio do próximo "Battle!"
  *   /ginasio desistir <desafio>            encerra a jornada (dá forfeit na batalha em andamento)
@@ -131,18 +134,69 @@ function journeyTables(TL: Translator, state: RunState) {
 	return buf + `</table></div>`;
 }
 
+interface RunSummary {
+	run: Run;
+	/** Tipos dos ginásios vencidos (insígnias). */
+	badgeTypes: (string | null)[];
+	gymCount: number;
+	/** Placar da jornada: vitórias e derrotas nas batalhas (empates e interrompidas não contam). */
+	wins: number;
+	losses: number;
+}
+
+function summarizeRun(run: Run): RunSummary {
+	const store = getStore();
+	const stages = store.getRunStages(run.id);
+	const battles = store.getRunBattles(run.id);
+	const won = new Set(battles.filter(b => b.kind === 'gym' && b.result === 'win').map(b => b.position));
+	const gyms = stages.filter(stage => stage.kind === 'gym');
+	return {
+		run,
+		badgeTypes: gyms.filter(stage => won.has(stage.position)).map(stage => stage.type),
+		gymCount: gyms.length,
+		wins: battles.filter(b => b.result === 'win').length,
+		losses: battles.filter(b => b.result === 'loss').length,
+	};
+}
+
+function badgeIcons(summary: RunSummary) {
+	return summary.badgeTypes.map(typeIcon).join('');
+}
+
+/** Jornadas com o placar de cada uma e o total (histórico de um jogador num desafio). */
+function runsTable(TL: Translator, runs: Run[]) {
+	const summaries = runs.map(summarizeRun);
+	let buf = `<div class="ladder"><table><tr><th>${TL`Started`}</th><th>${TL`Ended`}</th><th>${TL`Result`}</th>` +
+		`<th>${TL`Badges`}</th><th>${TL`Battles won`}</th><th>${TL`Battles lost`}</th></tr>`;
+	for (const summary of summaries) {
+		const { run } = summary;
+		buf += `<tr><td>${formatDate(run.startedAt)}</td><td>${formatDate(run.endedAt)}</td>` +
+			`<td>${runStatusLabel(TL, run.status)}</td>` +
+			`<td>${summary.badgeTypes.length}/${summary.gymCount} ${badgeIcons(summary)}</td>` +
+			`<td>${summary.wins}</td><td>${summary.losses}</td></tr>`;
+	}
+	const wins = summaries.reduce((sum, summary) => sum + summary.wins, 0);
+	const losses = summaries.reduce((sum, summary) => sum + summary.losses, 0);
+	const won = summaries.filter(summary => summary.run.status === 'won').length;
+	const journeys = summaries.length;
+	buf += `<tr><th colspan="3">${TL`Total: ${journeys} journeys, ${won} won`}</th><th></th>` +
+		`<th>${wins}</th><th>${losses}</th></tr>`;
+	return buf + `</table></div>`;
+}
+
 function previousRuns(TL: Translator, runs: Run[]) {
 	if (!runs.length) return '';
-	const store = getStore();
-	let buf = `<h3>${TL`Previous journeys`}</h3><div class="ladder"><table>` +
-		`<tr><th>${TL`Started`}</th><th>${TL`Ended`}</th><th>${TL`Result`}</th><th>${TL`Badges`}</th></tr>`;
-	for (const run of runs) {
-		const badges = store.getRunBattles(run.id).filter(b => b.kind === 'gym' && b.result === 'win').length;
-		const gyms = store.getRunStages(run.id).filter(s => s.kind === 'gym').length;
-		buf += `<tr><td>${formatDate(run.startedAt)}</td><td>${formatDate(run.endedAt)}</td>` +
-			`<td>${runStatusLabel(TL, run.status)}</td><td>${badges}/${gyms}</td></tr>`;
-	}
-	return buf + `</table></div>`;
+	return `<h3>${TL`Previous journeys`}</h3>` + runsTable(TL, runs);
+}
+
+/** Nome para exibir: o atual, se o jogador estiver conectado; senão, o userid (não guardamos nomes). */
+function displayName(userid: string) {
+	return Users.getExact(userid)?.name || userid;
+}
+
+export function profileButton(TL: Translator, userid: string, label?: string) {
+	return `<button class="button" name="send" value="/join ${PAGE}-perfil-${userid}">` +
+		`${label || Utils.escapeHTML(displayName(userid))}</button>`;
 }
 
 export const pages: Chat.PageTable = {
@@ -154,6 +208,7 @@ export const pages: Chat.PageTable = {
 			const closed = store.listChallenges('closed');
 			let buf = `<div class="pad"><h2>${this.TL`Gym Challenge`}</h2>` +
 				`<p>${this.TL`Battle gym leaders controlled by the computer, collect badges and face the Champion. Choose a challenge to see its rules and start a journey.`}</p>` +
+				(isPlayer(user) ? `<p>${profileButton(this.TL, user.id, this.TL`My profile`)}</p>` : '') +
 				`<h3>${this.TL`Open challenges`}</h3>`;
 			if (!open.length) {
 				buf += `<p><em>${this.TL`No open challenges right now.`}</em></p>`;
@@ -243,6 +298,87 @@ export const pages: Chat.PageTable = {
 			if (player) buf += previousRuns(this.TL, store.listRuns(challenge.id, user.id).filter(r => r.status !== 'active'));
 			return buf + `</div>`;
 		},
+
+		perfil(query, user) {
+			// Perfis e históricos só para usuários logados (decisão do usuário); a página
+			// carrega sozinha quando o login termina
+			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
+			if (!isPlayer(user)) return `<div class="pad"><p>${this.TL`Log in to see player profiles.`}</p></div>`;
+			const userid = toID(query[0]) || user.id;
+			const store = getStore();
+			const name = displayName(userid);
+			this.title = `[${this.TL`Gym profile`}] ${name}`;
+			const summaries = store.listUserRuns(userid).map(summarizeRun);
+			let buf = `<div class="pad"><h2>${this.TL`Gym profile`}: ${Utils.escapeHTML(name)}</h2>` + navButtons(this.TL);
+			if (!summaries.length) return buf + `<p><em>${this.TL`No journeys yet.`}</em></p></div>`;
+			const challengeName = (id: number) => Utils.escapeHTML(store.getChallenge(id)?.name || `#${id}`);
+
+			// Conquistas: cada desafio vencido (vencer de novo acumula)
+			const wins = summaries.filter(summary => summary.run.status === 'won');
+			buf += `<h3>${this.TL`Achievements`}</h3>`;
+			if (!wins.length) {
+				buf += `<p><em>${this.TL`No challenges won yet.`}</em></p>`;
+			} else {
+				buf += `<div class="ladder"><table><tr><th>${this.TL`Challenge`}</th><th>${this.TL`Won on`}</th>` +
+					`<th>${this.TL`Badges`}</th></tr>`;
+				for (const summary of wins) {
+					buf += `<tr><td><strong>${challengeName(summary.run.challengeId)}</strong></td>` +
+						`<td>${formatDate(summary.run.endedAt)}</td><td>${badgeIcons(summary)}</td></tr>`;
+				}
+				buf += `</table></div>`;
+			}
+
+			const active = summaries.filter(summary => summary.run.status === 'active');
+			if (active.length) {
+				buf += `<h3>${this.TL`Journeys in progress`}</h3><div class="ladder"><table>` +
+					`<tr><th>${this.TL`Challenge`}</th><th>${this.TL`Badges`}</th><th>${this.TL`Started`}</th></tr>`;
+				for (const summary of active) {
+					buf += `<tr><td>${challengeName(summary.run.challengeId)}</td>` +
+						`<td>${summary.badgeTypes.length}/${summary.gymCount} ${badgeIcons(summary)}</td>` +
+						`<td>${formatDate(summary.run.startedAt)}</td></tr>`;
+				}
+				buf += `</table></div>`;
+			}
+
+			// Placar por desafio, com o histórico completo de cada um
+			const byChallenge = new Map<number, RunSummary[]>();
+			for (const summary of summaries) {
+				const list = byChallenge.get(summary.run.challengeId) || [];
+				list.push(summary);
+				byChallenge.set(summary.run.challengeId, list);
+			}
+			buf += `<h3>${this.TL`Score by challenge`}</h3><div class="ladder"><table>` +
+				`<tr><th>${this.TL`Challenge`}</th><th>${this.TL`Journeys`}</th><th>${this.TL`Won`}</th>` +
+				`<th>${this.TL`Battles won`}</th><th>${this.TL`Battles lost`}</th><th></th></tr>`;
+			for (const [challengeId, list] of byChallenge) {
+				buf += `<tr><td>${challengeName(challengeId)}</td><td>${list.length}</td>` +
+					`<td>${list.filter(summary => summary.run.status === 'won').length}</td>` +
+					`<td>${list.reduce((sum, summary) => sum + summary.wins, 0)}</td>` +
+					`<td>${list.reduce((sum, summary) => sum + summary.losses, 0)}</td>` +
+					`<td><button class="button" name="send" value="/join ${PAGE}-historico-${challengeId}-${userid}">` +
+					`${this.TL`History`}</button></td></tr>`;
+			}
+			return buf + `</table></div></div>`;
+		},
+
+		historico(query, user) {
+			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
+			if (!isPlayer(user)) return `<div class="pad"><p>${this.TL`Log in to see player profiles.`}</p></div>`;
+			const store = getStore();
+			const challenge = store.getChallenge(Number(query[0]));
+			if (!challenge || challenge.status === 'draft') this.pageDoesNotExist();
+			const userid = toID(query[1]) || user.id;
+			const name = displayName(userid);
+			this.title = `[${this.TL`History`}] ${name} - ${challenge.name}`;
+			const runs = store.listRuns(challenge.id, userid);
+			const buf = `<div class="pad"><h2>${this.TL`History`}: ${Utils.escapeHTML(name)}</h2>` +
+				`<p><strong>${Utils.escapeHTML(challenge.name)}</strong></p>` +
+				`<p>${profileButton(this.TL, userid, this.TL`Gym profile`)} ` +
+				`<button class="button" name="send" value="/join ${PAGE}-desafio-${challenge.id}">` +
+				`${this.TL`Challenge page`}</button></p>`;
+			if (!runs.length) return buf + `<p><em>${this.TL`No journeys yet.`}</em></p></div>`;
+			return buf + runsTable(this.TL, runs) + `</div>`;
+		},
 	},
 };
 
@@ -251,6 +387,11 @@ export const commands: Chat.ChatCommands = {
 	ginasio: {
 		''(target, room, user) {
 			return this.parse(`/join ${PAGE}`);
+		},
+
+		perfil(target, room, user) {
+			const userid = toID(target) || user.id;
+			return this.parse(`/join ${PAGE}-perfil-${userid}`);
 		},
 
 		iniciar(target, room, user) {
@@ -285,6 +426,7 @@ export const commands: Chat.ChatCommands = {
 	},
 	ginasiohelp: [
 		`/ginasio - Abre a lista de desafios do Desafio de Ginásios.`,
+		`/ginasio perfil [usuário] - Mostra o perfil do jogador no Desafio de Ginásios (sem nome: o seu).`,
 		`/ginasio iniciar [desafio] - Começa uma jornada no desafio.`,
 		`/ginasio escolher [desafio], [ginásio] - Na ordem livre, escolhe o ginásio do próximo "Battle!".`,
 		`/ginasio desistir [desafio] - Encerra a jornada (uma batalha em andamento conta como derrota).`,

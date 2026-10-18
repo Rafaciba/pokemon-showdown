@@ -4,8 +4,9 @@
  * - /convite [nome]      (admin) gera um código de convite de uso único
  * - /redefinirsenha nome (admin) gera um código para o jogador redefinir a senha
  * - /conta               link para a página da conta (trocar senha, excluir conta)
- * - exclusão dos dados de jogo de contas excluídas no login (ladder, ranks e o
- *   handler onAccountPurge para os outros plugins), consultada a cada minuto
+ * - exclusão dos dados de jogo de contas excluídas no login (ladder, ranks, forfeit nas
+ *   batalhas em andamento e o handler onAccountPurge para os outros plugins),
+ *   consultada a cada minuto
  *
  * Os códigos são gerados pelo login server (API interna, rede do Docker) e
  * mostrados só para quem executou o comando; nunca vão para logs ou modlog.
@@ -147,6 +148,20 @@ export async function removeBattleLogsOf(userid: ID, logsDir = Monitor.logPath('
 	return removed;
 }
 
+/**
+ * Batalhas em andamento da conta excluída terminam com forfeit. O nome volta a ficar
+ * livre depois da exclusão dos dados, e uma conta nova com o mesmo nome assumiria o
+ * lugar do jogador nessas batalhas. Devolve quantas batalhas foram encerradas.
+ */
+export function forfeitBattlesOf(userid: ID) {
+	let count = 0;
+	for (const room of Rooms.rooms.values()) {
+		const battle = room.battle;
+		if (battle && !battle.ended && battle.playerTable[userid] && battle.forfeit(userid, ' forfeited.')) count++;
+	}
+	return count;
+}
+
 async function purgeAccountData(userid: ID) {
 	// Sessão ainda aberta com o nome da conta excluída: volta a ser visitante
 	const user = Users.getExact(userid);
@@ -155,6 +170,7 @@ async function purgeAccountData(userid: ID) {
 	for (const room of Rooms.rooms.values()) {
 		if (room.auth.has(userid)) room.auth.delete(userid);
 	}
+	forfeitBattlesOf(userid);
 	await removeFromLadders(userid);
 	await removeBattleLogsOf(userid);
 	// Dados dos outros plugins (ex.: jornadas e conquistas do Desafio de Ginásios)

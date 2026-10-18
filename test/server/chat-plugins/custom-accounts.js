@@ -1,6 +1,6 @@
 /**
  * Testes do plugin de contas (pokemon-showdown-custom): retenção e exclusão dos
- * logs de batalha.
+ * logs de batalha e as batalhas em andamento de uma conta excluída.
  */
 'use strict';
 
@@ -47,5 +47,38 @@ describe('Custom accounts: battle logs', () => {
 		assert(!fs.existsSync(mine));
 		assert(fs.existsSync(theirs));
 		assert(fs.existsSync(broken), 'arquivo ilegível fica (não dá para saber de quem é)');
+	});
+});
+
+describe('Custom accounts: battles of a deleted account', () => {
+	const { makeUser } = require('../../users-utils');
+	const TEAM = 'Weavile||lifeorb||swordsdance,knockoff,iceshard,iciclecrash|Jolly|,252,,,4,252|||||';
+	let users, rooms;
+	beforeEach(() => {
+		users = [makeUser('Deleted Player'), makeUser('Other Player'), makeUser('Third Player')];
+		rooms = [];
+	});
+	afterEach(() => {
+		for (const room of rooms) room.destroy();
+		for (const user of users) {
+			user.disconnectAll();
+			user.destroy();
+		}
+	});
+	const battle = (p1, p2) => {
+		const room = Rooms.createBattle({ format: 'gen9customgame', players: [{ user: p1, team: TEAM }, { user: p2, team: TEAM }] });
+		rooms.push(room);
+		return room;
+	};
+
+	it('forfeits only the battles in progress of the deleted account', () => {
+		const [deleted, other, third] = users;
+		const mine = battle(deleted, other);
+		const theirs = battle(other, third);
+		assert.equal(accounts.forfeitBattlesOf(deleted.id), 1);
+		assert(mine.battle.p1.eliminated, 'o jogador excluído perdeu por forfeit');
+		assert(mine.log.log.some(line => line === '|-message|Deleted Player forfeited.'));
+		assert(!theirs.battle.p1.eliminated && !theirs.battle.p2.eliminated, 'outras batalhas continuam');
+		assert.equal(accounts.forfeitBattlesOf(deleted.id), 0, 'não dá forfeit duas vezes');
 	});
 });

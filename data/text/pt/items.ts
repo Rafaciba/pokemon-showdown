@@ -4,7 +4,7 @@
 //   em português, abreviações em inglês. Vírgula decimal. Gerado por scripts/traducao/aplicar.cjs
 //   (repositório raiz); ver docs/traducao-pt-br.md.
 
-export const ItemsText: { [id: IDEntry]: ItemText } = {
+export const ItemsText: { [id: IDEntry]: Partial<ItemText> } = {
 	abilityshield: {
 		shortDesc: "A habilidade do portador não pode ser alterada, suprimida nem ignorada por nada.",
 		block: "  A habilidade de {POKEMON} está protegida pelos efeitos de Ability Shield!",

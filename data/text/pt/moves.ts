@@ -4,7 +4,7 @@
 //   em português, abreviações em inglês. Vírgula decimal. Gerado por scripts/traducao/aplicar.cjs
 //   (repositório raiz); ver docs/traducao-pt-br.md.
 
-export const MovesText: { [id: IDEntry]: MoveText } = {
+export const MovesText: { [id: IDEntry]: Partial<MoveText> } = {
 	"10000000voltthunderbolt": {
 		desc: "Tem uma chance muito alta de acerto crítico.",
 		shortDesc: "Taxa de acerto crítico muito alta.",

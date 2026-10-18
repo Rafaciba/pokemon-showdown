@@ -30,8 +30,19 @@ export interface NpcSpec {
 export interface NpcBattleHooks {
 	/** A batalha terminou (inclusive por forfeit ou timer). */
 	onEnd?: (result: NpcBattleResult) => void;
-	/** A sala foi fechada sem a batalha terminar (ex.: expirou ou o servidor encerrou). */
+	/**
+	 * A sala foi fechada sem a batalha terminar (ex.: expirou com o jogador fora).
+	 * Com estado salvo, a batalha pode ser retomada; sem ele, não conta.
+	 */
 	onInterrupted?: () => void;
+	/** A batalha não vale (ex.: quem jogou não era o dono da jornada). */
+	onVoid?: () => void;
+	/**
+	 * Save state: input log do simulador a cada ponto de decisão do desafiante, sem
+	 * as linhas de chat da sala (minimização de dados). Reproduzir o log no simulador
+	 * remonta a batalha no mesmo ponto, inclusive a sorte (a semente está no log).
+	 */
+	onSave?: (inputLog: string) => void;
 }
 
 interface NpcBattleOptions extends RoomBattleOptions {
@@ -52,10 +63,22 @@ const FORCED_PUBLIC = 'Gym Challenge';
 /** Jogadas inválidas seguidas antes de cair na jogada padrão do simulador. */
 const MAX_INVALID_CHOICES = 3;
 
+/** Remove do input log as mensagens de chat da sala (não fazem parte da batalha). */
+export function battleStateFromInputLog(inputLog: readonly string[]): string {
+	return inputLog.filter(line => !line.startsWith('>chat ')).join('\n');
+}
+
 export class NpcBattle extends RoomBattle {
 	declare options: NpcBattleOptions;
 	private npcLog: string[] = [];
 	private invalidChoices = 0;
+	private saving = false;
+	private saveAgain = false;
+	/**
+	 * Batalha retomada: o simulador reproduz o log salvo e manda os pedidos de jogada
+	 * de cada ponto antigo. O NPC só responde depois da reprodução (ver finishReplay).
+	 */
+	private replaying = !!this.options.inputLog;
 
 	get npc(): NpcSpec {
 		return this.options.npc;
@@ -133,7 +156,7 @@ export class NpcBattle extends RoomBattle {
 		try {
 			// Defesa extra: o resultado só conta se quem jogou foi o dono da jornada
 			if (challenger !== this.options.ownerid) {
-				this.options.hooks.onInterrupted?.();
+				this.options.hooks.onVoid?.();
 				return;
 			}
 			this.options.hooks.onEnd?.(result);
@@ -171,6 +194,9 @@ export class NpcBattle extends RoomBattle {
 				}
 				if (line.startsWith('|')) this.npcLog.push(line);
 			}
+		} else if (lines[0] === 'sideupdate' && lines[1] === 'p1') {
+			// Novo ponto de decisão do desafiante: tudo o que já foi jogado está no log
+			if (lines[2].startsWith('|request|')) void this.saveState();
 		} else if (lines[0] === 'sideupdate' && lines[1] === NPC_SLOT) {
 			if (lines[2].startsWith('|request|')) {
 				this.invalidChoices = 0;
@@ -182,10 +208,52 @@ export class NpcBattle extends RoomBattle {
 		}
 	}
 
+	/**
+	 * Pede o input log ao simulador e entrega ao gancho onSave. Pedidos que chegam
+	 * durante um salvamento viram um só salvamento extra, com o log mais novo.
+	 */
+	private async saveState() {
+		if (!this.options.hooks.onSave) return;
+		if (this.saving) {
+			this.saveAgain = true;
+			return;
+		}
+		this.saving = true;
+		try {
+			do {
+				this.saveAgain = false;
+				const inputLog = await this.getInputLog();
+				if (this.ended || !this.room || !inputLog?.length) break;
+				this.options.hooks.onSave(battleStateFromInputLog(inputLog));
+			} while (this.saveAgain);
+		} catch (err: any) {
+			// getInputLog é rejeitado quando a sala fecha no meio do pedido: nada a salvar
+			if (this.room) Monitor.crashlog(err, 'A gym challenge battle save', { roomid: this.roomid });
+		} finally {
+			this.saving = false;
+		}
+	}
+
+	/**
+	 * Fim da reprodução do log salvo. O simulador responde aos comandos em ordem: quando
+	 * chega a resposta deste pedido de log, todos os pedidos antigos já passaram, e o
+	 * pedido pendente do NPC é o atual.
+	 */
+	async finishReplay() {
+		try {
+			await this.getInputLog();
+		} catch {
+			return; // sala fechada durante a reprodução
+		}
+		this.replaying = false;
+		this.scheduleNpcChoice();
+	}
+
 	/** Responde fora da pilha do receive(), para não reentrar no processamento do stream. */
 	private scheduleNpcChoice(forced?: string) {
+		if (this.replaying) return;
 		setImmediate(() => {
-			if (this.ended || !this.room) return;
+			if (this.ended || !this.room || this.replaying) return;
 			const player = this[NPC_SLOT];
 			const pending = player.request;
 			if (!pending.request || pending.isWait) return;
@@ -212,8 +280,10 @@ export class NpcBattle extends RoomBattle {
 
 export interface NpcBattleSettings {
 	format: string;
-	/** Time empacotado do desafiante, já validado (Ladders.prepBattle). */
+	/** Time empacotado do desafiante, já validado (Ladders.prepBattle). Ignorado com inputLog. */
 	team: string;
+	/** Retomar a batalha a partir do estado salvo (onSave), em vez de começar do zero. */
+	inputLog?: string;
 	npc: NpcSpec;
 	title?: string;
 	hooks?: NpcBattleHooks;
@@ -232,13 +302,19 @@ export function createNpcBattle(human: User, settings: NpcBattleSettings): GameR
 	}
 	Ladders.cancelSearches(human);
 
+	const resuming = !!settings.inputLog;
 	const options: NpcBattleOptions = {
 		format: settings.format,
-		players: [
+		// Na retomada, os times já estão no log: sem time, o simulador só confirma nome e avatar
+		players: resuming ? [
+			{ user: human },
+			{ user: settings.npc.name as unknown as User },
+		] : [
 			{ user: human, team: settings.team },
 			// Jogador sem usuário: o RoomBattle aceita só o nome (ver RoomBattle.addPlayer)
 			{ user: settings.npc.name as unknown as User, team: settings.npc.team },
 		],
+		inputLog: settings.inputLog,
 		delayedStart: true,
 		rated: 0,
 		challengeType: 'challenge',
@@ -256,6 +332,10 @@ export function createNpcBattle(human: User, settings: NpcBattleSettings): GameR
 
 	human.joinRoom(room);
 	if (settings.turnSeconds) battle.useTurnTimer(settings.turnSeconds);
-	Monitor.countBattle(human.latestIp, human.name);
+	if (resuming) {
+		void battle.finishReplay();
+	} else {
+		Monitor.countBattle(human.latestIp, human.name);
+	}
 	return room;
 }

@@ -6,11 +6,15 @@
  * busca (handler onSearchOverride) e inicia a batalha da jornada contra o
  * treinador NPC da etapa atual (runs.ts).
  *
+ * Save state: as batalhas da jornada são salvas a cada jogada. Uma batalha que perde
+ * a sala (servidor reiniciado, sala expirada) fica suspensa e é retomada quando o
+ * jogador entra com a conta (handler onRename), pelo "Battle!" ou pela página.
+ *
  * Desenho completo: docs/arquitetura-desafio-ginasios.md (repo pokemon-showdown-custom).
  *
  * @license MIT
  */
-import { startStageBattle } from './runs';
+import { resumeSavedBattles, startStageBattle } from './runs';
 import { getStore } from './state';
 import { renderProblem } from './admin';
 
@@ -34,6 +38,19 @@ export const handlers: Chat.Handlers = {
 			connection.popup(TL`The challenge could not be started.`);
 		});
 		return true;
+	},
+	onRename(user, oldid, newid) {
+		// O PS chama antes de juntar a conexão nova ao usuário já conectado: espera terminar
+		setImmediate(() => {
+			const current = Users.getExact(newid);
+			if (!current?.named || !current.registered || !current.connected) return;
+			try {
+				const TL = Chat.getTranslator(current.language);
+				for (const problem of resumeSavedBattles(current)) current.popup(renderProblem(TL, problem));
+			} catch (err: any) {
+				Monitor.crashlog(err, 'A gym challenge battle resume', { userid: newid });
+			}
+		});
 	},
 	onAccountPurge(userid) {
 		// Conta excluída: jornadas, batalhas e conquistas (que vêm das jornadas vencidas)

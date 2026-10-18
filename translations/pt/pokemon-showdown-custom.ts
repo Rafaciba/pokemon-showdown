@@ -246,4 +246,8 @@ export const translations: TranslationCatalog = {
 	"Hard": "Difícil",
 	"The name cannot contain line breaks or the characters | , ; [ ] < > & \" @ or a backslash.": "O nome não pode ter quebras de linha nem os caracteres | , ; [ ] < > & \" @ ou barra invertida.",
 	"You started too many journeys in a short time. Wait a few minutes.": "Você começou jornadas demais em pouco tempo. Aguarde alguns minutos.",
+	"Your battle was interrupted (for example, by a server restart) and was saved. It continues from where it stopped.": "Sua batalha foi interrompida (por exemplo, por um reinício do servidor) e foi salva. Ela continua do ponto em que parou.",
+	"Continue your battle": "Continuar sua batalha",
+	"You have no interrupted battle in this challenge.": "Você não tem batalha interrompida neste desafio.",
+	"Your interrupted battle could not be resumed because the challenge format is no longer available. It does not count.": "Sua batalha interrompida não pôde ser retomada porque o formato do desafio não está mais disponível. Ela não conta.",
 };

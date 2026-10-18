@@ -13,6 +13,7 @@
  *   /ginasio iniciar <desafio>             começa uma jornada
  *   /ginasio escolher <desafio>,<ginásio>  ordem livre: o ginásio do próximo "Battle!"
  *   /ginasio desistir <desafio>            encerra a jornada (dá forfeit na batalha em andamento)
+ *   /ginasio continuar <desafio>           retoma a batalha suspensa (save state) ou vai até ela
  *
  * Só contas registradas jogam (o login do projeto não tem visitantes com nome).
  *
@@ -21,7 +22,7 @@
 import { Utils } from '../../../lib';
 import type { Translator } from '../../../sim/dex-text';
 import { getStore } from './state';
-import { abandonRun, chooseGym, runState, startRun, type RunState } from './runs';
+import { abandonRun, chooseGym, resumeBattle, runState, savedBattleIn, startRun, type RunState } from './runs';
 import { formatLabel, renderProblem } from './admin';
 import { challengeFormatName } from './formats';
 import type { Challenge, Run, RunStage, RunStatus } from './store';
@@ -264,14 +265,18 @@ export const pages: Chat.PageTable = {
 				buf += `<p>${this.TL`Log in to take part in the Gym Challenge.`}</p>`;
 			} else if (run) {
 				const state = runState(run);
-				const { progress } = state;
+				const { progress, suspended } = state;
 				const badges = progress.badges.length;
 				const gymCount = progress.gymCount;
 				const losses = progress.losses;
 				const lossLimit = challenge.lossLimit;
 				buf += `<p>${this.TL`Badges: ${badges}/${gymCount}`} &middot; ` +
 					(lossLimit === null ? this.TL`Losses: ${losses}` : this.TL`Losses: ${losses} of ${lossLimit}`) + `</p>`;
-				if (progress.ongoing) {
+				if (suspended) {
+					buf += `<p>${this.TL`Your battle was interrupted (for example, by a server restart) and was saved. It continues from where it stopped.`}</p>` +
+						`<p><button class="button" name="send" value="/ginasio continuar ${challenge.id}">` +
+						`<strong>${this.TL`Continue your battle`}</strong></button></p>`;
+				} else if (progress.ongoing) {
 					buf += `<p><button class="button" name="send" value="/join ${progress.ongoing.roomid}">` +
 						`<strong>${this.TL`Go to your battle in progress`}</strong></button></p>`;
 				} else if (progress.next) {
@@ -423,6 +428,14 @@ export const commands: Chat.ChatCommands = {
 			this.sendReply(this.TL`You gave up the journey. It stays in your history, and you can start a new one.`);
 			return this.parse(`/join ${PAGE}-desafio-${challengeId}`);
 		},
+
+		continuar(target, room, user) {
+			requirePlayer(this, user);
+			const battle = savedBattleIn(user.id, Number(target));
+			if (!battle) throw new Chat.ErrorMessage(this.TL`You have no interrupted battle in this challenge.`);
+			const problem = resumeBattle(user, battle);
+			if (problem) throw new Chat.ErrorMessage(renderProblem(this.TL, problem));
+		},
 	},
 	ginasiohelp: [
 		`/ginasio - Abre a lista de desafios do Desafio de Ginásios.`,
@@ -430,5 +443,6 @@ export const commands: Chat.ChatCommands = {
 		`/ginasio iniciar [desafio] - Começa uma jornada no desafio.`,
 		`/ginasio escolher [desafio], [ginásio] - Na ordem livre, escolhe o ginásio do próximo "Battle!".`,
 		`/ginasio desistir [desafio] - Encerra a jornada (uma batalha em andamento conta como derrota).`,
+		`/ginasio continuar [desafio] - Retoma a batalha interrompida (por exemplo, por um reinício do servidor) do ponto em que parou.`,
 	],
 };

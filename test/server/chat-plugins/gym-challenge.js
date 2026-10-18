@@ -548,6 +548,41 @@ describe('Gym Challenge', () => {
 				assert.deepEqual(store.getRunBattles(run.id).map(b => b.result), ['win', null]);
 			});
 
+			it('saves the state of battles in progress only', () => {
+				const c = store.createChallenge(challengeInput());
+				const run = store.createRun(c.id, 'ash', []);
+				const battle = store.startBattle(run.id, 'gym', 1, 'battle-1');
+				assert.equal(battle.savedAt, null);
+				assert.equal(store.getBattleState(battle.id), null);
+				assert(store.saveBattleState(battle.id, '>start {}'));
+				assert(store.getRunBattle(battle.id).savedAt > 0);
+				assert.equal(store.getBattleState(battle.id), '>start {}');
+				assert(store.finishBattle(battle.id, 'loss'));
+				// Minimização: o estado só existe enquanto a batalha está em andamento
+				assert.equal(store.getBattleState(battle.id), null);
+				assert.equal(store.getRunBattle(battle.id).savedAt, null);
+				const row = store.db.prepare('SELECT input_log FROM run_battles WHERE id = ?').get(battle.id);
+				assert.equal(row.input_log, null);
+				assert(!store.saveBattleState(battle.id, '>start {}'), 'batalha terminada não é salva');
+			});
+
+			it('lists the saved battles that still count', () => {
+				const c = store.createChallenge(challengeInput());
+				const active = store.createRun(c.id, 'ash', []);
+				const saved = store.startBattle(active.id, 'gym', 1, 'battle-1');
+				store.startBattle(active.id, 'gym', 2, 'battle-2'); // sem estado salvo
+				store.saveBattleState(saved.id, '>start {}');
+				store.setBattleRoom(saved.id, 'battle-3');
+				assert.deepEqual(store.listSavedBattles('ash').map(b => [b.id, b.roomid]), [[saved.id, 'battle-3']]);
+				// Encerrada pelo admin: o resultado ainda conta
+				store.setRunStatus(active.id, 'closed');
+				assert.equal(store.listSavedBattles('ash').length, 1);
+				// Desistência: não conta mais
+				store.setRunStatus(active.id, 'abandoned');
+				assert.deepEqual(store.listSavedBattles('ash'), []);
+				assert.deepEqual(store.listSavedBattles('gary'), []);
+			});
+
 			it('closes the active journeys of a challenge', () => {
 				const c = store.createChallenge(challengeInput());
 				const ash = store.createRun(c.id, 'ash', []);
@@ -740,6 +775,117 @@ describe('Gym Challenge', () => {
 		it('creates the AI for each level', () => {
 			assert.equal(createAI('random').level, 'random');
 			for (const level of ['easy', 'medium', 'hard']) assert.equal(createAI(level).level, level);
+		});
+	});
+
+	describe('battle save state', () => {
+		const { makeUser } = require('../../users-utils');
+		const { createNpcBattle, battleStateFromInputLog } = require('../../../dist/server/chat-plugins/gym-challenge/npc-battle');
+		const { createAI } = require('../../../dist/server/chat-plugins/gym-challenge/ai');
+		const TEAM = 'Weavile||lifeorb||swordsdance,knockoff,iceshard,iciclecrash|Jolly|,252,,,4,252|||||';
+		let user, room;
+		afterEach(() => {
+			if (room) room.destroy();
+			if (user) {
+				user.disconnectAll();
+				user.destroy();
+			}
+			room = user = null;
+		});
+
+		/** Espera até `check` ser verdadeiro (a batalha roda de forma assíncrona). */
+		const waitFor = async check => {
+			for (let i = 0; i < 800 && !check(); i++) {
+				await new Promise(resolve => {
+					setTimeout(resolve, 10);
+				});
+			}
+			assert(check(), 'tempo esgotado');
+		};
+
+		it('removes chat lines from the input log', () => {
+			assert.equal(battleStateFromInputLog(['>start {}', '>chat Ash|oi', '>p1 move 1']), '>start {}\n>p1 move 1');
+		});
+
+		it('saves the battle at each decision of the challenger', async function () {
+			this.timeout(10000);
+			const saves = [];
+			let interrupted = 0;
+			user = makeUser('Save Tester');
+			room = createNpcBattle(user, {
+				format: 'gen9customgame', team: TEAM,
+				npc: { name: 'Gym Bot', team: TEAM, ai: createAI('random') },
+				hooks: { onSave: log => saves.push(log), onInterrupted: () => interrupted++ },
+			});
+			assert(room);
+			await waitFor(() => saves.length >= 1);
+			assert(saves[0].startsWith('>start '));
+			assert(saves[0].includes('>player p1 '));
+			assert(saves[0].includes('>player p2 '));
+
+			room.battle.onChatMessage('dado pessoal', user);
+			const before = saves.length;
+			room.battle.choose(user, 'default');
+			// O simulador só grava as escolhas quando o turno fecha, já resolvidas ("team 1")
+			await waitFor(() => saves.length > before && saves[saves.length - 1].includes('\n>p1 '));
+			const last = saves[saves.length - 1];
+			assert(last.includes('\n>p2 '), 'a escolha do NPC também está no log');
+			assert(!last.includes('dado pessoal'), 'o chat da sala não é salvo');
+
+			// Sala fechada sem a batalha terminar: avisa (a jornada decide se fica suspensa)
+			room.destroy();
+			room = null;
+			assert.equal(interrupted, 1);
+		});
+
+		it('resumes a battle from the saved state', async function () {
+			this.timeout(20000);
+			const TEAM3 = [
+				'Snorlax||leftovers||bodyslam,rest,sleeptalk,curse|Careful|252,,4,,252,|||||',
+				'Blissey||leftovers||seismictoss,softboiled,toxic,protect|Bold|252,,252,,4,|||||',
+				'Skarmory||leftovers||spikes,roost,bravebird,whirlwind|Impish|252,,252,,4,|||||',
+			].join(']');
+			const saves = [];
+			const hooks = { onSave: log => saves.push(log) };
+			const npc = () => ({ name: 'Gym Bot', team: TEAM3, ai: createAI('random') });
+			user = makeUser('Resume Tester');
+			room = createNpcBattle(user, { format: 'gen9customgame', team: TEAM3, npc: npc(), hooks });
+			const turnOf = battleRoom => battleRoom.battle.turn;
+			// Prévia de time e dois turnos
+			for (let turn = 1; turn <= 3; turn++) {
+				await waitFor(() => !room.battle.p1.request.isWait && room.battle.p1.request.request);
+				const count = saves.length;
+				room.battle.choose(user, 'default');
+				await waitFor(() => turnOf(room) >= turn && saves.length > count && room.battle.p1.request.request);
+			}
+			await waitFor(() => !room.battle.p1.request.isWait);
+			const saved = saves[saves.length - 1];
+			const turn = turnOf(room);
+			assert(turn >= 2);
+			room.destroy();
+
+			// Retomada: o simulador reproduz o log e a batalha continua do mesmo turno
+			const resumedSaves = [];
+			room = createNpcBattle(user, {
+				format: 'gen9customgame', team: '', inputLog: saved, npc: npc(),
+				hooks: { onSave: log => resumedSaves.push(log) },
+			});
+			assert(room);
+			const npcErrors = [];
+			const receive = room.battle.receive.bind(room.battle);
+			room.battle.receive = lines => {
+				if (lines[0] === 'sideupdate' && lines[1] === 'p2' && lines[2].startsWith('|error|')) npcErrors.push(lines[2]);
+				receive(lines);
+			};
+			await waitFor(() => turnOf(room) === turn && !room.battle.p1.request.isWait && room.battle.p1.request.request);
+			assert.equal(room.battle.p1.name, 'Resume Tester');
+			assert(room.log.log.some(line => line.startsWith('|move|')), 'o histórico da batalha volta para a sala');
+			// O NPC responde ao pedido atual, e o turno seguinte acontece normalmente
+			room.battle.choose(user, 'default');
+			await waitFor(() => turnOf(room) === turn + 1);
+			const last = resumedSaves[resumedSaves.length - 1];
+			assert(last.startsWith(saved), 'o estado novo continua o salvo');
+			assert.deepEqual(npcErrors, [], 'o NPC não responde aos pedidos antigos da reprodução');
 		});
 	});
 });

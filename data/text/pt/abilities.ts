@@ -4,7 +4,7 @@
 //   em português, abreviações em inglês. Vírgula decimal. Gerado por scripts/traducao/aplicar.cjs
 //   (repositório raiz); ver docs/traducao-pt-br.md.
 
-export const AbilitiesText: { [id: IDEntry]: AbilityText } = {
+export const AbilitiesText: { [id: IDEntry]: Partial<AbilityText> } = {
 	noability: {
 		shortDesc: "Não faz nada.",
 	},

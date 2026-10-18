@@ -13,11 +13,11 @@ import { Utils } from '../../../lib';
 import { TLkey } from '../../../sim/dex-text';
 import { getStore } from './state';
 import { computeProgress, drawRunStages, statusAfterBattle, teamHash, type Progress } from './journey';
-import { createNpcBattle, NpcBattle, type NpcBattleResult } from './npc-battle';
+import { createNpcBattle, NpcBattle, type NpcBattleHooks, type NpcBattleResult } from './npc-battle';
 import { createAI } from './ai';
 import { isAILevel } from './levels';
 import type { Problem } from './rules';
-import type { Challenge, Run, RunStage, RunStatus } from './store';
+import type { Challenge, Run, RunBattle, RunStage, RunStatus } from './store';
 
 const problem = (message: string, ...args: (string | number)[]): Problem => ({ message, args });
 
@@ -49,26 +49,33 @@ export interface RunState {
 	challenge: Challenge;
 	stages: RunStage[];
 	progress: Progress;
+	/** A batalha em andamento não tem sala (servidor reiniciado, sala expirada), mas tem estado salvo. */
+	suspended: boolean;
 }
 
 /**
  * Estado atual da jornada. Uma batalha "em andamento" cuja sala não existe mais
- * (ex.: fechou sem aviso) é descartada: vira 'void' e não conta.
+ * fica suspensa se tiver estado salvo (save state; não dá para fugir de uma derrota
+ * fechando a página ou derrubando a conexão). Sem estado salvo, ela não chegou a
+ * ter jogadas e é descartada: vira 'void' e não conta.
  */
 export function runState(run: Run): RunState {
 	const store = getStore();
 	const challenge = store.getChallenge(run.challengeId)!;
 	const stages = store.getRunStages(run.id);
 	let progress = computeProgress(challenge, stages, store.getRunBattles(run.id), run.targetPosition);
+	let suspended = false;
 	const ongoing = progress.ongoing;
 	if (ongoing) {
 		const game = Rooms.get(ongoing.roomid)?.game;
-		if (!(game instanceof NpcBattle) || game.ended) {
+		if (!game && ongoing.savedAt) {
+			suspended = true;
+		} else if (!(game instanceof NpcBattle) || game.ended) {
 			store.finishBattle(ongoing.id, 'void');
 			progress = computeProgress(challenge, stages, store.getRunBattles(run.id), run.targetPosition);
 		}
 	}
-	return { run, challenge, stages, progress };
+	return { run, challenge, stages, progress, suspended };
 }
 
 /** Ordem livre: o ginásio que o "Battle!" vai enfrentar. */
@@ -99,6 +106,12 @@ export async function startStageBattle(
 	user: User, connection: Connection, formatid: string, challengeId: number
 ): Promise<Problem | null> {
 	const store = getStore();
+	// Batalha suspensa (save state): o "Battle!" a retoma, em vez de começar outra
+	const activeRun = store.getActiveRun(challengeId, user.id);
+	if (activeRun) {
+		const { progress, suspended } = runState(activeRun);
+		if (suspended) return resumeBattle(user, progress.ongoing!);
+	}
 	const check = () => {
 		const challenge = store.getChallenge(challengeId);
 		if (challenge?.status !== 'open') return problem(TLkey`This challenge is not open.`);
@@ -127,29 +140,128 @@ export async function startStageBattle(
 		return problem(TLkey`This journey has a team lock: use the same team as in the first battle (only nicknames and order may change). To use another team, give up and start a new journey.`);
 	}
 
-	let battleId = 0;
+	const ref = { id: 0 };
 	const room = createNpcBattle(user, {
 		format: ready.formatid,
 		team: ready.settings.team,
-		npc: {
-			name: stage.trainerName,
-			team: stage.team,
-			ai: createAI(isAILevel(stage.aiLevel) ? stage.aiLevel : 'random'),
-		},
+		npc: npcFor(stage),
 		title: `${user.name} vs. ${stage.trainerName}`,
 		turnSeconds: challenge.timerMode === 'turn' ? challenge.turnSeconds : null,
-		hooks: {
-			onEnd: result => recordResult(battleId, result),
-			onInterrupted: () => store.finishBattle(battleId, 'void'),
-		},
+		hooks: battleHooks(ref),
 	});
 	if (!room) return null;
-	battleId = store.startBattle(run.id, stage.kind, stage.position, room.roomid).id;
+	ref.id = store.startBattle(run.id, stage.kind, stage.position, room.roomid).id;
 	if (challenge.teamLock && !run.teamHash) store.setTeamHash(run.id, hash);
 	refreshChallengePage(user.id, challengeId);
 	room.add(`|raw|<div class="broadcast-blue"><strong>${Utils.escapeHTML(challenge.name)}</strong> &ndash; ` +
 		`${stageLabel(stage, progress.gymCount)}: ${Utils.escapeHTML(trainerLabel(stage))}</div>`).update();
 	return null;
+}
+
+function npcFor(stage: RunStage) {
+	return {
+		name: stage.trainerName,
+		team: stage.team,
+		ai: createAI(isAILevel(stage.aiLevel) ? stage.aiLevel : 'random'),
+	};
+}
+
+/** Ganchos de uma batalha da jornada. `ref.id` é o id da batalha no banco (0 até ser gravada). */
+function battleHooks(ref: { id: number }): NpcBattleHooks {
+	const store = getStore();
+	return {
+		onEnd: result => recordResult(ref.id, result),
+		// Com estado salvo, a batalha fica suspensa (ver runState) e pode ser retomada
+		onInterrupted: () => {
+			if (ref.id && !store.getRunBattle(ref.id)?.savedAt) store.finishBattle(ref.id, 'void');
+		},
+		onVoid: () => {
+			if (ref.id) store.finishBattle(ref.id, 'void');
+		},
+		onSave: inputLog => {
+			if (ref.id) store.saveBattleState(ref.id, inputLog);
+		},
+	};
+}
+
+/** Formato gravado na primeira linha do estado salvo (">start {...}"). */
+function savedFormat(inputLog: string): ID {
+	const first = inputLog.split('\n', 1)[0];
+	if (!first.startsWith('>start ')) return '';
+	try {
+		return toID(JSON.parse(first.slice(7)).formatid);
+	} catch {
+		return '';
+	}
+}
+
+/**
+ * Retoma uma batalha suspensa (save state) do ponto em que parou: o simulador
+ * reproduz o estado salvo numa sala nova. Se a sala ainda existe, só leva o jogador
+ * até ela. Vale também para jornadas encerradas pelo admin durante a batalha, cujo
+ * resultado conta (ver recordResult).
+ */
+export function resumeBattle(user: User, battle: RunBattle): Problem | null {
+	const store = getStore();
+	const run = store.getRun(battle.runId);
+	if (!run || run.userid !== user.id || (run.status !== 'active' && run.status !== 'closed')) return null;
+	const game = Rooms.get(battle.roomid)?.game;
+	if (game instanceof NpcBattle && !game.ended) {
+		user.joinRoom(game.room);
+		return null;
+	}
+	const inputLog = store.getBattleState(battle.id);
+	if (!inputLog) return null; // já terminou
+	const challenge = store.getChallenge(run.challengeId)!;
+	const stages = store.getRunStages(run.id);
+	const stage = stages.find(s => s.kind === battle.kind && s.position === battle.position);
+	const formatid = savedFormat(inputLog);
+	if (!stage || !Dex.formats.get(formatid).exists) {
+		// O formato de um desafio encerrado sai da lista: não há como remontar a batalha
+		store.finishBattle(battle.id, 'void');
+		refreshChallengePage(user.id, run.challengeId);
+		return problem(TLkey`Your interrupted battle could not be resumed because the challenge format is no longer available. It does not count.`);
+	}
+
+	const ref = { id: battle.id };
+	const room = createNpcBattle(user, {
+		format: formatid,
+		team: '',
+		inputLog,
+		npc: npcFor(stage),
+		title: `${user.name} vs. ${stage.trainerName}`,
+		turnSeconds: challenge.timerMode === 'turn' ? challenge.turnSeconds : null,
+		hooks: battleHooks(ref),
+	});
+	if (!room) return null; // servidor reiniciando: createNpcBattle já avisou
+	store.setBattleRoom(battle.id, room.roomid);
+	const gymCount = stages.filter(s => s.kind === 'gym').length;
+	room.add(`|raw|<div class="broadcast-blue"><strong>${Utils.escapeHTML(challenge.name)}</strong> &ndash; ` +
+		`${stageLabel(stage, gymCount)}: ${Utils.escapeHTML(trainerLabel(stage))}<br />` +
+		`The battle was resumed from where it stopped.</div>`).update();
+	refreshChallengePage(user.id, run.challengeId);
+	return null;
+}
+
+/**
+ * Ao entrar com a conta: retoma as batalhas suspensas do jogador. Batalhas com sala
+ * viva ficam de fora, porque o próprio PS recoloca o jogador nelas.
+ */
+export function resumeSavedBattles(user: User): Problem[] {
+	const problems: Problem[] = [];
+	for (const battle of getStore().listSavedBattles(user.id)) {
+		if (Rooms.get(battle.roomid)?.game) continue;
+		const result = resumeBattle(user, battle);
+		if (result) problems.push(result);
+	}
+	return problems;
+}
+
+/** Batalha suspensa ou em andamento de um desafio, para o botão "Continuar". */
+export function savedBattleIn(userid: string, challengeId: number): RunBattle | null {
+	const store = getStore();
+	return store.listSavedBattles(userid).find(battle => store.getRun(battle.runId)?.challengeId === challengeId) ||
+		null;
 }
 
 /** Resultado de uma batalha da jornada: insígnia, vitória no desafio ou eliminação. */
@@ -212,9 +324,12 @@ export function refreshChallengePage(userid: string, challengeId: number) {
  */
 export function abandonRun(user: User, run: Run) {
 	const store = getStore();
-	const { progress } = runState(run);
+	const { progress, suspended } = runState(run);
 	store.setRunStatus(run.id, 'abandoned');
-	if (progress.ongoing) {
+	if (suspended) {
+		// Sem sala para dar forfeit: o efeito é o mesmo, a batalha conta como derrota
+		store.finishBattle(progress.ongoing!.id, 'loss');
+	} else if (progress.ongoing) {
 		const game = Rooms.get(progress.ongoing.roomid)?.game;
 		if (game instanceof NpcBattle && !game.ended) game.forfeit(user, ' gave up the journey.');
 	}

@@ -121,6 +121,8 @@ export interface RunBattle {
 	result: BattleResult | null;
 	startedAt: number;
 	endedAt: number | null;
+	/** Quando o estado da batalha foi salvo pela última vez (null = nunca, ou já terminou). */
+	savedAt: number | null;
 }
 
 const MIGRATIONS: string[] = [
@@ -218,6 +220,12 @@ const MIGRATIONS: string[] = [
 	) STRICT;
 	CREATE INDEX run_battles_run ON run_battles(run_id);
 	`,
+	// 3: save state das batalhas (input log do simulador, sem as linhas de chat).
+	// Só existe enquanto a batalha está em andamento; o resultado apaga o estado.
+	`
+	ALTER TABLE run_battles ADD COLUMN input_log TEXT;
+	ALTER TABLE run_battles ADD COLUMN saved_at INTEGER;
+	`,
 ];
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -274,7 +282,7 @@ function toRunStage(row: Row): RunStage {
 function toRunBattle(row: Row): RunBattle {
 	return {
 		id: row.id, runId: row.run_id, kind: row.kind, position: row.position, roomid: row.roomid, result: row.result,
-		startedAt: row.started_at, endedAt: row.ended_at,
+		startedAt: row.started_at, endedAt: row.ended_at, savedAt: row.saved_at,
 	};
 }
 
@@ -581,9 +589,45 @@ export class GymStore {
 		return this.getRunBattle(Number(result.lastInsertRowid))!;
 	}
 
-	/** Registra o resultado; só vale para batalhas em andamento. Devolve false se já havia resultado. */
+	/**
+	 * Registra o resultado; só vale para batalhas em andamento. Devolve false se já havia resultado.
+	 * O estado salvo deixa de ser necessário e é apagado (minimização de dados).
+	 */
 	finishBattle(id: number, result: BattleResult): boolean {
-		return this.db.prepare(`UPDATE run_battles SET result = ?, ended_at = ? WHERE id = ? AND result IS NULL`)
-			.run(result, now(), id).changes === 1;
+		return this.db.prepare(`
+			UPDATE run_battles SET result = ?, ended_at = ?, input_log = NULL, saved_at = NULL
+			WHERE id = ? AND result IS NULL
+		`).run(result, now(), id).changes === 1;
+	}
+
+	/** Salva o estado de uma batalha em andamento. Devolve false se ela já terminou. */
+	saveBattleState(id: number, inputLog: string): boolean {
+		return this.db.prepare(`UPDATE run_battles SET input_log = ?, saved_at = ? WHERE id = ? AND result IS NULL`)
+			.run(inputLog, now(), id).changes === 1;
+	}
+
+	/** Batalha retomada numa sala nova. */
+	setBattleRoom(id: number, roomid: string) {
+		this.db.prepare('UPDATE run_battles SET roomid = ? WHERE id = ? AND result IS NULL').run(roomid, id);
+	}
+
+	/**
+	 * Batalhas sem resultado e com estado salvo do jogador, nas jornadas em que ainda
+	 * contam (ativas, ou encerradas pelo admin durante a batalha). A sala de cada uma
+	 * pode estar viva ou não: quem chama confere.
+	 */
+	listSavedBattles(userid: string): RunBattle[] {
+		return (this.db.prepare(`
+			SELECT b.* FROM run_battles b JOIN runs r ON r.id = b.run_id
+			WHERE r.userid = ? AND r.status IN ('active', 'closed') AND b.result IS NULL AND b.saved_at IS NOT NULL
+			ORDER BY b.id
+		`).all(userid) as Row[]).map(toRunBattle);
+	}
+
+	/** Estado salvo de uma batalha em andamento, ou null. */
+	getBattleState(id: number): string | null {
+		const row = this.db.prepare('SELECT input_log FROM run_battles WHERE id = ? AND result IS NULL').get(id) as
+			Row | undefined;
+		return row?.input_log ?? null;
 	}
 }

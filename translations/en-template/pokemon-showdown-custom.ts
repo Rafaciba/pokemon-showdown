@@ -246,4 +246,8 @@ export const translations: TranslationCatalog = {
 	"Hard": null,
 	"The name cannot contain line breaks or the characters | , ; [ ] < > & \" @ or a backslash.": null,
 	"You started too many journeys in a short time. Wait a few minutes.": null,
+	"Your battle was interrupted (for example, by a server restart) and was saved. It continues from where it stopped.": null,
+	"Continue your battle": null,
+	"You have no interrupted battle in this challenge.": null,
+	"Your interrupted battle could not be resumed because the challenge format is no longer available. It does not count.": null,
 };

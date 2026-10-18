@@ -2,8 +2,7 @@
  * pokemon-showdown-custom: persistência do Desafio de Ginásios.
  *
  * SQLite próprio (node:sqlite, nativo do Node 24) em databases/gym-challenge.db.
- * LGPD: só guarda IDs de usuário e resultados (tabelas de jornada entram na
- * fase 3); nenhum IP.
+ * LGPD: só guarda IDs de usuário (das jornadas) e resultados; nenhum IP.
  *
  * Esta camada só lê e grava; as regras ficam em rules.ts.
  *
@@ -79,6 +78,51 @@ export interface PoolEntry {
 	aiLevel: string | null;
 }
 
+export type RunStatus = 'active' | 'won' | 'abandoned' | 'eliminated' | 'closed';
+export type BattleResult = 'win' | 'loss' | 'tie' | 'void';
+
+export interface Run {
+	id: number;
+	challengeId: number;
+	userid: string;
+	status: RunStatus;
+	/** Hash do time da primeira batalha (trava de time); null até a primeira batalha. */
+	teamHash: string | null;
+	/** Ginásio escolhido pelo jogador (ordem livre); null = o primeiro ainda não vencido. */
+	targetPosition: number | null;
+	startedAt: number;
+	endedAt: number | null;
+}
+
+/**
+ * Etapa da jornada: cópia da etapa do desafio (ou do sorteio) feita quando a
+ * jornada começa, com nome e time do treinador. Mudanças posteriores no desafio
+ * ou no treinador não alteram jornadas em andamento.
+ */
+export interface RunStage {
+	kind: StageKind;
+	position: number;
+	trainerId: number | null;
+	trainerName: string;
+	trainerTitle: string;
+	type: string | null;
+	team: string;
+	/** Nível efetivo (já com a dificuldade base do desafio aplicada). */
+	aiLevel: string;
+}
+
+export interface RunBattle {
+	id: number;
+	runId: number;
+	kind: StageKind;
+	position: number;
+	roomid: string;
+	/** null = batalha em andamento. */
+	result: BattleResult | null;
+	startedAt: number;
+	endedAt: number | null;
+}
+
 const MIGRATIONS: string[] = [
 	// 1: treinadores e desafios (fase 2). Jornadas entram na fase 3.
 	`
@@ -134,9 +178,50 @@ const MIGRATIONS: string[] = [
 	CREATE INDEX challenge_pool_trainer ON challenge_pool(trainer_id);
 	CREATE INDEX challenge_stages_trainer ON challenge_stages(trainer_id);
 	`,
+	// 2: jornadas (fase 3)
+	`
+	CREATE TABLE runs (
+		id               INTEGER PRIMARY KEY,
+		challenge_id     INTEGER NOT NULL REFERENCES challenges(id),
+		userid           TEXT NOT NULL,
+		status           TEXT NOT NULL CHECK (status IN ('active', 'won', 'abandoned', 'eliminated', 'closed')),
+		team_hash        TEXT,
+		target_position  INTEGER,
+		started_at       INTEGER NOT NULL,
+		ended_at         INTEGER
+	) STRICT;
+	CREATE UNIQUE INDEX runs_active ON runs(challenge_id, userid) WHERE status = 'active';
+	CREATE INDEX runs_user ON runs(userid);
+
+	CREATE TABLE run_stages (
+		run_id         INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+		kind           TEXT NOT NULL CHECK (kind IN ('gym', 'elite4', 'champion')),
+		position       INTEGER NOT NULL,
+		trainer_id     INTEGER,
+		trainer_name   TEXT NOT NULL,
+		trainer_title  TEXT NOT NULL,
+		type           TEXT,
+		team           TEXT NOT NULL,
+		ai_level       TEXT NOT NULL,
+		PRIMARY KEY (run_id, kind, position)
+	) STRICT;
+
+	CREATE TABLE run_battles (
+		id          INTEGER PRIMARY KEY,
+		run_id      INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+		kind        TEXT NOT NULL CHECK (kind IN ('gym', 'elite4', 'champion')),
+		position    INTEGER NOT NULL,
+		roomid      TEXT NOT NULL,
+		result      TEXT CHECK (result IN ('win', 'loss', 'tie', 'void')),
+		started_at  INTEGER NOT NULL,
+		ended_at    INTEGER
+	) STRICT;
+	CREATE INDEX run_battles_run ON run_battles(run_id);
+	`,
 ];
 
 const now = () => Math.floor(Date.now() / 1000);
+const STAGE_ORDER = `CASE kind WHEN 'gym' THEN 0 WHEN 'elite4' THEN 1 ELSE 2 END, position`;
 const bool = (value: unknown) => value === 1 || value === true;
 
 type Row = Record<string, any>;
@@ -172,6 +257,27 @@ function toChallenge(row: Row): Challenge {
 	};
 }
 
+function toRun(row: Row): Run {
+	return {
+		id: row.id, challengeId: row.challenge_id, userid: row.userid, status: row.status, teamHash: row.team_hash,
+		targetPosition: row.target_position, startedAt: row.started_at, endedAt: row.ended_at,
+	};
+}
+
+function toRunStage(row: Row): RunStage {
+	return {
+		kind: row.kind, position: row.position, trainerId: row.trainer_id, trainerName: row.trainer_name,
+		trainerTitle: row.trainer_title, type: row.type, team: row.team, aiLevel: row.ai_level,
+	};
+}
+
+function toRunBattle(row: Row): RunBattle {
+	return {
+		id: row.id, runId: row.run_id, kind: row.kind, position: row.position, roomid: row.roomid, result: row.result,
+		startedAt: row.started_at, endedAt: row.ended_at,
+	};
+}
+
 export class GymStore {
 	readonly db: DatabaseSync;
 
@@ -194,8 +300,13 @@ export class GymStore {
 		}
 	}
 
+	private transactionDepth = 0;
+
+	/** Reentrante: dentro de uma transação já aberta, só executa `fn` (tudo vira uma transação). */
 	transaction<T>(fn: () => T): T {
+		if (this.transactionDepth) return fn();
 		this.db.exec('BEGIN IMMEDIATE');
+		this.transactionDepth++;
 		try {
 			const result = fn();
 			this.db.exec('COMMIT');
@@ -203,6 +314,8 @@ export class GymStore {
 		} catch (err) {
 			this.db.exec('ROLLBACK');
 			throw err;
+		} finally {
+			this.transactionDepth--;
 		}
 	}
 
@@ -319,7 +432,7 @@ export class GymStore {
 	getStages(challengeId: number): Stage[] {
 		const rows = this.db.prepare(`
 			SELECT kind, position, trainer_id, ai_level FROM challenge_stages WHERE challenge_id = ?
-			ORDER BY CASE kind WHEN 'gym' THEN 0 WHEN 'elite4' THEN 1 ELSE 2 END, position
+			ORDER BY ${STAGE_ORDER}
 		`).all(challengeId) as Row[];
 		return rows.map(row => ({ kind: row.kind, position: row.position, trainerId: row.trainer_id, aiLevel: row.ai_level }));
 	}
@@ -360,5 +473,98 @@ export class GymStore {
 	/** Esvazia o banco de sorteio (ex.: o desafio passou para tipos fixos). */
 	clearPool(challengeId: number) {
 		this.db.prepare('DELETE FROM challenge_pool WHERE challenge_id = ?').run(challengeId);
+	}
+
+	// --- Jornadas ------------------------------------------------------------
+
+	/** Cria a jornada com a cópia das etapas. Falha se o jogador já tiver uma ativa no desafio. */
+	createRun(challengeId: number, userid: string, stages: RunStage[]): Run {
+		return this.transaction(() => {
+			const result = this.db.prepare(`
+				INSERT INTO runs (challenge_id, userid, status, started_at) VALUES (?, ?, 'active', ?)
+			`).run(challengeId, userid, now());
+			const runId = Number(result.lastInsertRowid);
+			const insert = this.db.prepare(`
+				INSERT INTO run_stages (run_id, kind, position, trainer_id, trainer_name, trainer_title, type, team, ai_level)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`);
+			for (const stage of stages) {
+				insert.run(
+					runId, stage.kind, stage.position, stage.trainerId, stage.trainerName, stage.trainerTitle,
+					stage.type, stage.team, stage.aiLevel
+				);
+			}
+			return this.getRun(runId)!;
+		});
+	}
+
+	getRun(id: number): Run | null {
+		const row = this.db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as Row | undefined;
+		return row ? toRun(row) : null;
+	}
+
+	getActiveRun(challengeId: number, userid: string): Run | null {
+		const row = this.db.prepare(`SELECT * FROM runs WHERE challenge_id = ? AND userid = ? AND status = 'active'`)
+			.get(challengeId, userid) as Row | undefined;
+		return row ? toRun(row) : null;
+	}
+
+	/** Jornadas do desafio (todas, ou só de um jogador), da mais recente para a mais antiga. */
+	listRuns(challengeId: number, userid?: string): Run[] {
+		const rows = (userid ?
+			this.db.prepare('SELECT * FROM runs WHERE challenge_id = ? AND userid = ? ORDER BY id DESC').all(challengeId, userid) :
+			this.db.prepare('SELECT * FROM runs WHERE challenge_id = ? ORDER BY id DESC').all(challengeId)) as Row[];
+		return rows.map(toRun);
+	}
+
+	setRunStatus(id: number, status: RunStatus) {
+		this.db.prepare(`UPDATE runs SET status = ?, ended_at = ? WHERE id = ?`)
+			.run(status, status === 'active' ? null : now(), id);
+	}
+
+	setTeamHash(id: number, hash: string) {
+		this.db.prepare('UPDATE runs SET team_hash = ? WHERE id = ?').run(hash, id);
+	}
+
+	setTargetPosition(id: number, position: number | null) {
+		this.db.prepare('UPDATE runs SET target_position = ? WHERE id = ?').run(position, id);
+	}
+
+	/** Encerra as jornadas ativas do desafio (desafio encerrado pelo admin). Devolve os ids. */
+	closeActiveRuns(challengeId: number): number[] {
+		return this.transaction(() => {
+			const ids = (this.db.prepare(`SELECT id FROM runs WHERE challenge_id = ? AND status = 'active'`)
+				.all(challengeId) as Row[]).map(row => row.id as number);
+			for (const id of ids) this.setRunStatus(id, 'closed');
+			return ids;
+		});
+	}
+
+	getRunStages(runId: number): RunStage[] {
+		return (this.db.prepare(`SELECT * FROM run_stages WHERE run_id = ? ORDER BY ${STAGE_ORDER}`).all(runId) as Row[])
+			.map(toRunStage);
+	}
+
+	getRunBattles(runId: number): RunBattle[] {
+		return (this.db.prepare('SELECT * FROM run_battles WHERE run_id = ? ORDER BY id').all(runId) as Row[])
+			.map(toRunBattle);
+	}
+
+	getRunBattle(id: number): RunBattle | null {
+		const row = this.db.prepare('SELECT * FROM run_battles WHERE id = ?').get(id) as Row | undefined;
+		return row ? toRunBattle(row) : null;
+	}
+
+	startBattle(runId: number, kind: StageKind, position: number, roomid: string): RunBattle {
+		const result = this.db.prepare(`
+			INSERT INTO run_battles (run_id, kind, position, roomid, started_at) VALUES (?, ?, ?, ?, ?)
+		`).run(runId, kind, position, roomid, now());
+		return this.getRunBattle(Number(result.lastInsertRowid))!;
+	}
+
+	/** Registra o resultado; só vale para batalhas em andamento. Devolve false se já havia resultado. */
+	finishBattle(id: number, result: BattleResult): boolean {
+		return this.db.prepare(`UPDATE run_battles SET result = ?, ended_at = ? WHERE id = ? AND result IS NULL`)
+			.run(result, now(), id).changes === 1;
 	}
 }

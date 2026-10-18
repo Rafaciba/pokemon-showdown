@@ -393,4 +393,181 @@ describe('Gym Challenge', () => {
 			assert(Dex.formats.all().filter(f => f.section === formats.FORMAT_SECTION).every(f => f.customFormat));
 		});
 	});
+
+	describe('journeys', () => {
+		const journey = require('../../../dist/server/chat-plugins/gym-challenge/journey');
+		const trainer = (id, name, type) => ({ id, name, title: 'Leader', type, team: `team-${name}` });
+		const trainers = new Map([
+			[1, trainer(1, 'Brock', 'Rock')], [2, trainer(2, 'Misty', 'Water')], [3, trainer(3, 'Surge', 'Electric')],
+			[4, trainer(4, 'Erika', 'Grass')], [5, trainer(5, 'Olivine', 'Rock')], [6, trainer(6, 'Lance', 'Dragon')],
+			[7, trainer(7, 'Red', null)],
+		]);
+		const challenge = (overrides = {}) => ({
+			...challengeInput({ hasElite4: false, gymCount: 2 }), id: 1, status: 'open', ...overrides,
+		});
+		const stage = (kind, position, trainerId, aiLevel = null) => ({ kind, position, trainerId, aiLevel });
+		const runStage = (kind, position) => ({
+			kind, position, trainerId: null, trainerName: `${kind}${position}`, trainerTitle: '', type: null, team: '',
+			aiLevel: 'random',
+		});
+		let nextId = 1;
+		const battle = (kind, position, result) => ({
+			id: nextId++, runId: 1, kind, position, roomid: 'r', result, startedAt: 0, endedAt: 0,
+		});
+
+		it('copies the fixed stages', () => {
+			const stages = [stage('gym', 1, 1), stage('gym', 2, 2), stage('champion', 1, 7)];
+			const run = journey.drawRunStages(challenge(), stages, [], trainers);
+			assert.deepEqual(run.map(s => `${s.kind}${s.position}:${s.trainerName}`), ['gym1:Brock', 'gym2:Misty', 'champion1:Red']);
+			assert.equal(run[0].team, 'team-Brock');
+			assert.equal(run[0].type, 'Rock');
+			assert.equal(run[2].type, null, 'Campeão sem tipo');
+			assert.equal(run[0].aiLevel, 'random');
+		});
+
+		it('draws distinct types for random challenges', () => {
+			const pool = [1, 2, 3, 4, 5].map(trainerId => ({ trainerId, aiLevel: null }));
+			const stages = [stage('champion', 1, 7)];
+			for (let seed = 0; seed < 20; seed++) {
+				let n = seed;
+				const random = max => (n++ * 7) % max;
+				const run = journey.drawRunStages(challenge({ typeMode: 'random', gymCount: 3 }), stages, pool, trainers, random);
+				const gyms = run.filter(s => s.kind === 'gym');
+				assert.equal(gyms.length, 3);
+				assert.equal(new Set(gyms.map(s => s.type)).size, 3, 'tipos distintos');
+				assert.deepEqual(gyms.map(s => s.position), [1, 2, 3]);
+			}
+			const tooMany = journey.drawRunStages(challenge({ typeMode: 'random', gymCount: 5 }), stages, pool, trainers);
+			assert.equal(tooMany, null, 'só 4 tipos no banco');
+		});
+
+		it('refuses incomplete challenges', () => {
+			assert.equal(journey.drawRunStages(challenge(), [stage('gym', 1, 1), stage('champion', 1, 7)], [], trainers), null);
+			const withElite4 = challenge({ gymCount: 1, hasElite4: true });
+			assert.equal(journey.drawRunStages(withElite4, [stage('gym', 1, 1), stage('champion', 1, 7)], [], trainers), null);
+		});
+
+		const leagueRun = [
+			runStage('gym', 1), runStage('gym', 2), runStage('elite4', 1), runStage('elite4', 2), runStage('champion', 1),
+		];
+
+		it('follows the fixed gym order', () => {
+			const progress = journey.computeProgress({ orderMode: 'fixed' }, leagueRun, [battle('gym', 1, 'loss')], 2);
+			assert.equal(progress.next.position, 1, 'ignora a escolha na ordem fixa');
+			assert.deepEqual(progress.choices, []);
+			assert.equal(progress.losses, 1);
+		});
+
+		it('lets the player choose in the free order', () => {
+			let progress = journey.computeProgress({ orderMode: 'free' }, leagueRun, [], 2);
+			assert.equal(progress.next.position, 2);
+			assert.equal(progress.choices.length, 2);
+			progress = journey.computeProgress({ orderMode: 'free' }, leagueRun, [battle('gym', 2, 'win')], 2);
+			assert.deepEqual(progress.badges, [2]);
+			assert.equal(progress.next.position, 1, 'escolhido já vencido: primeiro que falta');
+		});
+
+		it('runs the Elite Four and Champion in sequence', () => {
+			const gyms = [battle('gym', 1, 'win'), battle('gym', 2, 'win')];
+			let progress = journey.computeProgress({ orderMode: 'free' }, leagueRun, gyms, null);
+			assert.equal(`${progress.next.kind}${progress.next.position}`, 'elite41');
+			progress = journey.computeProgress({ orderMode: 'free' }, leagueRun,
+				[...gyms, battle('elite4', 1, 'win'), battle('elite4', 2, 'tie'), battle('elite4', 2, 'win')], null);
+			assert.equal(progress.next.kind, 'champion', 'empate não conta');
+			progress = journey.computeProgress({ orderMode: 'free' }, leagueRun,
+				[...gyms, battle('elite4', 1, 'win'), battle('elite4', 2, 'win'), battle('champion', 1, 'loss')], null);
+			assert.equal(`${progress.next.kind}${progress.next.position}`, 'elite41', 'derrota volta ao primeiro membro');
+			assert.equal(progress.losses, 1);
+		});
+
+		it('reports the ongoing battle', () => {
+			const progress = journey.computeProgress({ orderMode: 'free' }, leagueRun, [battle('gym', 1, null)], null);
+			assert.equal(progress.ongoing.position, 1);
+			assert.deepEqual(progress.badges, []);
+		});
+
+		it('decides the journey status after a battle', () => {
+			const base = { lossLimit: null, eliminateOnElite4Loss: false, eliminateOnChampionLoss: false };
+			const status = (rules, kind, result, losses) => journey.statusAfterBattle({ ...base, ...rules }, { kind }, result, { losses });
+			assert.equal(status({}, 'champion', 'win', 0), 'won');
+			assert.equal(status({}, 'gym', 'win', 0), 'active');
+			assert.equal(status({}, 'champion', 'loss', 5), 'active', 'ilimitado');
+			assert.equal(status({ lossLimit: 3 }, 'gym', 'loss', 2), 'active');
+			assert.equal(status({ lossLimit: 3 }, 'gym', 'loss', 3), 'eliminated');
+			assert.equal(status({ eliminateOnElite4Loss: true }, 'elite4', 'loss', 1), 'eliminated');
+			assert.equal(status({ eliminateOnElite4Loss: true }, 'champion', 'loss', 1), 'active');
+			assert.equal(status({ eliminateOnChampionLoss: true }, 'champion', 'loss', 1), 'eliminated');
+			assert.equal(status({ lossLimit: 1 }, 'gym', 'tie', 1), 'active', 'empate não conta');
+		});
+
+		it('ignores nicknames and order in the team lock', () => {
+			const { team } = teams.importTeam(FIRE_TEAM);
+			const sets = Teams.unpack(team);
+			const renamed = Teams.pack([{ ...sets[1], name: 'Cachorro' }, sets[0]]);
+			assert.equal(journey.teamHash(renamed), journey.teamHash(team));
+			const changed = Teams.pack([{ ...sets[0], item: 'Leftovers' }, sets[1]]);
+			assert.notEqual(journey.teamHash(changed), journey.teamHash(team));
+		});
+
+		describe('store', () => {
+			let store;
+			beforeEach(() => {
+				store = new GymStore(':memory:');
+			});
+			afterEach(() => store.close());
+
+			it('keeps one active journey per player in each challenge', () => {
+				const a = store.createChallenge(challengeInput({ name: 'A' }));
+				const b = store.createChallenge(challengeInput({ name: 'B' }));
+				const run = store.createRun(a.id, 'ash', [runStage('gym', 1), runStage('champion', 1)]);
+				assert.throws(() => store.createRun(a.id, 'ash', []));
+				store.createRun(b.id, 'ash', []);
+				store.createRun(a.id, 'gary', []);
+				assert.equal(store.getActiveRun(a.id, 'ash').id, run.id);
+				assert.deepEqual(store.getRunStages(run.id).map(s => s.kind), ['gym', 'champion']);
+				store.setRunStatus(run.id, 'abandoned');
+				assert(store.getRun(run.id).endedAt > 0);
+				assert.equal(store.getActiveRun(a.id, 'ash'), null);
+				store.createRun(a.id, 'ash', []);
+				assert.equal(store.listRuns(a.id, 'ash').length, 2);
+			});
+
+			it('records battles', () => {
+				const c = store.createChallenge(challengeInput());
+				const run = store.createRun(c.id, 'ash', []);
+				const first = store.startBattle(run.id, 'gym', 1, 'battle-1');
+				assert.equal(first.result, null);
+				assert(store.finishBattle(first.id, 'win'));
+				assert(!store.finishBattle(first.id, 'loss'), 'resultado não muda');
+				store.startBattle(run.id, 'gym', 2, 'battle-2');
+				assert.deepEqual(store.getRunBattles(run.id).map(b => b.result), ['win', null]);
+			});
+
+			it('closes the active journeys of a challenge', () => {
+				const c = store.createChallenge(challengeInput());
+				const ash = store.createRun(c.id, 'ash', []);
+				const gary = store.createRun(c.id, 'gary', []);
+				store.setRunStatus(gary.id, 'won');
+				// Como no encerramento do desafio pelo admin: dentro de outra transação
+				const closed = store.transaction(() => {
+					store.setChallengeStatus(c.id, 'closed');
+					return store.closeActiveRuns(c.id);
+				});
+				assert.deepEqual(closed, [ash.id]);
+				assert.equal(store.getRun(ash.id).status, 'closed');
+				assert.equal(store.getRun(gary.id).status, 'won');
+			});
+
+			it('rolls back nested transactions together', () => {
+				const c = store.createChallenge(challengeInput());
+				assert.throws(() => store.transaction(() => {
+					store.createRun(c.id, 'ash', []);
+					store.transaction(() => store.setChallengeStatus(c.id, 'open'));
+					throw new Error('falha');
+				}));
+				assert.equal(store.getChallenge(c.id).status, 'draft');
+				assert.equal(store.listRuns(c.id).length, 0);
+			});
+		});
+	});
 });

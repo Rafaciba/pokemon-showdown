@@ -6,6 +6,7 @@
  *   view-ginasiosadmin-treinadores        banco de treinadores NPC
  *   view-ginasiosadmin-treinador-<id>     criar ("novo") / editar treinador
  *   view-ginasiosadmin-desafio-<id>       criar ("novo") / editar / abrir / encerrar desafio
+ *   view-ginasiosadmin-jornadas-<id>      jornadas do desafio (encerrar a de um jogador)
  *
  * Visual: apenas elementos que o cliente oficial já estiliza (pad, ladder,
  * button, textbox, psicon, formatselect), como nas páginas oficiais do PS.
@@ -21,6 +22,8 @@ import { activeStages, challengeProblems, DEFAULT_CHALLENGE, fieldKey } from './
 import { AI_LEVELS, isAILevel } from './levels';
 import { challengeFormatName } from './formats';
 import { reloadFormats } from './reload';
+import { closeRun, runState } from './runs';
+import { formatDate, runStatusLabel } from './player';
 import type {
 	Challenge, ChallengeInput, ChallengeStatus, GymStore, StageKind, Trainer, TrainerInput,
 } from './store';
@@ -108,7 +111,7 @@ function levelOptions(TL: Translator): [string, string][] {
  * Nome do formato como o cliente mostra (BattleLog.formatName): sem o prefixo
  * da geração atual. O seletor oficial usa esse texto quando o admin troca o formato.
  */
-function formatLabel(formatid: string) {
+export function formatLabel(formatid: string) {
 	const format = Dex.formats.get(formatid);
 	const name = format.exists ? format.name : formatid;
 	const prefix = `[Gen ${Dex.gen}`;
@@ -521,7 +524,10 @@ export const pages: Chat.PageTable = {
 			}
 
 			const status = statusLabel(this.TL, challenge.status);
-			buf += `<p>${this.TL`Status: ${status}`}</p>`;
+			const runCount = store.listRuns(challenge.id).length;
+			buf += `<p>${this.TL`Status: ${status}`}</p>` +
+				`<p><button class="button" name="send" value="/join ${PAGE}-jornadas-${challenge.id}">` +
+				`${this.TL`Journeys (${runCount})`}</button></p>`;
 			if (challenge.status === 'closed') {
 				const note = this.TL`Closed challenges are kept as history and cannot be changed. Reopen it to edit.`;
 				return buf + `<p><small>${note}</small></p>` +
@@ -557,6 +563,39 @@ export const pages: Chat.PageTable = {
 					`${this.TL`Confirm closing`}</button></p></details>`;
 			}
 			return buf + `</div>`;
+		},
+
+		jornadas(query, user) {
+			// Página aberta antes do login terminar (link direto, recarga): o cliente pede de novo após logar
+			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
+			if (!isAdmin(user)) this.pageDoesNotExist();
+			const store = getStore();
+			const challenge = store.getChallenge(Number(query[0]));
+			if (!challenge) throw new Chat.ErrorMessage(this.TL`Challenge not found.`);
+			this.title = `[${this.TL`Journeys`}] ${challenge.name}`;
+			const runs = store.listRuns(challenge.id);
+			let buf = `<div class="pad"><h2>${this.TL`Journeys`}: ${Utils.escapeHTML(challenge.name)}</h2>` +
+				navButtons(this.TL) +
+				`<p><button class="button" name="send" value="/join ${PAGE}-desafio-${challenge.id}">` +
+				`${this.TL`Back to the challenge`}</button></p>`;
+			if (!runs.length) return buf + `<p><em>${this.TL`No journeys yet.`}</em></p></div>`;
+			buf += `<div class="ladder"><table><tr><th>${this.TL`Player`}</th><th>${this.TL`Result`}</th>` +
+				`<th>${this.TL`Badges`}</th><th>${this.TL`Losses`}</th><th>${this.TL`Started`}</th>` +
+				`<th>${this.TL`Ended`}</th><th></th></tr>`;
+			for (const run of runs) {
+				const { progress } = runState(run);
+				let action = '';
+				if (run.status === 'active') {
+					action = `<details><summary>${this.TL`Close journey`}</summary>` +
+						`<p><small>${this.TL`The journey ends and stays in the history. A battle in progress continues, and its result still counts.`}</small></p>` +
+						`<button class="button" name="send" value="/ginasioadmin encerrarjornada ${run.id}">` +
+						`${this.TL`Confirm closing`}</button></details>`;
+				}
+				buf += `<tr><td>${Utils.escapeHTML(run.userid)}</td><td>${runStatusLabel(this.TL, run.status)}</td>` +
+					`<td>${progress.badges.length}/${progress.gymCount}</td><td>${progress.losses}</td>` +
+					`<td>${formatDate(run.startedAt)}</td><td>${formatDate(run.endedAt)}</td><td>${action}</td></tr>`;
+			}
+			return buf + `</table></div></div>`;
 		},
 	},
 };
@@ -815,8 +854,11 @@ export const commands: Chat.ChatCommands = {
 			const challenge = store.getChallenge(id);
 			if (!challenge) throw new Chat.ErrorMessage(this.TL`Challenge not found.`);
 			if (challenge.status !== 'open') throw new Chat.ErrorMessage(this.TL`Only open challenges can be closed.`);
-			// Fase 3: encerrar também as jornadas ativas (closed_by_admin)
-			store.setChallengeStatus(id, 'closed');
+			// As jornadas ativas são encerradas junto (o histórico fica)
+			store.transaction(() => {
+				store.setChallengeStatus(id, 'closed');
+				store.closeActiveRuns(id);
+			});
 			this.globalModlog('GYMCHALLENGE', null, `closed #${id}`);
 			this.sendReply(this.TL`Challenge closed.`);
 			reloadChallengeFormats(this, connection);
@@ -842,6 +884,17 @@ export const commands: Chat.ChatCommands = {
 			this.sendReply(this.TL`Challenge reopened.`);
 			reloadChallengeFormats(this, connection);
 			return this.parse(`/join ${PAGE}-desafio-${id}`);
+		},
+
+		encerrarjornada(target, room, user) {
+			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
+			const run = getStore().getRun(Number(target));
+			if (!run) throw new Chat.ErrorMessage(this.TL`Journey not found.`);
+			if (run.status !== 'active') throw new Chat.ErrorMessage(this.TL`This journey has already ended.`);
+			closeRun(run);
+			this.globalModlog('GYMRUN', run.userid as ID, `closed #${run.id} (challenge #${run.challengeId})`);
+			this.sendReply(this.TL`Journey closed.`);
+			return this.parse(`/join ${PAGE}-jornadas-${run.challengeId}`);
 		},
 
 		apagardesafio(target, room, user, connection) {

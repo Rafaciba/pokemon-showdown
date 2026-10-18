@@ -15,6 +15,9 @@ import { RoomBattle, type RoomBattleOptions } from '../../room-battle';
 import type { ChoiceRequest } from '../../../sim/side';
 import type { BattleView, NpcAI } from './ai';
 
+/** Resultado do ponto de vista do desafiante (o jogador 1). */
+export type NpcBattleResult = 'win' | 'loss' | 'tie';
+
 export interface NpcSpec {
 	/** Nome exibido na batalha (ex.: "Líder Brock"). */
 	name: string;
@@ -24,8 +27,16 @@ export interface NpcSpec {
 	ai: NpcAI;
 }
 
+export interface NpcBattleHooks {
+	/** A batalha terminou (inclusive por forfeit ou timer). */
+	onEnd?: (result: NpcBattleResult) => void;
+	/** A sala foi fechada sem a batalha terminar (ex.: expirou ou o servidor encerrou). */
+	onInterrupted?: () => void;
+}
+
 interface NpcBattleOptions extends RoomBattleOptions {
 	npc: NpcSpec;
+	hooks: NpcBattleHooks;
 }
 
 /** O NPC é sempre o jogador 2; o desafiante, o jogador 1. */
@@ -55,9 +66,54 @@ export class NpcBattle extends RoomBattle {
 		npcPlayer.knownActive = true;
 
 		const human = this.p1.getUser();
-		Rooms.global.onCreateBattleRoom(human ? [human] : [], this.room, { rated: this.rated });
+		// O aviso de batalha no lobby (Config.reportbattles) lista a identidade de cada
+		// jogador; o NPC não tem usuário, então só o nome dele entra. A função só usa
+		// mais dados do jogador em batalhas com ranking, e estas nunca têm.
+		const npcIdentity = { getIdentity: () => ` ${this.npc.name}` } as unknown as User;
+		Rooms.global.onCreateBattleRoom(human ? [human, npcIdentity] : [], this.room, { rated: this.rated });
 		this.started = true;
 		this.checkActive();
+	}
+
+	/**
+	 * Limite de tempo por turno, sem limite total (opção do desafio): o saldo começa
+	 * em `seconds` e volta a `seconds` a cada turno. Ligado pelo servidor, o timer
+	 * não pode ser desligado pelo jogador. Feito aqui, e não com as regras de timer
+	 * do formato, porque elas limitam o acréscimo por turno a 30 s.
+	 */
+	useTurnTimer(seconds: number) {
+		Object.assign(this.timer.settings, {
+			starting: seconds, addPerTurn: seconds, maxPerTurn: seconds, maxFirstTurn: seconds, accelerate: false,
+		});
+		for (const player of this.players) {
+			player.secondsLeft = seconds + this.timer.settings.grace;
+			player.turnSecondsLeft = player.secondsLeft;
+		}
+		this.timer.start();
+	}
+
+	override async end(winnerName: unknown) {
+		if (this.ended) return;
+		const challenger = this.p1.id;
+		await super.end(winnerName);
+		const winnerid = toID(winnerName);
+		const result: NpcBattleResult = !winnerid ? 'tie' : winnerid === challenger ? 'win' : 'loss';
+		try {
+			this.options.hooks.onEnd?.(result);
+		} catch (err: any) {
+			Monitor.crashlog(err, 'A gym challenge battle end', { roomid: this.roomid });
+		}
+	}
+
+	override destroy() {
+		if (!this.ended) {
+			try {
+				this.options.hooks.onInterrupted?.();
+			} catch (err: any) {
+				Monitor.crashlog(err, 'A gym challenge battle interruption', { roomid: this.roomid });
+			}
+		}
+		super.destroy();
 	}
 
 	override receive(lines: string[]) {
@@ -112,6 +168,9 @@ export interface NpcBattleSettings {
 	team: string;
 	npc: NpcSpec;
 	title?: string;
+	hooks?: NpcBattleHooks;
+	/** Limite de tempo por turno em segundos; sem valor = tempo livre (timer desligado). */
+	turnSeconds?: number | null;
 }
 
 /**
@@ -136,16 +195,18 @@ export function createNpcBattle(human: User, settings: NpcBattleSettings): GameR
 		rated: 0,
 		challengeType: 'challenge',
 		npc: settings.npc,
+		hooks: settings.hooks || {},
 	};
 	const title = settings.title || `${human.name} vs. ${settings.npc.name}`;
 	const roomid = Rooms.global.prepBattleRoom(settings.format);
 	const room = Rooms.createGameRoom(roomid, title, { ...options, title, isPersonal: true });
 	const battle = new NpcBattle(room, options);
 	room.game = battle;
-	// Privacidade: considera só o desafiante (o NPC não tem configurações de usuário)
-	battle.checkPrivacySettings({ ...options, players: [options.players[0]] });
+	// Batalhas contra NPC são sempre públicas (requisito do Desafio de Ginásios): as
+	// preferências de privacidade do jogador não são aplicadas aqui
 
 	human.joinRoom(room);
+	if (settings.turnSeconds) battle.useTurnTimer(settings.turnSeconds);
 	Monitor.countBattle(human.latestIp, human.name);
 	return room;
 }

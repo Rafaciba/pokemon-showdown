@@ -1483,6 +1483,15 @@ export class GlobalRoomState {
 			if (format.column) curColumn = format.column;
 			if (!format.name) continue;
 			if (!format.challengeShow && !format.searchShow && !format.tournamentShow) continue;
+			// pokemon-showdown-custom: um formato nosso inválido fica fora da lista, em vez de derrubá-la
+			if (format.customFormat) {
+				try {
+					Dex.formats.getRuleTable(format);
+				} catch (err: any) {
+					Monitor.crashlog(err, 'A custom format in the format list', { format: format.id });
+					continue;
+				}
+			}
 
 			if (section !== prevSection) {
 				prevSection = section;

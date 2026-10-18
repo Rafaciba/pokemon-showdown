@@ -35,9 +35,16 @@ export function reloadFormats(): boolean {
 	let dex: typeof Dex;
 	try {
 		dex = reRequire('../../../sim/dex').Dex;
-		// Confere tudo antes de trocar: a lista enviada aos clientes monta a tabela de
-		// regras de todos os formatos (e com isso carrega todos os mods)
-		for (const format of dex.formats.all()) dex.formats.getRuleTable(format);
+		// Confere antes de trocar: a lista enviada aos clientes monta a tabela de regras
+		// de todos os formatos (e com isso carrega todos os mods). Um formato nosso
+		// inválido só fica fora da lista (server/rooms.ts); um oficial impede a troca.
+		for (const format of dex.formats.all()) {
+			try {
+				dex.formats.getRuleTable(format);
+			} catch (err) {
+				if (!format.customFormat) throw err;
+			}
+		}
 	} catch (err: any) {
 		// Volta o cache como estava: quem fizer require depois recebe os módulos em uso
 		for (const file in require.cache) {

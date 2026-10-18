@@ -24,6 +24,7 @@ import { activeStages, challengeProblems, DEFAULT_CHALLENGE, fieldKey } from './
 import { AI_LEVELS, isAILevel } from './levels';
 import { challengeFormatName } from './formats';
 import { reloadFormats } from './reload';
+import { badgeIcon, badgeLabel, badgeOptions, getBadge } from './badges';
 import { closeRun, runState } from './runs';
 import { formatDate, profileButton, runStatusLabel } from './player';
 import type {
@@ -123,6 +124,20 @@ export function formatLabel(formatid: string) {
 	if (name.startsWith(`${prefix}] `)) return name.slice(prefix.length + 2);
 	if (name.startsWith(`${prefix} `)) return `[${name.slice(prefix.length + 1)}`;
 	return name;
+}
+
+/** Seletor de insígnia: as do tipo do treinador primeiro; vazio = ícone do tipo. */
+function badgeSelect(TL: Translator, name: string, type: string | null, current: string | null) {
+	const options: [string, string][] = badgeOptions(type).map(badge => [
+		badge.id, Utils.escapeHTML(badgeLabel(badge) + (badge.type ? ` - ${badge.type}` : '')),
+	]);
+	return selectBox(name, [['', TL`(type icon)`], ...options], current || '');
+}
+
+/** Imagem da insígnia escolhida (catálogo), ou o ícone do tipo. */
+function chosenBadgeIcon(badgeId: string | null, type: string | null) {
+	const badge = getBadge(badgeId);
+	return badgeIcon({ name: badge?.name ?? null, image: badge?.image ?? null }, type, 32);
 }
 
 function trainerLabel(trainer: Trainer) {
@@ -283,17 +298,26 @@ function stagesForm(TL: Translator, store: GymStore, challenge: Challenge) {
 		const key = `${kind}${fieldKey(position)}`;
 		fields.push(`${key}={${key}}`, `${key}level={${key}level}`);
 		const trainer = stage?.trainerId ? trainers.find(t => t.id === stage.trainerId) : undefined;
+		let badge = '';
+		if (kind === 'gym') {
+			fields.push(`${key}badge={${key}badge}`);
+			const type = trainer?.type || null;
+			badge = `<td>${badgeSelect(TL, `${key}badge`, type, stage?.badgeId || null)} ` +
+				`${chosenBadgeIcon(stage?.badgeId || null, type)}</td>`;
+		}
 		return `<tr><td>${stageName(TL, kind, position)}</td>` +
 			`<td>${selectBox(key, [['', TL`(none)`], ...candidates.map(t => [String(t.id), trainerLabel(t)] as [string, string])],
 				String(stage?.trainerId || ''))}</td>` +
-				`<td>${selectBox(`${key}level`, levelOptions(TL), stage?.aiLevel || '')}</td>` +
+				`<td>${selectBox(`${key}level`, levelOptions(TL), stage?.aiLevel || '')}</td>` + badge +
 				`<td>${trainer ? teamIcons(trainer.team) : ''}</td></tr>`;
 	};
 	const header = `<tr><th></th><th>${TL`Trainer`}</th><th>${TL`Difficulty`}</th><th>${TL`Team`}</th></tr>`;
+	const gymHeader = `<tr><th></th><th>${TL`Trainer`}</th><th>${TL`Difficulty`}</th><th>${TL`Badge`}</th>` +
+		`<th>${TL`Team`}</th></tr>`;
 
 	let gyms: string;
 	if (challenge.typeMode === 'fixed') {
-		gyms = `<div class="ladder"><table>${header}`;
+		gyms = `<div class="ladder"><table>${gymHeader}`;
 		for (let position = 1; position <= challenge.gymCount; position++) gyms += stageRow('gym', position, typed);
 		gyms += `</table></div>`;
 	} else {
@@ -301,15 +325,17 @@ function stagesForm(TL: Translator, store: GymStore, challenge: Challenge) {
 		const gymCount = challenge.gymCount;
 		gyms = `<p><small>${TL`Select the leaders that can be drawn. Each journey draws one leader for each of ${gymCount} different types.`}</small></p>` +
 			`<div class="ladder"><table><tr><th></th><th>${TL`Trainer`}</th><th>${TL`Trainer type`}</th>` +
-			`<th>${TL`Difficulty`}</th><th>${TL`Team`}</th></tr>`;
+			`<th>${TL`Difficulty`}</th><th>${TL`Badge`}</th><th>${TL`Team`}</th></tr>`;
 		const byType = [...typed].sort((a, b) => a.type!.localeCompare(b.type!) || a.name.localeCompare(b.name));
 		for (const trainer of byType) {
 			const key = `pool${fieldKey(trainer.id)}`;
-			fields.push(`${key}={${key}}`, `${key}level={${key}level}`);
+			fields.push(`${key}={${key}}`, `${key}level={${key}level}`, `${key}badge={${key}badge}`);
 			const entry = pool.get(trainer.id);
 			gyms += `<tr><td><input type="checkbox" name="${key}"${entry ? ' checked' : ''} /></td>` +
 				`<td>${Utils.escapeHTML(trainer.name)}</td><td>${typeIcon(trainer.type)}</td>` +
 				`<td>${selectBox(`${key}level`, levelOptions(TL), entry?.aiLevel || '')}</td>` +
+				`<td>${badgeSelect(TL, `${key}badge`, trainer.type, entry?.badgeId || null)} ` +
+				`${chosenBadgeIcon(entry?.badgeId || null, trainer.type)}</td>` +
 				`<td>${teamIcons(trainer.team)}</td></tr>`;
 		}
 		gyms += `</table></div>`;
@@ -325,6 +351,7 @@ function stagesForm(TL: Translator, store: GymStore, challenge: Challenge) {
 		`<h3>${TL`Gym leaders`}</h3>` + gyms +
 		`<h3>${challenge.hasElite4 ? TL`Elite Four and Champion` : TL`Champion`}</h3>` + league +
 		`<p><small>${TL`Gym leaders and Elite Four members need a trainer type. The difficulty is never below the challenge base.`}</small></p>` +
+		`<p><small>${TL`Badges of the trainer's type come first in the list, but any badge can be chosen. Without a badge, the type icon is used.`}</small></p>` +
 		`<p><button class="button" type="submit"><strong>${TL`Save trainers`}</strong></button></p>` +
 		`</form>`;
 }
@@ -334,19 +361,26 @@ function stagesSummary(TL: Translator, store: GymStore, challenge: Challenge) {
 	const trainers = trainerMap(store);
 	const rows: string[] = [];
 	const levelText = (level: string | null) => (level ? aiLevelLabel(TL, level) : TL`(challenge base)`);
+	const badgeText = (badgeId: string | null, type: string | null) => {
+		const badge = getBadge(badgeId);
+		return chosenBadgeIcon(badgeId, type) + (badge ? ` ${Utils.escapeHTML(badgeLabel(badge))}` : '');
+	};
 	if (challenge.typeMode === 'random') {
 		for (const entry of store.getPool(challenge.id)) {
 			const trainer = trainers.get(entry.trainerId);
 			if (!trainer) continue;
-			rows.push(`<tr><td>${TL`Random pool`}</td><td>${trainerLabel(trainer)}</td><td>${levelText(entry.aiLevel)}</td></tr>`);
+			rows.push(`<tr><td>${TL`Random pool`}</td><td>${trainerLabel(trainer)}</td><td>${levelText(entry.aiLevel)}</td>` +
+				`<td>${badgeText(entry.badgeId, trainer.type)}</td></tr>`);
 		}
 	}
 	for (const stage of activeStages(challenge, store.getStages(challenge.id))) {
 		const trainer = stage.trainerId ? trainers.get(stage.trainerId) : undefined;
 		rows.push(`<tr><td>${stageName(TL, stage.kind, stage.position)}</td>` +
-			`<td>${trainer ? trainerLabel(trainer) : '-'}</td><td>${levelText(stage.aiLevel)}</td></tr>`);
+			`<td>${trainer ? trainerLabel(trainer) : '-'}</td><td>${levelText(stage.aiLevel)}</td>` +
+			`<td>${stage.kind === 'gym' ? badgeText(stage.badgeId, trainer?.type || null) : ''}</td></tr>`);
 	}
-	return `<div class="ladder"><table><tr><th></th><th>${TL`Trainer`}</th><th>${TL`Difficulty`}</th></tr>` +
+	return `<div class="ladder"><table><tr><th></th><th>${TL`Trainer`}</th><th>${TL`Difficulty`}</th>` +
+		`<th>${TL`Badge`}</th></tr>` +
 		rows.join('') + `</table></div>`;
 }
 
@@ -660,13 +694,13 @@ export const commands: Chat.ChatCommands = {
 				return this.parse(`/join ${PAGE}-${page}`);
 			}
 
-			const input: TrainerInput = { name, title, type, team: imported.team, avatar: '', badgeImage: null };
+			const input: TrainerInput = { name, title, type, team: imported.team, avatar: '' };
 			let trainer: Trainer | null;
 			if (isNew) {
 				trainer = store.createTrainer(input);
 			} else {
 				const previous = store.getTrainer(id)!;
-				trainer = store.updateTrainer(id, { ...input, avatar: previous.avatar, badgeImage: previous.badgeImage });
+				trainer = store.updateTrainer(id, { ...input, avatar: previous.avatar });
 			}
 			this.globalModlog('GYMTRAINER', null, `${isNew ? 'created' : 'updated'} #${trainer!.id}`);
 			this.sendReply(this.TL`Trainer saved.`);
@@ -783,6 +817,14 @@ export const commands: Chat.ChatCommands = {
 				}
 				return value || null;
 			};
+			const badgeOf = (key: string, label: string) => {
+				const value = values.get(`${key}badge`) || '';
+				if (value && !getBadge(value)) {
+					problems.push({ message: TLkey`{0}: invalid badge.`, args: [label] });
+					return null;
+				}
+				return value || null;
+			};
 			const stage = (kind: StageKind, position: number, needsType: boolean) => {
 				const key = `${kind}${fieldKey(position)}`;
 				if (!values.has(key)) return;
@@ -792,7 +834,8 @@ export const commands: Chat.ChatCommands = {
 					problems.push({ message: TLkey`{0}: invalid trainer.`, args: [stageName(this.TL, kind, position)] });
 					return;
 				}
-				store.setStage(id, { kind, position, trainerId, aiLevel: level(key) });
+				const badgeId = kind === 'gym' ? badgeOf(key, stageName(this.TL, kind, position)) : null;
+				store.setStage(id, { kind, position, trainerId, aiLevel: level(key), badgeId });
 			};
 
 			try {
@@ -805,7 +848,9 @@ export const commands: Chat.ChatCommands = {
 							// Treinadores criados depois de a página abrir não estão no formulário: ficam como estão
 							if (!values.has(key) || !trainer.type) continue;
 							if (values.get(key) === 'on') {
-								store.setPoolEntry(id, { trainerId: trainer.id, aiLevel: level(key) });
+								store.setPoolEntry(id, {
+									trainerId: trainer.id, aiLevel: level(key), badgeId: badgeOf(key, trainer.name),
+								});
 							} else {
 								store.removePoolEntry(id, trainer.id);
 							}

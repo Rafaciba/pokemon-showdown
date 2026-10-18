@@ -16,6 +16,7 @@ import { computeProgress, drawRunStages, statusAfterBattle, teamHash, type Progr
 import { createNpcBattle, NpcBattle, type NpcBattleHooks, type NpcBattleResult } from './npc-battle';
 import { createAI } from './ai';
 import { isAILevel } from './levels';
+import { badgeIcon } from './badges';
 import type { Problem } from './rules';
 import type { Challenge, Run, RunBattle, RunStage, RunStatus } from './store';
 
@@ -288,22 +289,34 @@ export function recordResult(battleId: number, result: NpcBattleResult): RunStat
 
 	const room = Rooms.get(battle.roomid);
 	const player = Utils.escapeHTML(Users.getExact(run.userid)?.name || run.userid);
+	// Com insígnia escolhida, o aviso traz o nome e a imagem; sem ela, o tipo do ginásio
+	const earned = result === 'win' && stage.kind === 'gym';
+	const badge = earned && stage.badgeName ? Utils.escapeHTML(stage.badgeName) : '';
+	const badgeImage = badge ? badgeIcon({ name: stage.badgeName, image: stage.badgeImage }, stage.type, 32) + ' ' : '';
 	let message = '';
 	if (status === 'won') {
 		message = `Congratulations! ${player} won the challenge ${Utils.escapeHTML(challenge.name)}!`;
 	} else if (status === 'eliminated') {
 		message = `${player} was eliminated from this journey.`;
 	} else if (status === 'closed') {
-		message = result === 'win' && stage.kind === 'gym' ?
-			`${player} earned the ${Utils.escapeHTML(stage.type || '')} badge. This journey was closed by an administrator.` :
-			`This journey was closed by an administrator.`;
-	} else if (result === 'win' && stage.kind === 'gym') {
-		message = `${player} earned the ${Utils.escapeHTML(stage.type || '')} badge ` +
-			`(${progress.badges.length}/${progress.gymCount}).`;
+		if (!earned) {
+			message = `This journey was closed by an administrator.`;
+		} else if (badge) {
+			message = `${player} earned the ${badge}! This journey was closed by an administrator.`;
+		} else {
+			message = `${player} earned the ${Utils.escapeHTML(stage.type || '')} badge. This journey was closed by an administrator.`;
+		}
+	} else if (earned) {
+		const count = `(${progress.badges.length}/${progress.gymCount})`;
+		message = badge ? `${player} earned the ${badge}! ${count}` :
+			`${player} earned the ${Utils.escapeHTML(stage.type || '')} badge ${count}.`;
 	} else if (result === 'loss' && stage.kind !== 'gym' && challenge.hasElite4) {
 		message = `The Elite Four starts over from the first member.`;
 	}
-	if (message && room) room.add(`|raw|<div class="broadcast-blue"><strong>${message}</strong></div>`).update();
+	// A imagem fica fora do <strong>: o texto continua num nó só (tradução na interface)
+	if (message && room) {
+		room.add(`|raw|<div class="broadcast-blue">${earned ? badgeImage : ''}<strong>${message}</strong></div>`).update();
+	}
 	refreshChallengePage(run.userid, run.challengeId);
 	return status;
 }

@@ -39,7 +39,7 @@ function challengeInput(overrides = {}) {
 }
 
 function trainerInput(name, type, team = 'packed') {
-	return { name, title: '', type, team, avatar: '', badgeImage: null };
+	return { name, title: '', type, team, avatar: '' };
 }
 
 describe('Gym Challenge', () => {
@@ -430,6 +430,25 @@ describe('Gym Challenge', () => {
 			assert.equal(run[0].aiLevel, 'random');
 		});
 
+		it('copies the chosen badge of each gym into the journey', () => {
+			const stages = [
+				{ ...stage('gym', 1, 1), badgeId: 'kanto-boulder' },
+				{ ...stage('gym', 2, 2), badgeId: 'nao-existe' },
+				{ ...stage('champion', 1, 7), badgeId: 'kanto-earth' },
+			];
+			const run = journey.drawRunStages(challenge(), stages, [], trainers);
+			assert.deepEqual([run[0].badgeId, run[0].badgeName, run[0].badgeImage], ['kanto-boulder', 'Boulder Badge', 'kanto-boulder.png']);
+			assert.deepEqual([run[1].badgeId, run[1].badgeName], [null, null], 'id fora do catálogo vira "sem insígnia"');
+			assert.equal(run[2].badgeId, null, 'Campeão não dá insígnia');
+
+			const pool = [{ trainerId: 1, aiLevel: null, badgeId: 'hoenn-stone' }, { trainerId: 2, aiLevel: null, badgeId: null }];
+			const drawn = journey.drawRunStages(challenge({ typeMode: 'random', gymCount: 2 }), [stage('champion', 1, 7)], pool, trainers);
+			const brock = drawn.find(s => s.trainerName === 'Brock');
+			const misty = drawn.find(s => s.trainerName === 'Misty');
+			assert.equal(brock.badgeName, 'Stone Badge');
+			assert.equal(misty.badgeId, null);
+		});
+
 		it('draws distinct types for random challenges', () => {
 			const pool = [1, 2, 3, 4, 5].map(trainerId => ({ trainerId, aiLevel: null }));
 			const stages = [stage('champion', 1, 7)];
@@ -535,6 +554,25 @@ describe('Gym Challenge', () => {
 				assert.equal(store.getActiveRun(a.id, 'ash'), null);
 				store.createRun(a.id, 'ash', []);
 				assert.equal(store.listRuns(a.id, 'ash').length, 2);
+			});
+
+			it('keeps the badge of each stage, pool entry and journey stage', () => {
+				const c = store.createChallenge(challengeInput());
+				const brock = store.createTrainer(trainerInput('Brock', 'Rock'));
+				store.setStage(c.id, { kind: 'gym', position: 1, trainerId: brock.id, aiLevel: null, badgeId: 'kanto-boulder' });
+				store.setStage(c.id, { kind: 'gym', position: 2, trainerId: brock.id, aiLevel: null });
+				assert.deepEqual(store.getStages(c.id).map(st => st.badgeId), ['kanto-boulder', null]);
+				store.setPoolEntry(c.id, { trainerId: brock.id, aiLevel: null, badgeId: 'johto-zephyr' });
+				store.setPoolEntry(c.id, { trainerId: brock.id, aiLevel: 'easy', badgeId: 'hoenn-stone' });
+				assert.deepEqual(store.getPool(c.id).map(e => [e.aiLevel, e.badgeId]), [['easy', 'hoenn-stone']]);
+				const run = store.createRun(c.id, 'ash', [
+					{ ...runStage('gym', 1), badgeId: 'kanto-boulder', badgeName: 'Boulder Badge', badgeImage: 'kanto-boulder.png' },
+					runStage('champion', 1),
+				]);
+				const stages = store.getRunStages(run.id);
+				assert.deepEqual([stages[0].badgeId, stages[0].badgeName, stages[0].badgeImage],
+					['kanto-boulder', 'Boulder Badge', 'kanto-boulder.png']);
+				assert.equal(stages[1].badgeName, null);
 			});
 
 			it('records battles', () => {
@@ -775,6 +813,43 @@ describe('Gym Challenge', () => {
 		it('creates the AI for each level', () => {
 			assert.equal(createAI('random').level, 'random');
 			for (const level of ['easy', 'medium', 'hard']) assert.equal(createAI(level).level, level);
+		});
+	});
+
+	describe('badge catalog', () => {
+		const { BADGES } = require('../../../dist/server/chat-plugins/gym-challenge/badge-catalog');
+
+		it('has unique ids, valid types and one image per badge', () => {
+			assert(BADGES.length >= 60);
+			assert.equal(new Set(BADGES.map(b => b.id)).size, BADGES.length);
+			for (const badge of BADGES) {
+				assert.match(badge.id, /^[a-z]+-[a-z0-9-]+$/);
+				assert.equal(badge.image, `${badge.id}.png`);
+				assert(badge.name.endsWith(' Badge'), badge.name);
+				assert(badge.leaders.length >= 1, badge.id);
+				if (badge.type !== null) assert(Dex.types.get(badge.type).exists, `${badge.id}: ${badge.type}`);
+			}
+			assert.equal(BADGES.find(b => b.id === 'unova-trio').type, null, 'Trio Badge sem tipo fixo');
+		});
+
+		it('lists the badges of the trainer type first', () => {
+			const { badgeOptions, badgeMatchesType } = require('../../../dist/server/chat-plugins/gym-challenge/badges');
+			const rock = badgeOptions('Rock');
+			assert.equal(rock.length, BADGES.length, 'todas continuam disponíveis');
+			const firstOther = rock.findIndex(b => b.type !== 'Rock');
+			assert(firstOther > 0 && rock.slice(firstOther).every(b => b.type !== 'Rock'));
+			const trio = BADGES.find(b => b.id === 'unova-trio');
+			assert(badgeMatchesType(trio, 'Fire') && badgeMatchesType(trio, 'Grass') && !badgeMatchesType(trio, 'Rock'));
+			assert.equal(badgeOptions(null)[0].id, BADGES[0].id, 'sem tipo: ordem do catálogo');
+		});
+
+		it('shows the badge image, or the type icon without a badge', () => {
+			const { badgeIcon } = require('../../../dist/server/chat-plugins/gym-challenge/badges');
+			const img = badgeIcon({ name: 'Boulder Badge', image: 'kanto-boulder.png' }, 'Rock');
+			assert(img.includes(`src="https://${Config.routes.client}/badges/kanto-boulder.png"`));
+			assert(img.includes('alt="Boulder Badge"'));
+			assert.equal(badgeIcon({ name: null, image: null }, 'Rock'), '<psicon type="Rock" />');
+			assert(!badgeIcon({ name: '<b>x</b>', image: 'a.png' }, null).includes('<b>'), 'nome escapado');
 		});
 	});
 

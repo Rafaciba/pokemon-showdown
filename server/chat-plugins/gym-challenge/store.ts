@@ -29,13 +29,11 @@ export interface Trainer {
 	/** Time empacotado (Teams.pack). */
 	team: string;
 	avatar: string;
-	/** Imagem da insígnia; null = ícone de tipo do PS (placeholder). */
-	badgeImage: string | null;
 	createdAt: number;
 	updatedAt: number;
 }
 
-export type TrainerInput = Pick<Trainer, 'name' | 'title' | 'type' | 'team' | 'avatar' | 'badgeImage'>;
+export type TrainerInput = Pick<Trainer, 'name' | 'title' | 'type' | 'team' | 'avatar'>;
 
 export interface Challenge {
 	id: number;
@@ -71,11 +69,14 @@ export interface Stage {
 	trainerId: number | null;
 	/** null = usa a dificuldade base do desafio. */
 	aiLevel: string | null;
+	/** Insígnia do catálogo (badge-catalog.ts) que o treinador entrega neste desafio; só ginásios. */
+	badgeId: string | null;
 }
 
 export interface PoolEntry {
 	trainerId: number;
 	aiLevel: string | null;
+	badgeId: string | null;
 }
 
 export type RunStatus = 'active' | 'won' | 'abandoned' | 'eliminated' | 'closed';
@@ -109,6 +110,13 @@ export interface RunStage {
 	team: string;
 	/** Nível efetivo (já com a dificuldade base do desafio aplicada). */
 	aiLevel: string;
+	/**
+	 * Cópia da insígnia escolhida (id, nome e imagem), para que mudanças no catálogo
+	 * não alterem jornadas já começadas. null = sem insígnia (aparece o ícone do tipo).
+	 */
+	badgeId: string | null;
+	badgeName: string | null;
+	badgeImage: string | null;
 }
 
 export interface RunBattle {
@@ -226,6 +234,16 @@ const MIGRATIONS: string[] = [
 	ALTER TABLE run_battles ADD COLUMN input_log TEXT;
 	ALTER TABLE run_battles ADD COLUMN saved_at INTEGER;
 	`,
+	// 4: insígnias escolhidas por treinador em cada desafio, com cópia na jornada.
+	// A imagem que existia no treinador nunca foi usada e sai.
+	`
+	ALTER TABLE challenge_stages ADD COLUMN badge_id TEXT;
+	ALTER TABLE challenge_pool ADD COLUMN badge_id TEXT;
+	ALTER TABLE run_stages ADD COLUMN badge_id TEXT;
+	ALTER TABLE run_stages ADD COLUMN badge_name TEXT;
+	ALTER TABLE run_stages ADD COLUMN badge_image TEXT;
+	ALTER TABLE trainers DROP COLUMN badge_image;
+	`,
 ];
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -237,7 +255,7 @@ type Row = Record<string, any>;
 function toTrainer(row: Row): Trainer {
 	return {
 		id: row.id, name: row.name, title: row.title, type: row.type, team: row.team, avatar: row.avatar,
-		badgeImage: row.badge_image, createdAt: row.created_at, updatedAt: row.updated_at,
+		createdAt: row.created_at, updatedAt: row.updated_at,
 	};
 }
 
@@ -276,6 +294,7 @@ function toRunStage(row: Row): RunStage {
 	return {
 		kind: row.kind, position: row.position, trainerId: row.trainer_id, trainerName: row.trainer_name,
 		trainerTitle: row.trainer_title, type: row.type, team: row.team, aiLevel: row.ai_level,
+		badgeId: row.badge_id, badgeName: row.badge_name, badgeImage: row.badge_image,
 	};
 }
 
@@ -345,17 +364,17 @@ export class GymStore {
 	createTrainer(input: TrainerInput): Trainer {
 		const time = now();
 		const result = this.db.prepare(`
-			INSERT INTO trainers (name, title, type, team, avatar, badge_image, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`).run(input.name, input.title, input.type, input.team, input.avatar, input.badgeImage, time, time);
+			INSERT INTO trainers (name, title, type, team, avatar, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`).run(input.name, input.title, input.type, input.team, input.avatar, time, time);
 		return this.getTrainer(Number(result.lastInsertRowid))!;
 	}
 
 	updateTrainer(id: number, input: TrainerInput): Trainer | null {
 		this.db.prepare(`
-			UPDATE trainers SET name = ?, title = ?, type = ?, team = ?, avatar = ?, badge_image = ?, updated_at = ?
+			UPDATE trainers SET name = ?, title = ?, type = ?, team = ?, avatar = ?, updated_at = ?
 			WHERE id = ?
-		`).run(input.name, input.title, input.type, input.team, input.avatar, input.badgeImage, now(), id);
+		`).run(input.name, input.title, input.type, input.team, input.avatar, now(), id);
 		return this.getTrainer(id);
 	}
 
@@ -439,17 +458,20 @@ export class GymStore {
 
 	getStages(challengeId: number): Stage[] {
 		const rows = this.db.prepare(`
-			SELECT kind, position, trainer_id, ai_level FROM challenge_stages WHERE challenge_id = ?
+			SELECT kind, position, trainer_id, ai_level, badge_id FROM challenge_stages WHERE challenge_id = ?
 			ORDER BY ${STAGE_ORDER}
 		`).all(challengeId) as Row[];
-		return rows.map(row => ({ kind: row.kind, position: row.position, trainerId: row.trainer_id, aiLevel: row.ai_level }));
+		return rows.map(row => ({
+			kind: row.kind, position: row.position, trainerId: row.trainer_id, aiLevel: row.ai_level, badgeId: row.badge_id,
+		}));
 	}
 
 	setStage(challengeId: number, stage: Stage) {
 		this.db.prepare(`
-			INSERT INTO challenge_stages (challenge_id, kind, position, trainer_id, ai_level) VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT (challenge_id, kind, position) DO UPDATE SET trainer_id = excluded.trainer_id, ai_level = excluded.ai_level
-		`).run(challengeId, stage.kind, stage.position, stage.trainerId, stage.aiLevel);
+			INSERT INTO challenge_stages (challenge_id, kind, position, trainer_id, ai_level, badge_id) VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT (challenge_id, kind, position) DO UPDATE SET
+				trainer_id = excluded.trainer_id, ai_level = excluded.ai_level, badge_id = excluded.badge_id
+		`).run(challengeId, stage.kind, stage.position, stage.trainerId, stage.aiLevel, stage.badgeId ?? null);
 	}
 
 	/** Remove etapas que deixaram de existir (ex.: diminuiu a quantidade de ginásios). */
@@ -462,16 +484,16 @@ export class GymStore {
 	}
 
 	getPool(challengeId: number): PoolEntry[] {
-		const rows = this.db.prepare('SELECT trainer_id, ai_level FROM challenge_pool WHERE challenge_id = ?')
+		const rows = this.db.prepare('SELECT trainer_id, ai_level, badge_id FROM challenge_pool WHERE challenge_id = ?')
 			.all(challengeId) as Row[];
-		return rows.map(row => ({ trainerId: row.trainer_id, aiLevel: row.ai_level }));
+		return rows.map(row => ({ trainerId: row.trainer_id, aiLevel: row.ai_level, badgeId: row.badge_id }));
 	}
 
 	setPoolEntry(challengeId: number, entry: PoolEntry) {
 		this.db.prepare(`
-			INSERT INTO challenge_pool (challenge_id, trainer_id, ai_level) VALUES (?, ?, ?)
-			ON CONFLICT (challenge_id, trainer_id) DO UPDATE SET ai_level = excluded.ai_level
-		`).run(challengeId, entry.trainerId, entry.aiLevel);
+			INSERT INTO challenge_pool (challenge_id, trainer_id, ai_level, badge_id) VALUES (?, ?, ?, ?)
+			ON CONFLICT (challenge_id, trainer_id) DO UPDATE SET ai_level = excluded.ai_level, badge_id = excluded.badge_id
+		`).run(challengeId, entry.trainerId, entry.aiLevel, entry.badgeId ?? null);
 	}
 
 	removePoolEntry(challengeId: number, trainerId: number) {
@@ -493,13 +515,15 @@ export class GymStore {
 			`).run(challengeId, userid, now());
 			const runId = Number(result.lastInsertRowid);
 			const insert = this.db.prepare(`
-				INSERT INTO run_stages (run_id, kind, position, trainer_id, trainer_name, trainer_title, type, team, ai_level)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+				INSERT INTO run_stages (
+					run_id, kind, position, trainer_id, trainer_name, trainer_title, type, team, ai_level,
+					badge_id, badge_name, badge_image
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`);
 			for (const stage of stages) {
 				insert.run(
 					runId, stage.kind, stage.position, stage.trainerId, stage.trainerName, stage.trainerTitle,
-					stage.type, stage.team, stage.aiLevel
+					stage.type, stage.team, stage.aiLevel, stage.badgeId ?? null, stage.badgeName ?? null, stage.badgeImage ?? null
 				);
 			}
 			return this.getRun(runId)!;

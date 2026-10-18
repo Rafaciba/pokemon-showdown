@@ -250,4 +250,11 @@ export const translations: TranslationCatalog = {
 	"Continue your battle": null,
 	"You have no interrupted battle in this challenge.": null,
 	"Your interrupted battle could not be resumed because the challenge format is no longer available. It does not count.": null,
+	"(type icon)": null,
+	"Badges of the trainer's type come first in the list, but any badge can be chosen. Without a badge, the type icon is used.": null,
+	"{0}: invalid badge.": null,
+	"{type} badge": null,
+	"Permanent badges": null,
+	"Badges from won challenges.": null,
+	"Earned on": null,
 };

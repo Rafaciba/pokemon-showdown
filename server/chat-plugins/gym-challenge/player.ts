@@ -25,6 +25,7 @@ import { getStore } from './state';
 import { abandonRun, chooseGym, resumeBattle, runState, savedBattleIn, startRun, type RunState } from './runs';
 import { formatLabel, renderProblem } from './admin';
 import { challengeFormatName } from './formats';
+import { badgeIcon } from './badges';
 import type { Challenge, Run, RunStage, RunStatus } from './store';
 
 const PAGE = 'view-ginasios';
@@ -53,6 +54,18 @@ export function formatDate(timestamp: number | null) {
 
 function typeIcon(type: string | null) {
 	return type ? `<psicon type="${Utils.escapeHTML(type)}" />` : '';
+}
+
+/** Imagem da insígnia gravada na jornada; sem insígnia, o ícone do tipo. */
+function stageBadge(stage: RunStage, size = 24) {
+	return badgeIcon({ name: stage.badgeName, image: stage.badgeImage }, stage.type, size);
+}
+
+/** Nome da insígnia; sem insígnia escolhida, "insígnia {tipo}". */
+function badgeName(TL: Translator, stage: RunStage) {
+	if (stage.badgeName) return Utils.escapeHTML(stage.badgeName);
+	const type = stage.type || '';
+	return TL`${type} badge`;
 }
 
 function trainerName(stage: RunStage) {
@@ -113,7 +126,7 @@ function journeyTables(TL: Translator, state: RunState) {
 				`${TL`Battle this gym next`}</button>`;
 		}
 		buf += `<tr><td>${stage.position}</td><td>${trainerName(stage)}</td><td>${typeIcon(stage.type)}</td>` +
-			`<td>${badge ? typeIcon(stage.type) : ''}</td><td>${action}</td></tr>`;
+			`<td>${badge ? stageBadge(stage) : ''}</td><td>${action}</td></tr>`;
 	}
 	buf += `</table></div>`;
 
@@ -135,10 +148,16 @@ function journeyTables(TL: Translator, state: RunState) {
 	return buf + `</table></div>`;
 }
 
+interface EarnedBadge {
+	stage: RunStage;
+	/** Data da vitória no ginásio. */
+	earnedAt: number;
+}
+
 interface RunSummary {
 	run: Run;
-	/** Tipos dos ginásios vencidos (insígnias). */
-	badgeTypes: (string | null)[];
+	/** Insígnias da jornada (ginásios vencidos), na ordem dos ginásios. */
+	badges: EarnedBadge[];
 	gymCount: number;
 	/** Placar da jornada: vitórias e derrotas nas batalhas (empates e interrompidas não contam). */
 	wins: number;
@@ -149,11 +168,17 @@ function summarizeRun(run: Run): RunSummary {
 	const store = getStore();
 	const stages = store.getRunStages(run.id);
 	const battles = store.getRunBattles(run.id);
-	const won = new Set(battles.filter(b => b.kind === 'gym' && b.result === 'win').map(b => b.position));
+	// Vitória em cada ginásio (a primeira, se houver mais de uma)
+	const wonAt = new Map<number, number>();
+	for (const battle of battles) {
+		if (battle.kind !== 'gym' || battle.result !== 'win' || wonAt.has(battle.position)) continue;
+		wonAt.set(battle.position, battle.endedAt || battle.startedAt);
+	}
 	const gyms = stages.filter(stage => stage.kind === 'gym');
 	return {
 		run,
-		badgeTypes: gyms.filter(stage => won.has(stage.position)).map(stage => stage.type),
+		badges: gyms.filter(stage => wonAt.has(stage.position))
+			.map(stage => ({ stage, earnedAt: wonAt.get(stage.position)! })),
 		gymCount: gyms.length,
 		wins: battles.filter(b => b.result === 'win').length,
 		losses: battles.filter(b => b.result === 'loss').length,
@@ -161,7 +186,7 @@ function summarizeRun(run: Run): RunSummary {
 }
 
 function badgeIcons(summary: RunSummary) {
-	return summary.badgeTypes.map(typeIcon).join('');
+	return summary.badges.map(badge => stageBadge(badge.stage)).join(' ');
 }
 
 /** Jornadas com o placar de cada uma e o total (histórico de um jogador num desafio). */
@@ -173,7 +198,7 @@ function runsTable(TL: Translator, runs: Run[]) {
 		const { run } = summary;
 		buf += `<tr><td>${formatDate(run.startedAt)}</td><td>${formatDate(run.endedAt)}</td>` +
 			`<td>${runStatusLabel(TL, run.status)}</td>` +
-			`<td>${summary.badgeTypes.length}/${summary.gymCount} ${badgeIcons(summary)}</td>` +
+			`<td>${summary.badges.length}/${summary.gymCount} ${badgeIcons(summary)}</td>` +
 			`<td>${summary.wins}</td><td>${summary.losses}</td></tr>`;
 	}
 	const wins = summaries.reduce((sum, summary) => sum + summary.wins, 0);
@@ -333,13 +358,30 @@ export const pages: Chat.PageTable = {
 				buf += `</table></div>`;
 			}
 
+			// Insígnias permanentes: as das jornadas vencidas (as insígnias são da jornada e
+			// passam ao perfil quando o desafio é vencido), da mais recente para a mais antiga
+			const permanent = wins.flatMap(summary => summary.badges.map(badge => ({ ...badge, run: summary.run })))
+				.sort((a, b) => b.earnedAt - a.earnedAt);
+			if (permanent.length) {
+				buf += `<h3>${this.TL`Permanent badges`}</h3>` +
+					`<p><small>${this.TL`Badges from won challenges.`}</small></p>` +
+					`<div class="ladder"><table><tr><th></th><th>${this.TL`Badge`}</th><th>${this.TL`Gym leader`}</th>` +
+					`<th>${this.TL`Challenge`}</th><th>${this.TL`Earned on`}</th></tr>`;
+				for (const badge of permanent) {
+					buf += `<tr><td>${stageBadge(badge.stage, 32)}</td><td>${badgeName(this.TL, badge.stage)}</td>` +
+						`<td>${trainerName(badge.stage)}</td><td>${challengeName(badge.run.challengeId)}</td>` +
+						`<td>${formatDate(badge.earnedAt)}</td></tr>`;
+				}
+				buf += `</table></div>`;
+			}
+
 			const active = summaries.filter(summary => summary.run.status === 'active');
 			if (active.length) {
 				buf += `<h3>${this.TL`Journeys in progress`}</h3><div class="ladder"><table>` +
 					`<tr><th>${this.TL`Challenge`}</th><th>${this.TL`Badges`}</th><th>${this.TL`Started`}</th></tr>`;
 				for (const summary of active) {
 					buf += `<tr><td>${challengeName(summary.run.challengeId)}</td>` +
-						`<td>${summary.badgeTypes.length}/${summary.gymCount} ${badgeIcons(summary)}</td>` +
+						`<td>${summary.badges.length}/${summary.gymCount} ${badgeIcons(summary)}</td>` +
 						`<td>${formatDate(summary.run.startedAt)}</td></tr>`;
 				}
 				buf += `</table></div>`;

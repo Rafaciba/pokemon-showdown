@@ -250,4 +250,11 @@ export const translations: TranslationCatalog = {
 	"Continue your battle": "Continuar sua batalha",
 	"You have no interrupted battle in this challenge.": "Você não tem batalha interrompida neste desafio.",
 	"Your interrupted battle could not be resumed because the challenge format is no longer available. It does not count.": "Sua batalha interrompida não pôde ser retomada porque o formato do desafio não está mais disponível. Ela não conta.",
+	"(type icon)": "(ícone do tipo)",
+	"Badges of the trainer's type come first in the list, but any badge can be chosen. Without a badge, the type icon is used.": "As insígnias do tipo do treinador aparecem primeiro na lista, mas qualquer uma pode ser escolhida. Sem insígnia, aparece o ícone do tipo.",
+	"{0}: invalid badge.": "{0}: insígnia inválida.",
+	"{type} badge": "Insígnia do tipo {type}",
+	"Permanent badges": "Insígnias permanentes",
+	"Badges from won challenges.": "Insígnias dos desafios vencidos.",
+	"Earned on": "Conquistada em",
 };

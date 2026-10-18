@@ -19,12 +19,17 @@ import { Teams } from '../../../sim/teams';
 import type { BattleResult, Challenge, PoolEntry, RunBattle, RunStage, RunStatus, Stage, Trainer } from './store';
 import { effectiveAILevel, type AILevel } from './levels';
 import { activeStages } from './challenges';
+import { getBadge } from './badges';
 
 export type RandomInt = (max: number) => number;
 
 const defaultRandom: RandomInt = max => crypto.randomInt(max);
 
-function stageFrom(stage: Pick<Stage, 'kind' | 'position' | 'aiLevel'>, trainer: Trainer, baseLevel: string): RunStage {
+function stageFrom(
+	stage: Pick<Stage, 'kind' | 'position' | 'aiLevel' | 'badgeId'>, trainer: Trainer, baseLevel: string
+): RunStage {
+	// Só ginásios dão insígnia; um id que saiu do catálogo vira "sem insígnia"
+	const badge = stage.kind === 'gym' ? getBadge(stage.badgeId) : null;
 	return {
 		kind: stage.kind,
 		position: stage.position,
@@ -34,6 +39,9 @@ function stageFrom(stage: Pick<Stage, 'kind' | 'position' | 'aiLevel'>, trainer:
 		type: stage.kind === 'champion' ? null : trainer.type,
 		team: trainer.team,
 		aiLevel: effectiveAILevel(baseLevel as AILevel, stage.aiLevel as AILevel | null),
+		badgeId: badge?.id ?? null,
+		badgeName: badge?.name ?? null,
+		badgeImage: badge?.image ?? null,
 	};
 }
 
@@ -62,7 +70,8 @@ export function drawRunStages(
 			const [type] = types.splice(random(types.length), 1);
 			const candidates = byType.get(type)!;
 			const entry = candidates[random(candidates.length)];
-			result.push(stageFrom({ kind: 'gym', position, aiLevel: entry.aiLevel }, trainers.get(entry.trainerId)!,
+			result.push(stageFrom({ kind: 'gym', position, aiLevel: entry.aiLevel, badgeId: entry.badgeId },
+				trainers.get(entry.trainerId)!,
 				challenge.baseAILevel));
 		}
 	}

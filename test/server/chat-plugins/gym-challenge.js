@@ -220,6 +220,22 @@ describe('Gym Challenge', () => {
 			assert.equal(teams.importTeam('').error !== undefined, true);
 		});
 
+		it('imports teams pasted with <br /> or other line breaks', () => {
+			const expected = teams.importTeam(FIRE_TEAM).team;
+			const lines = FIRE_TEAM.trim().split('\n');
+			assert.equal(teams.importTeam(lines.join('  <br />')).team, expected, '<br />');
+			assert.equal(teams.importTeam(lines.join('<br>')).team, expected, '<br>');
+			assert.equal(teams.importTeam(lines.join('&#13;')).team, expected, '&#13;');
+			assert.equal(teams.importTeam(lines.join('\r\n')).team, expected, 'Windows');
+		});
+
+		it('rejects broken teams even without a trainer type', () => {
+			// Uma linha só (sem quebras): vira um Pokémon com item inexistente e sem golpes
+			const broken = teams.importTeam('Tyranitar @ Leftovers Ability: Sand Stream - Crunch').team;
+			assert(teams.checkTeamType(broken, null).length > 0, 'sem tipo também valida');
+			assert.deepEqual(teams.checkTeamType(teams.importTeam(FIRE_TEAM).team, null), []);
+		});
+
 		it('validates the leader type with Force Monotype', () => {
 			const { team } = teams.importTeam(FIRE_TEAM);
 			assert.deepEqual(teams.validateTeam(team, challenge, 'Fire'), []);

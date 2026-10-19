@@ -20,7 +20,7 @@ import { getStore, isAdmin } from './state';
 import {
 	checkChallengeSettings, checkName, ELITE4_SIZE, hasForbiddenChars, NAME_MAX_LENGTH, type Problem,
 } from './rules';
-import { checkFormat, importTeam, checkTeamType, trainerTypes } from './teams';
+import { checkFormat, importTeam, checkTeamType, normalizeTeamText, trainerTypes } from './teams';
 import { activeStages, challengeProblems, DEFAULT_CHALLENGE, fieldKey } from './challenges';
 import { AI_LEVELS, isAILevel } from './levels';
 import { challengeFormatName } from './formats';
@@ -501,16 +501,29 @@ export const pages: Chat.PageTable = {
 				title: trainer?.title || '',
 				type: trainer?.type || '',
 				team: trainer ? Teams.export(Teams.unpack(trainer.team) || []) : '',
+				avatar: '',
 			};
 			const types = trainerTypes();
 			const typeOptions = ['', ...types].map(type => [type, type || this.TL`(no type: Champion only)`] as [string, string]);
-			// Quebras de linha como &#13; para sobreviver ao envio do formulário (como no plugin oficial de times)
-			const teamText = Utils.escapeHTML(values.team).replace(/\r?\n/g, '&#13;');
+			// Quebras de linha como &#13; para sobreviver ao envio do formulário (como no plugin
+			// oficial de times). Escapa linha por linha: o Utils.escapeHTML do PS troca "\n" por
+			// <br />, que apareceria como texto dentro da textarea
+			const teamText = values.team.split(/\r?\n/).map(line => Utils.escapeHTML(line)).join('&#13;');
+			// Na criação, o sprite vai junto no formulário: a galeria (outra aba) preenche o
+			// campo oculto e a prévia pelo cliente (client-custom.js, gymPickSprite), sem
+			// recarregar esta página. Treinadores salvos trocam o sprite pela galeria.
+			const preview = trainerSpriteImg(values.avatar, 80) || `<em>${this.TL`No sprite`}</em>`;
+			const newSprite = trainer ? '' :
+				`<p><label class="label">${this.TL`Trainer sprite`}:</label><br />` +
+				`<input type="hidden" name="avatar" value="${Utils.escapeHTML(values.avatar || '')}" />` +
+				`<span class="gym-sprite-preview" data-empty="${this.TL`No sprite`}">${preview}</span> ` +
+				`<button class="button" type="button" name="gymGo" value="${PAGE}-sprites-novo-1">` +
+				`${this.TL`Choose sprite`}</button></p>`;
 
 			let buf = `<div class="pad">` +
 				`<h2>${trainer ? Utils.escapeHTML(trainer.name) : this.TL`New trainer`}</h2>` +
 				navButtons(this.TL) +
-				`<form data-submitsend="/ginasioadmin salvartreinador ${id},{name},{title},{type},{team}">` +
+				`<form data-submitsend="/ginasioadmin salvartreinador ${id},{name},{title},{type},{avatar},{team}">` +
 				`<p><label class="label">${this.TL`Name`}:<br />` +
 				`<input name="name" class="textbox" maxlength="${NAME_MAX_LENGTH}" value="${Utils.escapeHTML(values.name)}" />` +
 				`</label></p>` +
@@ -520,6 +533,7 @@ export const pages: Chat.PageTable = {
 				`<p><label class="label">${this.TL`Trainer type`}:<br />${selectBox('type', typeOptions, values.type)}</label>` +
 				`<br /><small>${this.TL`Gym leaders and Elite Four members need a type; every Pokémon in the team must have it.`}` +
 				`</small></p>` +
+				newSprite +
 				// Botões tratados pelo nosso fork do cliente (client-custom.js): montar no
 				// teambuilder ao lado e trazer um dos times salvos para a textarea abaixo
 				`<p><button class="button" type="button" name="gymOpenTeambuilder">` +
@@ -537,9 +551,7 @@ export const pages: Chat.PageTable = {
 					`<p>${trainerSpriteImg(trainer.avatar, 80) || `<em>${this.TL`No sprite`}</em>`}</p>` +
 					`<p><button class="button" name="gymGo" value="${PAGE}-sprites-${trainer.id}-1">` +
 					`${this.TL`Choose sprite`}</button></p>` +
-					`<hr /><p>${teamIcons(trainer.team)} ${typeIcon(trainer.type)}</p>`;
-			} else {
-				buf += `<p><small>${this.TL`Save the trainer to choose its sprite.`}</small></p>`;
+					`<hr /><h3>${this.TL`Team`}</h3><p>${teamIcons(trainer.team)} ${typeIcon(trainer.type)}</p>`;
 			}
 			if (trainer) {
 				const challengeIds = store.challengesUsingTrainer(trainer.id);
@@ -559,34 +571,43 @@ export const pages: Chat.PageTable = {
 		sprites(query, user) {
 			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
 			if (!isAdmin(user)) this.pageDoesNotExist();
-			const trainer = getStore().getTrainer(Number(query[0]));
-			if (!trainer) throw new Chat.ErrorMessage(this.TL`Trainer not found.`);
+			// "novo": treinador ainda não salvo; a escolha vai para o formulário de criação
+			const isNew = query[0] === 'novo';
+			const trainer = isNew ? null : getStore().getTrainer(Number(query[0]));
+			if (!isNew && !trainer) throw new Chat.ErrorMessage(this.TL`Trainer not found.`);
+			const target = trainer ? String(trainer.id) : 'novo';
 			const q = spriteQuery(query[2] || '');
 			const found = searchTrainerSprites(q);
 			const pageCount = Math.max(1, Math.ceil(found.length / SPRITES_PER_PAGE));
 			const pageNumber = Math.min(Math.max(1, Number(query[1]) || 1), pageCount);
-			const trainerName = trainer.name;
+			const trainerName = trainer ? trainer.name : this.TL`New trainer`;
 			this.title = `[${this.TL`Sprite`}] ${trainerName}`;
 
-			const link = (n: number) => `/join ${PAGE}-sprites-${trainer.id}-${n}${q ? `-${q}` : ''}`;
+			const link = (n: number) => `/join ${PAGE}-sprites-${target}-${n}${q ? `-${q}` : ''}`;
+			// Treinador salvo: o servidor grava; novo: o cliente preenche o formulário de criação
+			const pick = (sprite: string) => (trainer ?
+				`name="send" value="/ginasioadmin definirsprite ${trainer.id},${sprite}"` :
+				`name="gymPickSprite" value="${sprite}"`);
 			const count = found.length;
-			const removeButton = trainer.avatar ?
-				`<button class="button" name="send" value="/ginasioadmin definirsprite ${trainer.id},">` +
-				`${this.TL`Remove sprite`}</button>` : '';
+			const current = trainer?.avatar || '';
 			let buf = `<div class="pad"><h2>${this.TL`Sprite of ${trainerName}`}</h2>` + navButtons(this.TL) +
-				`<p><button class="button" name="gymGo" value="${PAGE}-treinador-${trainer.id}">` +
-				`${this.TL`Back to the trainer`}</button></p>` +
-				`<p>${this.TL`Current`}: ${trainerSpriteImg(trainer.avatar, 80) || `<em>${this.TL`No sprite`}</em>`} ` +
-				`${removeButton}</p>` +
-				`<form data-submitsend="/ginasioadmin buscarsprite ${trainer.id},{q}"><p>` +
+				`<p><button class="button" name="gymGo" value="${PAGE}-treinador-${target}">` +
+				`${this.TL`Back to the trainer`}</button></p>`;
+			if (trainer) {
+				buf += `<p>${this.TL`Current`}: ${trainerSpriteImg(current, 80) || `<em>${this.TL`No sprite`}</em>`} ` +
+					(current ? `<button class="button" ${pick('')}>${this.TL`Remove sprite`}</button>` : '') + `</p>`;
+			} else {
+				buf += `<p><button class="button" ${pick('')}>${this.TL`No sprite`}</button></p>`;
+			}
+			buf += `<form data-submitsend="/ginasioadmin buscarsprite ${target},{q}"><p>` +
 				`<input name="q" class="textbox" maxlength="30" value="${q}" placeholder="${this.TL`Name (e.g. brock)`}" /> ` +
 				`<button class="button" type="submit">${this.TL`Search`}</button></p></form>` +
 				`<p><small>${this.TL`${count} sprites`}</small></p>`;
 			if (!count) return buf + `<p><em>${this.TL`No sprites found.`}</em></p></div>`;
 			buf += `<p>`;
 			for (const id of found.slice((pageNumber - 1) * SPRITES_PER_PAGE, pageNumber * SPRITES_PER_PAGE)) {
-				const current = id === trainer.avatar ? ' style="border: 2px solid #4a7"' : '';
-				buf += `<button class="button" name="send" value="/ginasioadmin definirsprite ${trainer.id},${id}"${current}>` +
+				const mark = id === current ? ' style="border: 2px solid #4a7"' : '';
+				buf += `<button class="button" ${pick(id)}${mark}>` +
 					`${trainerSpriteImg(id, 80)}<br /><small>${id}</small></button> `;
 			}
 			buf += `</p>`;
@@ -706,7 +727,7 @@ export const commands: Chat.ChatCommands = {
 
 		salvartreinador(target, room, user, connection) {
 			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
-			const [rawId, rawName, rawTitle, rawType, rawTeam] = Utils.splitFirst(target, ',', 4);
+			const [rawId, rawName, rawTitle, rawType, rawAvatar, rawTeam] = Utils.splitFirst(target, ',', 5);
 			const isNew = rawId.trim() === 'novo';
 			const id = Number(rawId);
 			const store = getStore();
@@ -721,12 +742,16 @@ export const commands: Chat.ChatCommands = {
 				problems.push(this.TL`The title can be at most ${TITLE_MAX_LENGTH} characters long and cannot contain | or ,.`);
 			}
 			if (type && !trainerTypes().includes(type)) problems.push(this.TL`Invalid type.`);
+			// Sprite: só na criação (treinadores salvos trocam pela galeria); só ids oficiais
+			const avatar = isNew ? (rawAvatar || '').trim() : '';
+			if (avatar && !isTrainerSprite(avatar)) problems.push(this.TL`Invalid sprite.`);
 
 			const imported = importTeam(rawTeam || '');
 			if ('error' in imported) {
 				problems.push(renderProblem(this.TL, imported.error));
 			} else {
-				if (type) problems.push(...checkTeamType(imported.team, type));
+				// Sempre valida (Pokémon, itens, habilidades e golpes existentes); com tipo, também o tipo
+				problems.push(...checkTeamType(imported.team, type));
 				// Desafios abertos precisam continuar válidos com o time novo
 				if (!isNew) {
 					for (const cid of store.challengesUsingTrainer(id)) {
@@ -745,13 +770,13 @@ export const commands: Chat.ChatCommands = {
 			}
 			const page = `treinador-${isNew ? 'novo' : id}`;
 			if (problems.length || 'error' in imported) {
-				saveDraft(user, page, { name, title, type: type || '', team: rawTeam || '' });
+				saveDraft(user, page, { name, title, type: type || '', avatar, team: normalizeTeamText(rawTeam || '') });
 				const list = problems.map(p => `- ${p}`).join('\n');
 				connection.popup(`${this.TL`The trainer was not saved:`}\n\n${list}`);
 				return this.parse(`/join ${PAGE}-${page}`);
 			}
 
-			const input: TrainerInput = { name, title, type, team: imported.team, avatar: '' };
+			const input: TrainerInput = { name, title, type, team: imported.team, avatar };
 			let trainer: Trainer | null;
 			if (isNew) {
 				trainer = store.createTrainer(input);
@@ -769,8 +794,8 @@ export const commands: Chat.ChatCommands = {
 		buscarsprite(target, room, user) {
 			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
 			const [rawId, rawQuery] = Utils.splitFirst(target, ',');
-			const id = Number(rawId);
-			if (!getStore().getTrainer(id)) throw new Chat.ErrorMessage(this.TL`Trainer not found.`);
+			const id = rawId.trim() === 'novo' ? 'novo' : Number(rawId);
+			if (id !== 'novo' && !getStore().getTrainer(id)) throw new Chat.ErrorMessage(this.TL`Trainer not found.`);
 			const q = spriteQuery(rawQuery || '');
 			return this.parse(`/join ${PAGE}-sprites-${id}-1${q ? `-${q}` : ''}`);
 		},

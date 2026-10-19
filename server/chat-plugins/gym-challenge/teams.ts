@@ -13,9 +13,17 @@ import type { Problem } from './rules';
 
 export type ImportResult = { team: string } | { error: Problem };
 
+/**
+ * Texto de time com quebras de linha comuns. Aceita o que costuma vir de cópias de
+ * páginas ou do chat: <br />, &#13;/&#10; e quebras do Windows.
+ */
+export function normalizeTeamText(text: string) {
+	return text.replace(/<br\s*\/?>/gi, '\n').replace(/&#1[03];/g, '\n').replace(/\r\n?/g, '\n');
+}
+
 /** Importa um time em texto (exportação do teambuilder, JSON ou empacotado). */
 export function importTeam(text: string): ImportResult {
-	const sets = Teams.import(text.trim());
+	const sets = Teams.import(normalizeTeamText(text).trim());
 	if (!sets?.length) {
 		return { error: { message: TLkey`The team could not be read. Paste it in the teambuilder export format.`, args: [] } };
 	}
@@ -58,7 +66,7 @@ const TYPE_CHECK_FORMAT = 'gen9customgame';
  * depender do formato de um desafio. A validação completa no formato de cada
  * desafio acontece ao montar/abrir o desafio.
  */
-export function checkTeamType(team: string, type: string): string[] {
+export function checkTeamType(team: string, type: string | null): string[] {
 	return validateTeam(team, { baseFormat: TYPE_CHECK_FORMAT, customRules: '' }, type);
 }
 

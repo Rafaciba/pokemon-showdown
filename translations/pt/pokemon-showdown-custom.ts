@@ -260,7 +260,6 @@ export const translations: TranslationCatalog = {
 	"Trainer sprite": "Sprite do treinador",
 	"No sprite": "Sem sprite",
 	"Choose sprite": "Escolher sprite",
-	"Save the trainer to choose its sprite.": "Salve o treinador para escolher o sprite dele.",
 	"Sprite": "Sprite",
 	"Remove sprite": "Remover sprite",
 	"Sprite of {trainerName}": "Sprite de {trainerName}",

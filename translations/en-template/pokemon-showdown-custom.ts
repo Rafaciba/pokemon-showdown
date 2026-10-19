@@ -260,7 +260,6 @@ export const translations: TranslationCatalog = {
 	"Trainer sprite": null,
 	"No sprite": null,
 	"Choose sprite": null,
-	"Save the trainer to choose its sprite.": null,
 	"Sprite": null,
 	"Remove sprite": null,
 	"Sprite of {trainerName}": null,

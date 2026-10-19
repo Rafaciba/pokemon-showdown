@@ -11,7 +11,7 @@
  *
  * @license MIT
  */
-import { RoomBattle, type RoomBattleOptions } from '../../room-battle';
+import { RoomBattle, type RoomBattleOptions, type RoomBattlePlayerOptions } from '../../room-battle';
 import type { ChoiceRequest } from '../../../sim/side';
 import type { BattleView, NpcAI } from './ai';
 
@@ -105,6 +105,28 @@ export class NpcBattle extends RoomBattle {
 		this.started = true;
 		this.checkActive();
 		this.forcedSettings.privacy = FORCED_PUBLIC;
+	}
+
+	/**
+	 * O lado do NPC (jogador só com nome) entra com o sprite já na primeira linha
+	 * "|player|": o RoomBattle só conhece o avatar de quem tem usuário, e sem isso o
+	 * cliente desenha um avatar qualquer até chegar uma edição. Chamado pelo
+	 * construtor do RoomBattle, que já guardou as opções (os campos desta classe
+	 * ainda não existem aqui).
+	 */
+	override addPlayer(user: User | string | null, playerOpts?: RoomBattlePlayerOptions | null) {
+		if (typeof user !== 'string' || !playerOpts) return super.addPlayer(user, playerOpts);
+		const player = super.addPlayer(user, null);
+		if (!player) return null;
+		const options = {
+			name: player.name,
+			avatar: this.options.npc?.avatar || '',
+			team: playerOpts.team || undefined,
+			rating: 0,
+		};
+		void this.stream.write(`>player ${player.slot} ${JSON.stringify(options)}`);
+		player.hasTeam = true;
+		return player;
 	}
 
 	override checkForcedUserSettings(user: User) {
@@ -327,11 +349,6 @@ export function createNpcBattle(human: User, settings: NpcBattleSettings): GameR
 	const room = Rooms.createGameRoom(roomid, title, { ...options, title, isPersonal: true });
 	const battle = new NpcBattle(room, options);
 	room.game = battle;
-	// O RoomBattle só conhece o avatar de jogadores com usuário: o do NPC vai como edição
-	// do lado p2 (fica no input log, então a retomada do save state também o tem)
-	if (settings.npc.avatar) {
-		void battle.stream.write(`>player ${NPC_SLOT} ${JSON.stringify({ avatar: settings.npc.avatar })}`);
-	}
 	// Batalhas contra NPC são sempre públicas (requisito do Desafio de Ginásios): as
 	// preferências de privacidade do jogador não são aplicadas aqui
 

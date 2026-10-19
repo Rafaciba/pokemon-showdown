@@ -310,7 +310,8 @@ function stagesForm(TL: Translator, store: GymStore, challenge: Challenge) {
 				`${chosenBadgeIcon(stage?.badgeId || null, type)}</td>`;
 		}
 		return `<tr><td>${stageName(TL, kind, position)}</td>` +
-			`<td>${selectBox(key, [['', TL`(none)`], ...candidates.map(t => [String(t.id), trainerLabel(t)] as [string, string])],
+			`<td>${trainerSpriteImg(trainer?.avatar, 40)} ` +
+			`${selectBox(key, [['', TL`(none)`], ...candidates.map(t => [String(t.id), trainerLabel(t)] as [string, string])],
 				String(stage?.trainerId || ''))}</td>` +
 				`<td>${selectBox(`${key}level`, levelOptions(TL), stage?.aiLevel || '')}</td>` + badge +
 				`<td>${trainer ? teamIcons(trainer.team) : ''}</td></tr>`;
@@ -336,7 +337,7 @@ function stagesForm(TL: Translator, store: GymStore, challenge: Challenge) {
 			fields.push(`${key}={${key}}`, `${key}level={${key}level}`, `${key}badge={${key}badge}`);
 			const entry = pool.get(trainer.id);
 			gyms += `<tr><td><input type="checkbox" name="${key}"${entry ? ' checked' : ''} /></td>` +
-				`<td>${Utils.escapeHTML(trainer.name)}</td><td>${typeIcon(trainer.type)}</td>` +
+				`<td>${trainerSpriteImg(trainer.avatar, 40)} ${Utils.escapeHTML(trainer.name)}</td><td>${typeIcon(trainer.type)}</td>` +
 				`<td>${selectBox(`${key}level`, levelOptions(TL), entry?.aiLevel || '')}</td>` +
 				`<td>${badgeSelect(TL, `${key}badge`, trainer.type, entry?.badgeId || null)} ` +
 				`${chosenBadgeIcon(entry?.badgeId || null, trainer.type)}</td>` +
@@ -373,14 +374,16 @@ function stagesSummary(TL: Translator, store: GymStore, challenge: Challenge) {
 		for (const entry of store.getPool(challenge.id)) {
 			const trainer = trainers.get(entry.trainerId);
 			if (!trainer) continue;
-			rows.push(`<tr><td>${TL`Random pool`}</td><td>${trainerLabel(trainer)}</td><td>${levelText(entry.aiLevel)}</td>` +
+			rows.push(`<tr><td>${TL`Random pool`}</td><td>${trainerSpriteImg(trainer.avatar, 40)} ${trainerLabel(trainer)}</td>` +
+				`<td>${levelText(entry.aiLevel)}</td>` +
 				`<td>${badgeText(entry.badgeId, trainer.type)}</td></tr>`);
 		}
 	}
 	for (const stage of activeStages(challenge, store.getStages(challenge.id))) {
 		const trainer = stage.trainerId ? trainers.get(stage.trainerId) : undefined;
 		rows.push(`<tr><td>${stageName(TL, stage.kind, stage.position)}</td>` +
-			`<td>${trainer ? trainerLabel(trainer) : '-'}</td><td>${levelText(stage.aiLevel)}</td>` +
+			`<td>${trainer ? `${trainerSpriteImg(trainer.avatar, 40)} ${trainerLabel(trainer)}` : '-'}</td>` +
+			`<td>${levelText(stage.aiLevel)}</td>` +
 			`<td>${stage.kind === 'gym' ? badgeText(stage.badgeId, trainer?.type || null) : ''}</td></tr>`);
 	}
 	return `<div class="ladder"><table><tr><th></th><th>${TL`Trainer`}</th><th>${TL`Difficulty`}</th>` +

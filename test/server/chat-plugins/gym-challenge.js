@@ -979,6 +979,7 @@ describe('Gym Challenge', () => {
 			user = makeUser('Resume Tester');
 			room = createNpcBattle(user, { format: 'gen9customgame', team: TEAM3, npc: { ...npc(), avatar: 'brock' }, hooks });
 			await waitFor(() => room.log.log.includes('|player|p2|Gym Bot|brock|'));
+			assert(!room.log.log.includes('|player|p2|Gym Bot||'), 'o NPC já entra com o sprite (sem avatar provisório)');
 			const turnOf = battleRoom => battleRoom.battle.turn;
 			// Prévia de time e dois turnos
 			for (let turn = 1; turn <= 3; turn++) {

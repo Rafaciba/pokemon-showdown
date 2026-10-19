@@ -223,7 +223,8 @@ function listUsers(users: string[]) {
 	return users.flatMap((userid, i) => [i ? ', ' : null, <username class="username">{userid}</username>]);
 }
 
-const OFFICIAL_AVATARS = new Set([
+// pokemon-showdown-custom: exportado para a galeria de sprites do Desafio de Ginásios
+export const OFFICIAL_AVATARS = new Set([
 	'aaron',
 	'acetrainercouple-gen3', 'acetrainercouple',
 	'acetrainerf-gen1', 'acetrainerf-gen1rb', 'acetrainerf-gen2', 'acetrainerf-gen3', 'acetrainerf-gen3rs', 'acetrainerf-gen4dp', 'acetrainerf-gen4', 'acetrainerf',

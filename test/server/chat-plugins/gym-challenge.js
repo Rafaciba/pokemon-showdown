@@ -440,6 +440,10 @@ describe('Gym Challenge', () => {
 			assert.deepEqual([run[0].badgeId, run[0].badgeName, run[0].badgeImage], ['kanto-boulder', 'Boulder Badge', 'kanto-boulder.png']);
 			assert.deepEqual([run[1].badgeId, run[1].badgeName], [null, null], 'id fora do catálogo vira "sem insígnia"');
 			assert.equal(run[2].badgeId, null, 'Campeão não dá insígnia');
+			assert.equal(run[0].trainerAvatar, null, 'sem sprite');
+			const withSprite = new Map(trainers);
+			withSprite.set(1, { ...trainers.get(1), avatar: 'brock' });
+			assert.equal(journey.drawRunStages(challenge(), stages, [], withSprite)[0].trainerAvatar, 'brock');
 
 			const pool = [{ trainerId: 1, aiLevel: null, badgeId: 'hoenn-stone' }, { trainerId: 2, aiLevel: null, badgeId: null }];
 			const drawn = journey.drawRunStages(challenge({ typeMode: 'random', gymCount: 2 }), [stage('champion', 1, 7)], pool, trainers);
@@ -573,6 +577,10 @@ describe('Gym Challenge', () => {
 				assert.deepEqual([stages[0].badgeId, stages[0].badgeName, stages[0].badgeImage],
 					['kanto-boulder', 'Boulder Badge', 'kanto-boulder.png']);
 				assert.equal(stages[1].badgeName, null);
+				assert(store.setTrainerAvatar(brock.id, 'brock'));
+				assert.equal(store.getTrainer(brock.id).avatar, 'brock');
+				const run2 = store.createRun(c.id, 'gary', [{ ...runStage('gym', 1), trainerAvatar: 'brock' }]);
+				assert.equal(store.getRunStages(run2.id)[0].trainerAvatar, 'brock');
 			});
 
 			it('records battles', () => {
@@ -853,6 +861,35 @@ describe('Gym Challenge', () => {
 		});
 	});
 
+	describe('trainer sprites', () => {
+		// Carregado depois do ambiente de teste (o módulo de avatares do PS usa Users)
+		let sprites;
+		before(() => {
+			sprites = require('../../../dist/server/chat-plugins/gym-challenge/trainer-sprites');
+		});
+
+		it('accepts only official trainer sprites', () => {
+			assert(sprites.isTrainerSprite('brock'));
+			assert(!sprites.isTrainerSprite('nao-existe'));
+			assert(!sprites.isTrainerSprite('#custom'), 'avatares personalizados ficam de fora');
+			assert(!sprites.isTrainerSprite('../brock'));
+		});
+
+		it('searches sprites by name', () => {
+			assert.equal(sprites.spriteQuery(' Brock-Gen3 <b>!'), 'brockgen3b');
+			assert(sprites.searchTrainerSprites('brockgen3').includes('brock-gen3'), 'busca ignora hífens');
+			const found = sprites.searchTrainerSprites('BROCK');
+			assert(found.includes('brock') && found.every(id => id.includes('brock')));
+			assert(sprites.searchTrainerSprites('').length > 1000, 'busca vazia lista todos');
+		});
+
+		it('renders the sprite image only for official ids', () => {
+			assert(sprites.trainerSpriteImg('brock').includes(`src="https://${Config.routes.client}/sprites/trainers/brock.png"`));
+			assert.equal(sprites.trainerSpriteImg('nao-existe'), '');
+			assert.equal(sprites.trainerSpriteImg(null), '');
+		});
+	});
+
 	describe('battle save state', () => {
 		const { makeUser } = require('../../users-utils');
 		const { createNpcBattle, battleStateFromInputLog } = require('../../../dist/server/chat-plugins/gym-challenge/npc-battle');
@@ -924,7 +961,8 @@ describe('Gym Challenge', () => {
 			const hooks = { onSave: log => saves.push(log) };
 			const npc = () => ({ name: 'Gym Bot', team: TEAM3, ai: createAI('random') });
 			user = makeUser('Resume Tester');
-			room = createNpcBattle(user, { format: 'gen9customgame', team: TEAM3, npc: npc(), hooks });
+			room = createNpcBattle(user, { format: 'gen9customgame', team: TEAM3, npc: { ...npc(), avatar: 'brock' }, hooks });
+			await waitFor(() => room.log.log.includes('|player|p2|Gym Bot|brock|'));
 			const turnOf = battleRoom => battleRoom.battle.turn;
 			// Prévia de time e dois turnos
 			for (let turn = 1; turn <= 3; turn++) {
@@ -954,6 +992,7 @@ describe('Gym Challenge', () => {
 			};
 			await waitFor(() => turnOf(room) === turn && !room.battle.p1.request.isWait && room.battle.p1.request.request);
 			assert.equal(room.battle.p1.name, 'Resume Tester');
+			assert(room.log.log.includes('|player|p2|Gym Bot|brock|'), 'sprite do NPC volta na retomada');
 			assert(room.log.log.some(line => line.startsWith('|move|')), 'o histórico da batalha volta para a sala');
 			// O NPC responde ao pedido atual, e o turno seguinte acontece normalmente
 			room.battle.choose(user, 'default');

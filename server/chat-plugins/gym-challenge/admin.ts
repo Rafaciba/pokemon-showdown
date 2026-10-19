@@ -5,6 +5,7 @@
  *   view-ginasiosadmin                    início do painel (desafios)
  *   view-ginasiosadmin-treinadores        banco de treinadores NPC
  *   view-ginasiosadmin-treinador-<id>     criar ("novo") / editar treinador
+ *   view-ginasiosadmin-sprites-<id>-<página>[-<busca>]  galeria de sprites do treinador
  *   view-ginasiosadmin-desafio-<id>       criar ("novo") / editar / abrir / encerrar desafio
  *   view-ginasiosadmin-jornadas-<id>      jornadas do desafio (encerrar a de um jogador)
  *
@@ -25,6 +26,7 @@ import { AI_LEVELS, isAILevel } from './levels';
 import { challengeFormatName } from './formats';
 import { reloadFormats } from './reload';
 import { badgeIcon, badgeLabel, badgeOptions, getBadge } from './badges';
+import { isTrainerSprite, searchTrainerSprites, spriteQuery, trainerSpriteImg } from './trainer-sprites';
 import { closeRun, runState } from './runs';
 import { formatDate, profileButton, runStatusLabel } from './player';
 import type {
@@ -32,6 +34,8 @@ import type {
 } from './store';
 
 const PAGE = 'view-ginasiosadmin';
+/** Sprites por página da galeria. */
+const SPRITES_PER_PAGE = 48;
 const TITLE_MAX_LENGTH = 40;
 const RULES_MAX_LENGTH = 500;
 
@@ -86,8 +90,8 @@ function selectBox(name: string, options: [string, string][], current: string) {
 
 function navButtons(TL: Translator) {
 	return `<p>` +
-		`<button class="button" name="send" value="/join ${PAGE}">${TL`Admin panel`}</button> ` +
-		`<button class="button" name="send" value="/join ${PAGE}-treinadores">${TL`Trainers`}</button>` +
+		`<button class="button" name="gymGo" value="${PAGE}">${TL`Admin panel`}</button> ` +
+		`<button class="button" name="gymGo" value="${PAGE}-treinadores">${TL`Trainers`}</button>` +
 		`</p>`;
 }
 
@@ -418,7 +422,7 @@ export const pages: Chat.PageTable = {
 				navButtons(this.TL) +
 				`<hr />` +
 				`<h3>${this.TL`Challenges`}</h3>` +
-				`<p><button class="button" name="send" value="/join ${PAGE}-desafio-novo">` +
+				`<p><button class="button" name="gymGo" value="${PAGE}-desafio-novo">` +
 				`<strong>${this.TL`New challenge`}</strong></button></p>`;
 			if (!challenges.length) {
 				buf += `<p><em>${this.TL`No challenges yet.`}</em></p>`;
@@ -432,14 +436,14 @@ export const pages: Chat.PageTable = {
 					buf += `<tr><td><strong>${Utils.escapeHTML(challenge.name)}</strong></td>` +
 						`<td>${statusLabel(this.TL, challenge.status)}</td>` +
 						`<td>${challenge.gymCount}</td>` +
-						`<td><button class="button" name="send" value="/join ${PAGE}-desafio-${challenge.id}">` +
+						`<td><button class="button" name="gymGo" value="${PAGE}-desafio-${challenge.id}">` +
 						`${challenge.status === 'closed' ? this.TL`View` : this.TL`Edit`}</button></td></tr>`;
 				}
 				buf += `</table></div>`;
 			}
 			buf += `<hr /><h3>${this.TL`Trainers`}</h3>` +
 				`<p>${this.TL`Registered trainers: ${trainerCount}`}</p>` +
-				`<p><button class="button" name="send" value="/join ${PAGE}-treinadores">` +
+				`<p><button class="button" name="gymGo" value="${PAGE}-treinadores">` +
 				`${this.TL`Manage trainers`}</button></p>`;
 			return buf + `</div>`;
 		},
@@ -454,24 +458,25 @@ export const pages: Chat.PageTable = {
 			let buf = `<div class="pad">` +
 				`<h2>${this.TL`Trainer bank`}</h2>` +
 				navButtons(this.TL) +
-				`<p><button class="button" name="send" value="/join ${PAGE}-treinador-novo">` +
+				`<p><button class="button" name="gymGo" value="${PAGE}-treinador-novo">` +
 				`<strong>${this.TL`New trainer`}</strong></button></p>`;
 			if (!trainers.length) {
 				buf += `<p><em>${this.TL`No trainers yet.`}</em></p>`;
 				return buf + `</div>`;
 			}
 			buf += `<div class="ladder"><table>` +
-				`<tr><th>${this.TL`Name`}</th><th>${this.TL`Trainer type`}</th><th>${this.TL`Team`}</th>` +
+				`<tr><th></th><th>${this.TL`Name`}</th><th>${this.TL`Trainer type`}</th><th>${this.TL`Team`}</th>` +
 				`<th>${this.TL`Challenges`}</th><th></th></tr>`;
 			for (const trainer of trainers) {
 				const used = store.challengesUsingTrainer(trainer.id).length;
 				buf += `<tr>` +
+					`<td>${trainerSpriteImg(trainer.avatar, 48)}</td>` +
 					`<td><strong>${Utils.escapeHTML(trainer.name)}</strong>` +
 					(trainer.title ? `<br /><small>${Utils.escapeHTML(trainer.title)}</small>` : '') + `</td>` +
 					`<td>${typeIcon(trainer.type) || `<em>${this.TL`none`}</em>`}</td>` +
 					`<td>${teamIcons(trainer.team)}</td>` +
 					`<td>${used}</td>` +
-					`<td><button class="button" name="send" value="/join ${PAGE}-treinador-${trainer.id}">` +
+					`<td><button class="button" name="gymGo" value="${PAGE}-treinador-${trainer.id}">` +
 					`${this.TL`Edit`}</button></td>` +
 					`</tr>`;
 			}
@@ -528,8 +533,16 @@ export const pages: Chat.PageTable = {
 				`</form>`;
 
 			if (trainer) {
+				buf += `<hr /><h3>${this.TL`Trainer sprite`}</h3>` +
+					`<p>${trainerSpriteImg(trainer.avatar, 80) || `<em>${this.TL`No sprite`}</em>`}</p>` +
+					`<p><button class="button" name="gymGo" value="${PAGE}-sprites-${trainer.id}-1">` +
+					`${this.TL`Choose sprite`}</button></p>` +
+					`<hr /><p>${teamIcons(trainer.team)} ${typeIcon(trainer.type)}</p>`;
+			} else {
+				buf += `<p><small>${this.TL`Save the trainer to choose its sprite.`}</small></p>`;
+			}
+			if (trainer) {
 				const challengeIds = store.challengesUsingTrainer(trainer.id);
-				buf += `<hr /><p>${teamIcons(trainer.team)} ${typeIcon(trainer.type)}</p>`;
 				if (challengeIds.length) {
 					const names = challengeIds.map(cid => Utils.escapeHTML(store.getChallenge(cid)?.name || `#${cid}`));
 					const list = names.join(', ');
@@ -539,6 +552,50 @@ export const pages: Chat.PageTable = {
 					buf += `<p><button class="button" name="send" value="/ginasioadmin apagartreinador ${trainer.id}">` +
 						`${this.TL`Delete trainer`}</button></p>`;
 				}
+			}
+			return buf + `</div>`;
+		},
+
+		sprites(query, user) {
+			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
+			if (!isAdmin(user)) this.pageDoesNotExist();
+			const trainer = getStore().getTrainer(Number(query[0]));
+			if (!trainer) throw new Chat.ErrorMessage(this.TL`Trainer not found.`);
+			const q = spriteQuery(query[2] || '');
+			const found = searchTrainerSprites(q);
+			const pageCount = Math.max(1, Math.ceil(found.length / SPRITES_PER_PAGE));
+			const pageNumber = Math.min(Math.max(1, Number(query[1]) || 1), pageCount);
+			const trainerName = trainer.name;
+			this.title = `[${this.TL`Sprite`}] ${trainerName}`;
+
+			const link = (n: number) => `/join ${PAGE}-sprites-${trainer.id}-${n}${q ? `-${q}` : ''}`;
+			const count = found.length;
+			const removeButton = trainer.avatar ?
+				`<button class="button" name="send" value="/ginasioadmin definirsprite ${trainer.id},">` +
+				`${this.TL`Remove sprite`}</button>` : '';
+			let buf = `<div class="pad"><h2>${this.TL`Sprite of ${trainerName}`}</h2>` + navButtons(this.TL) +
+				`<p><button class="button" name="gymGo" value="${PAGE}-treinador-${trainer.id}">` +
+				`${this.TL`Back to the trainer`}</button></p>` +
+				`<p>${this.TL`Current`}: ${trainerSpriteImg(trainer.avatar, 80) || `<em>${this.TL`No sprite`}</em>`} ` +
+				`${removeButton}</p>` +
+				`<form data-submitsend="/ginasioadmin buscarsprite ${trainer.id},{q}"><p>` +
+				`<input name="q" class="textbox" maxlength="30" value="${q}" placeholder="${this.TL`Name (e.g. brock)`}" /> ` +
+				`<button class="button" type="submit">${this.TL`Search`}</button></p></form>` +
+				`<p><small>${this.TL`${count} sprites`}</small></p>`;
+			if (!count) return buf + `<p><em>${this.TL`No sprites found.`}</em></p></div>`;
+			buf += `<p>`;
+			for (const id of found.slice((pageNumber - 1) * SPRITES_PER_PAGE, pageNumber * SPRITES_PER_PAGE)) {
+				const current = id === trainer.avatar ? ' style="border: 2px solid #4a7"' : '';
+				buf += `<button class="button" name="send" value="/ginasioadmin definirsprite ${trainer.id},${id}"${current}>` +
+					`${trainerSpriteImg(id, 80)}<br /><small>${id}</small></button> `;
+			}
+			buf += `</p>`;
+			if (pageCount > 1) {
+				buf += `<p>` +
+					(pageNumber > 1 ? `<button class="button" name="send" value="${link(pageNumber - 1)}">&laquo;</button> ` : '') +
+					`${this.TL`Page ${pageNumber} of ${pageCount}`}` +
+					(pageNumber < pageCount ? ` <button class="button" name="send" value="${link(pageNumber + 1)}">&raquo;</button>` : '') +
+					`</p>`;
 			}
 			return buf + `</div>`;
 		},
@@ -565,7 +622,7 @@ export const pages: Chat.PageTable = {
 			const status = statusLabel(this.TL, challenge.status);
 			const runCount = store.listRuns(challenge.id).length;
 			buf += `<p>${this.TL`Status: ${status}`}</p>` +
-				`<p><button class="button" name="send" value="/join ${PAGE}-jornadas-${challenge.id}">` +
+				`<p><button class="button" name="gymGo" value="${PAGE}-jornadas-${challenge.id}">` +
 				`${this.TL`Journeys (${runCount})`}</button></p>`;
 			if (challenge.status === 'closed') {
 				const note = this.TL`Closed challenges are kept as history and cannot be changed. Reopen it to edit.`;
@@ -615,7 +672,7 @@ export const pages: Chat.PageTable = {
 			const runs = store.listRuns(challenge.id);
 			let buf = `<div class="pad"><h2>${this.TL`Journeys`}: ${Utils.escapeHTML(challenge.name)}</h2>` +
 				navButtons(this.TL) +
-				`<p><button class="button" name="send" value="/join ${PAGE}-desafio-${challenge.id}">` +
+				`<p><button class="button" name="gymGo" value="${PAGE}-desafio-${challenge.id}">` +
 				`${this.TL`Back to the challenge`}</button></p>`;
 			if (!runs.length) return buf + `<p><em>${this.TL`No journeys yet.`}</em></p></div>`;
 			buf += `<div class="ladder"><table><tr><th>${this.TL`Player`}</th><th>${this.TL`Result`}</th>` +
@@ -707,6 +764,42 @@ export const commands: Chat.ChatCommands = {
 			// O formulário "novo" deixa de servir: fecha a aba e abre a do treinador salvo
 			if (isNew) connection.send(`>${PAGE}-treinador-novo\n|deinit`);
 			return this.parse(`/join ${PAGE}-treinador-${trainer!.id}`);
+		},
+
+		buscarsprite(target, room, user) {
+			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
+			const [rawId, rawQuery] = Utils.splitFirst(target, ',');
+			const id = Number(rawId);
+			if (!getStore().getTrainer(id)) throw new Chat.ErrorMessage(this.TL`Trainer not found.`);
+			const q = spriteQuery(rawQuery || '');
+			return this.parse(`/join ${PAGE}-sprites-${id}-1${q ? `-${q}` : ''}`);
+		},
+
+		definirsprite(target, room, user) {
+			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
+			const [rawId, rawSprite] = Utils.splitFirst(target, ',');
+			const id = Number(rawId);
+			const store = getStore();
+			if (!store.getTrainer(id)) throw new Chat.ErrorMessage(this.TL`Trainer not found.`);
+			const sprite = (rawSprite || '').trim();
+			// Só sprites oficiais do PS (vazio = sem sprite)
+			if (sprite && !isTrainerSprite(sprite)) throw new Chat.ErrorMessage(this.TL`Invalid sprite.`);
+			store.setTrainerAvatar(id, sprite);
+			this.globalModlog('GYMTRAINER', null, `sprite #${id}: ${sprite || '(none)'}`);
+			this.sendReply(sprite ? this.TL`Sprite saved.` : this.TL`Sprite removed.`);
+			// A escolha terminou: fecha as abas da galeria deste treinador (qualquer página ou
+			// busca) e volta para a edição, que já mostra o sprite novo
+			// (a edição também é fechada e reaberta: um /join numa aba aberta não a põe em foco)
+			const gallery = `${PAGE.slice('view-'.length)}-sprites-${id}-`;
+			const edit = `${PAGE.slice('view-'.length)}-treinador-${id}`;
+			for (const conn of user.connections) {
+				for (const page of [...conn.openPages || []]) {
+					if (!page.startsWith(gallery) && page !== edit) continue;
+					conn.send(`>view-${page}\n|deinit`);
+					conn.openPages!.delete(page);
+				}
+			}
+			return this.parse(`/join ${PAGE}-treinador-${id}`);
 		},
 
 		apagartreinador(target, room, user, connection) {

@@ -26,6 +26,7 @@ import { abandonRun, chooseGym, resumeBattle, runState, savedBattleIn, startRun,
 import { formatLabel, renderProblem } from './admin';
 import { challengeFormatName } from './formats';
 import { badgeIcon } from './badges';
+import { trainerSpriteImg } from './trainer-sprites';
 import type { Challenge, Run, RunStage, RunStatus } from './store';
 
 const PAGE = 'view-ginasios';
@@ -72,8 +73,14 @@ function trainerName(stage: RunStage) {
 	return Utils.escapeHTML([stage.trainerTitle, stage.trainerName].filter(Boolean).join(' '));
 }
 
+/** Sprite (cópia gravada na jornada) e nome do treinador. */
+function trainerCell(stage: RunStage) {
+	const sprite = trainerSpriteImg(stage.trainerAvatar, 40);
+	return sprite ? `${sprite} ${trainerName(stage)}` : trainerName(stage);
+}
+
 function navButtons(TL: Translator) {
-	return `<p><button class="button" name="send" value="/join ${PAGE}">${TL`All challenges`}</button></p>`;
+	return `<p><button class="button" name="gymGo" value="${PAGE}">${TL`All challenges`}</button></p>`;
 }
 
 /** Regras do desafio, resumidas para o jogador. */
@@ -125,7 +132,7 @@ function journeyTables(TL: Translator, state: RunState) {
 			action = `<button class="button" name="send" value="/ginasio escolher ${challenge.id},${stage.position}">` +
 				`${TL`Battle this gym next`}</button>`;
 		}
-		buf += `<tr><td>${stage.position}</td><td>${trainerName(stage)}</td><td>${typeIcon(stage.type)}</td>` +
+		buf += `<tr><td>${stage.position}</td><td>${trainerCell(stage)}</td><td>${typeIcon(stage.type)}</td>` +
 			`<td>${badge ? stageBadge(stage) : ''}</td><td>${action}</td></tr>`;
 	}
 	buf += `</table></div>`;
@@ -143,7 +150,7 @@ function journeyTables(TL: Translator, state: RunState) {
 		if (allBadges && index < progress.leagueWins) status = TL`Defeated in this attempt`;
 		else if (allBadges && isNext(stage)) status = `<strong>${TL`Next battle`}</strong>`;
 		const label = stage.kind === 'elite4' ? `${TL`Elite Four`} ${stage.position}` : TL`Champion`;
-		buf += `<tr><td>${label}</td><td>${trainerName(stage)}</td><td>${typeIcon(stage.type)}</td><td>${status}</td></tr>`;
+		buf += `<tr><td>${label}</td><td>${trainerCell(stage)}</td><td>${typeIcon(stage.type)}</td><td>${status}</td></tr>`;
 	});
 	return buf + `</table></div>`;
 }
@@ -221,7 +228,7 @@ function displayName(userid: string) {
 }
 
 export function profileButton(TL: Translator, userid: string, label?: string) {
-	return `<button class="button" name="send" value="/join ${PAGE}-perfil-${userid}">` +
+	return `<button class="button" name="gymGo" value="${PAGE}-perfil-${userid}">` +
 		`${label || Utils.escapeHTML(displayName(userid))}</button>`;
 }
 
@@ -253,7 +260,7 @@ export const pages: Chat.PageTable = {
 					buf += `<tr><td><strong>${Utils.escapeHTML(challenge.name)}</strong></td>` +
 						`<td>${challenge.gymCount}${challenge.hasElite4 ? ` + ${this.TL`Elite Four`}` : ''}</td>` +
 						`<td>${journey}</td>` +
-						`<td><button class="button" name="send" value="/join ${PAGE}-desafio-${challenge.id}">` +
+						`<td><button class="button" name="gymGo" value="${PAGE}-desafio-${challenge.id}">` +
 						`${this.TL`View`}</button></td></tr>`;
 				}
 				buf += `</table></div>`;
@@ -262,7 +269,7 @@ export const pages: Chat.PageTable = {
 				buf += `<h3>${this.TL`Closed challenges`}</h3><div class="ladder"><table>`;
 				for (const challenge of closed) {
 					buf += `<tr><td>${Utils.escapeHTML(challenge.name)}</td>` +
-						`<td><button class="button" name="send" value="/join ${PAGE}-desafio-${challenge.id}">` +
+						`<td><button class="button" name="gymGo" value="${PAGE}-desafio-${challenge.id}">` +
 						`${this.TL`View`}</button></td></tr>`;
 				}
 				buf += `</table></div>`;
@@ -402,7 +409,7 @@ export const pages: Chat.PageTable = {
 					`<td>${list.filter(summary => summary.run.status === 'won').length}</td>` +
 					`<td>${list.reduce((sum, summary) => sum + summary.wins, 0)}</td>` +
 					`<td>${list.reduce((sum, summary) => sum + summary.losses, 0)}</td>` +
-					`<td><button class="button" name="send" value="/join ${PAGE}-historico-${challengeId}-${userid}">` +
+					`<td><button class="button" name="gymGo" value="${PAGE}-historico-${challengeId}-${userid}">` +
 					`${this.TL`History`}</button></td></tr>`;
 			}
 			return buf + `</table></div></div>`;
@@ -421,7 +428,7 @@ export const pages: Chat.PageTable = {
 			const buf = `<div class="pad"><h2>${this.TL`History`}: ${Utils.escapeHTML(name)}</h2>` +
 				`<p><strong>${Utils.escapeHTML(challenge.name)}</strong></p>` +
 				`<p>${profileButton(this.TL, userid, this.TL`Gym profile`)} ` +
-				`<button class="button" name="send" value="/join ${PAGE}-desafio-${challenge.id}">` +
+				`<button class="button" name="gymGo" value="${PAGE}-desafio-${challenge.id}">` +
 				`${this.TL`Challenge page`}</button></p>`;
 			if (!runs.length) return buf + `<p><em>${this.TL`No journeys yet.`}</em></p></div>`;
 			return buf + runsTable(this.TL, runs) + `</div>`;

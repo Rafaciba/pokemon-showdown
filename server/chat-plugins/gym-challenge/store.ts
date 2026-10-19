@@ -117,6 +117,8 @@ export interface RunStage {
 	badgeId: string | null;
 	badgeName: string | null;
 	badgeImage: string | null;
+	/** Cópia do sprite do treinador (id oficial do PS); null = sem sprite. */
+	trainerAvatar: string | null;
 }
 
 export interface RunBattle {
@@ -244,6 +246,10 @@ const MIGRATIONS: string[] = [
 	ALTER TABLE run_stages ADD COLUMN badge_image TEXT;
 	ALTER TABLE trainers DROP COLUMN badge_image;
 	`,
+	// 5: sprite do treinador copiado na jornada (o banco de treinadores já tinha "avatar")
+	`
+	ALTER TABLE run_stages ADD COLUMN trainer_avatar TEXT;
+	`,
 ];
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -294,7 +300,7 @@ function toRunStage(row: Row): RunStage {
 	return {
 		kind: row.kind, position: row.position, trainerId: row.trainer_id, trainerName: row.trainer_name,
 		trainerTitle: row.trainer_title, type: row.type, team: row.team, aiLevel: row.ai_level,
-		badgeId: row.badge_id, badgeName: row.badge_name, badgeImage: row.badge_image,
+		badgeId: row.badge_id, badgeName: row.badge_name, badgeImage: row.badge_image, trainerAvatar: row.trainer_avatar,
 	};
 }
 
@@ -359,6 +365,11 @@ export class GymStore {
 	getTrainer(id: number): Trainer | null {
 		const row = this.db.prepare('SELECT * FROM trainers WHERE id = ?').get(id) as Row | undefined;
 		return row ? toTrainer(row) : null;
+	}
+
+	/** Sprite do treinador (id oficial já conferido por quem chama; '' = sem sprite). */
+	setTrainerAvatar(id: number, avatar: string): boolean {
+		return this.db.prepare('UPDATE trainers SET avatar = ?, updated_at = ? WHERE id = ?').run(avatar, now(), id).changes === 1;
 	}
 
 	createTrainer(input: TrainerInput): Trainer {
@@ -517,13 +528,14 @@ export class GymStore {
 			const insert = this.db.prepare(`
 				INSERT INTO run_stages (
 					run_id, kind, position, trainer_id, trainer_name, trainer_title, type, team, ai_level,
-					badge_id, badge_name, badge_image
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					badge_id, badge_name, badge_image, trainer_avatar
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`);
 			for (const stage of stages) {
 				insert.run(
 					runId, stage.kind, stage.position, stage.trainerId, stage.trainerName, stage.trainerTitle,
-					stage.type, stage.team, stage.aiLevel, stage.badgeId ?? null, stage.badgeName ?? null, stage.badgeImage ?? null
+					stage.type, stage.team, stage.aiLevel, stage.badgeId ?? null, stage.badgeName ?? null, stage.badgeImage ?? null,
+					stage.trainerAvatar ?? null
 				);
 			}
 			return this.getRun(runId)!;

@@ -163,6 +163,7 @@ function npcFor(stage: RunStage) {
 	return {
 		name: stage.trainerName,
 		team: stage.team,
+		avatar: stage.trainerAvatar || undefined,
 		ai: createAI(isAILevel(stage.aiLevel) ? stage.aiLevel : 'random'),
 	};
 }

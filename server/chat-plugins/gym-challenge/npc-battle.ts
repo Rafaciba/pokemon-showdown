@@ -327,6 +327,11 @@ export function createNpcBattle(human: User, settings: NpcBattleSettings): GameR
 	const room = Rooms.createGameRoom(roomid, title, { ...options, title, isPersonal: true });
 	const battle = new NpcBattle(room, options);
 	room.game = battle;
+	// O RoomBattle só conhece o avatar de jogadores com usuário: o do NPC vai como edição
+	// do lado p2 (fica no input log, então a retomada do save state também o tem)
+	if (settings.npc.avatar) {
+		void battle.stream.write(`>player ${NPC_SLOT} ${JSON.stringify({ avatar: settings.npc.avatar })}`);
+	}
 	// Batalhas contra NPC são sempre públicas (requisito do Desafio de Ginásios): as
 	// preferências de privacidade do jogador não são aplicadas aqui
 

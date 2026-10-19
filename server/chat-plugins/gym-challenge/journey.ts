@@ -42,6 +42,7 @@ function stageFrom(
 		badgeId: badge?.id ?? null,
 		badgeName: badge?.name ?? null,
 		badgeImage: badge?.image ?? null,
+		trainerAvatar: trainer.avatar || null,
 	};
 }
 

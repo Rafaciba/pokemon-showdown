@@ -3099,6 +3099,8 @@ export const commands: Chat.ChatCommands = {
 export const handlers: Chat.Handlers = {
 	onRename(user, oldID, newID) {
 		if (oldID === newID || !Config.usesqlite || [oldID, newID].some(f => f.startsWith('guest'))) return;
+		// pokemon-showdown-custom: Config.altslog = false desliga este registro (IP sem data, LGPD)
+		if (Config.altslog === false) return;
 		void Chat.database.run(
 			`REPLACE INTO alts_log (to_id, from_id, ip) VALUES (?, ?, ?)`,
 			[newID, oldID, user.latestIp]

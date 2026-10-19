@@ -7,6 +7,7 @@
  * - exclusão dos dados de jogo de contas excluídas no login (ladder, ranks, forfeit nas
  *   batalhas em andamento e o handler onAccountPurge para os outros plugins),
  *   consultada a cada minuto
+ * - prazos diários: logs de batalha (30 dias) e modlog (6 meses; IP, 30 dias)
  *
  * Os códigos são gerados pelo login server (API interna, rede do Docker) e
  * mostrados só para quem executou o comando; nunca vão para logs ou modlog.
@@ -18,6 +19,7 @@
 import * as fs from 'node:fs/promises';
 import { FS, Utils } from '../../lib';
 import { LadderStore } from '../ladders-local';
+import { database as PrivateMessagesDatabase } from '../private-messages';
 
 interface InternalReply {
 	ok: boolean;
@@ -126,6 +128,45 @@ export async function cleanupBattleLogs(logsDir = Monitor.logPath('').path, now 
 	return removed;
 }
 
+// --- Modlog: 6 meses, e o IP só 30 dias ---------------------------------------
+// O modlog (databases/modlog.db) registra as ações de moderação, com o nome, as alts
+// conhecidas e o IP de quem foi punido. Prazos definidos pelo usuário (2026-10-19), por
+// legítimo interesse em segurança: o registro fica 6 meses (também depois da exclusão
+// da conta), e o IP sai depois de 30 dias.
+
+export const MODLOG_RETENTION_DAYS = 180;
+export const MODLOG_IP_RETENTION_DAYS = 30;
+
+type RunQuery = (statement: string, data: (string | number)[]) => Promise<{ changes: number } | null>;
+
+/** Aplica os prazos do modlog. Devolve quantos registros saíram e de quantos saiu o IP. */
+export async function cleanupModlog(
+	run: RunQuery = (statement, data) => Rooms.Modlog.database.run(statement, data),
+	now = Date.now()
+) {
+	const day = 24 * 60 * 60 * 1000;
+	const expired = now - MODLOG_RETENTION_DAYS * day;
+	// As alts ficam numa tabela ligada ao registro: saem antes dele
+	await run('DELETE FROM alts WHERE modlog_id IN (SELECT modlog_id FROM modlog WHERE timestamp < ?)', [expired]);
+	const removed = await run('DELETE FROM modlog WHERE timestamp < ?', [expired]);
+	const anonymized = await run(
+		'UPDATE modlog SET ip = NULL WHERE ip IS NOT NULL AND timestamp < ?', [now - MODLOG_IP_RETENTION_DAYS * day]
+	);
+	return { removed: removed?.changes || 0, anonymized: anonymized?.changes || 0 };
+}
+
+async function runModlogCleanup() {
+	if (!Config.usesqlite || !Config.usesqlitemodlog) return;
+	try {
+		const { removed, anonymized } = await cleanupModlog();
+		if (removed || anonymized) {
+			Monitor.notice(`[contas] modlog: ${removed} registro(s) apagado(s), IP removido de ${anonymized}`);
+		}
+	} catch (err: any) {
+		Monitor.crashlog(err, 'The modlog cleanup');
+	}
+}
+
 /** Apaga os logs de batalha em que o usuário jogou. Devolve quantos arquivos saíram. */
 export async function removeBattleLogsOf(userid: ID, logsDir = Monitor.logPath('').path) {
 	let removed = 0;
@@ -162,6 +203,21 @@ export function forfeitBattlesOf(userid: ID) {
 	return count;
 }
 
+/**
+ * Dados do jogador nos bancos SQLite do PS (ligados para o modlog): pontuações de
+ * trivia, preferências de mensagens privadas e a autoria de perguntas de trivia. O
+ * modlog fica até o prazo dele (legítimo interesse em segurança; decisão do usuário).
+ */
+async function removeSQLiteDataOf(userid: ID) {
+	if (!Config.usesqlite) return;
+	await Chat.database.run('DELETE FROM trivia_leaderboard WHERE userid = ?', [userid]);
+	await Chat.database.run('DELETE FROM trivia_game_scores WHERE userid = ?', [userid]);
+	await Chat.database.run(`UPDATE trivia_questions SET userid = '' WHERE userid = ?`, [userid]);
+	await Chat.database.run('DELETE FROM alts_log WHERE to_id = ? OR from_id = ?', [userid, userid]);
+	await PrivateMessagesDatabase.run('DELETE FROM pm_settings WHERE userid = ?', [userid]);
+	await PrivateMessagesDatabase.run('DELETE FROM offline_pms WHERE sender = ? OR receiver = ?', [userid, userid]);
+}
+
 async function purgeAccountData(userid: ID) {
 	// Sessão ainda aberta com o nome da conta excluída: volta a ser visitante
 	const user = Users.getExact(userid);
@@ -173,6 +229,7 @@ async function purgeAccountData(userid: ID) {
 	forfeitBattlesOf(userid);
 	await removeFromLadders(userid);
 	await removeBattleLogsOf(userid);
+	await removeSQLiteDataOf(userid);
 	// Dados dos outros plugins (ex.: jornadas e conquistas do Desafio de Ginásios)
 	Chat.runHandlers('onAccountPurge', userid);
 }
@@ -223,6 +280,8 @@ export function start() {
 		setInterval(() => void purgeDeletedAccounts(), PURGE_INTERVAL),
 		setTimeout(() => void runBattleLogCleanup(), PURGE_FIRST_DELAY),
 		setInterval(() => void runBattleLogCleanup(), DAY),
+		setTimeout(() => void runModlogCleanup(), PURGE_FIRST_DELAY),
+		setInterval(() => void runModlogCleanup(), DAY),
 	];
 	for (const timer of list) timer.unref();
 	timers[PURGE_TIMER] = list;

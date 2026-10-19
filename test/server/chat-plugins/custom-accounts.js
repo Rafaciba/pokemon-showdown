@@ -50,6 +50,42 @@ describe('Custom accounts: battle logs', () => {
 	});
 });
 
+describe('Custom accounts: modlog retention', () => {
+	const { DatabaseSync } = require('node:sqlite');
+	let db;
+	const run = (statement, data) => Promise.resolve(db.prepare(statement).run(...data));
+	const DAY = 24 * 60 * 60 * 1000;
+	const now = Date.UTC(2026, 9, 19);
+	const insert = (daysAgo, ip, alts = []) => {
+		const { lastInsertRowid } = db.prepare(
+			`INSERT INTO modlog (timestamp, roomid, is_global, action, visual_roomid, note, action_taker_userid, userid, ip) ` +
+			`VALUES (?, 'global', 1, 'LOCK', '', 'motivo', 'admin', 'punido', ?)`
+		).run(now - daysAgo * DAY, ip);
+		for (const alt of alts) db.prepare('INSERT INTO alts (modlog_id, userid) VALUES (?, ?)').run(lastInsertRowid, alt);
+		return Number(lastInsertRowid);
+	};
+	beforeEach(() => {
+		db = new DatabaseSync(':memory:');
+		db.exec(fs.readFileSync(path.join(__dirname, '../../../databases/schemas/modlog.sql'), 'utf8'));
+	});
+	afterEach(() => db.close());
+
+	it('removes the IP after 30 days and the entry after 6 months', async () => {
+		const recent = insert(10, '1.2.3.4', ['alt1']);
+		const month = insert(31, '5.6.7.8', ['alt2']);
+		const old = insert(181, '9.9.9.9', ['alt3']);
+		const result = await accounts.cleanupModlog(run, now);
+		assert.deepEqual(result, { removed: 1, anonymized: 1 });
+		const ipOf = id => db.prepare('SELECT ip FROM modlog WHERE modlog_id = ?').get(id);
+		assert.equal(ipOf(recent).ip, '1.2.3.4', 'menos de 30 dias: IP fica');
+		assert.equal(ipOf(month).ip, null, 'mais de 30 dias: IP sai, registro fica');
+		assert.equal(ipOf(old), undefined, 'mais de 6 meses: registro sai');
+		const alts = db.prepare('SELECT userid FROM alts ORDER BY userid').all().map(r => r.userid);
+		assert.deepEqual(alts, ['alt1', 'alt2'], 'alts do registro apagado saem junto');
+		assert.deepEqual(await accounts.cleanupModlog(run, now), { removed: 0, anonymized: 0 }, 'idempotente');
+	});
+});
+
 describe('Custom accounts: battles of a deleted account', () => {
 	const { makeUser } = require('../../users-utils');
 	const TEAM = 'Weavile||lifeorb||swordsdance,knockoff,iceshard,iciclecrash|Jolly|,252,,,4,252|||||';

@@ -27,7 +27,7 @@ import { formatLabel, renderProblem } from './admin';
 import { challengeFormatName } from './formats';
 import { badgeIcon } from './badges';
 import { trainerSpriteImg } from './trainer-sprites';
-import type { Challenge, Run, RunStage, RunStatus } from './store';
+import type { Challenge, Run, RunBattle, RunStage, RunStatus } from './store';
 
 const PAGE = 'view-ginasios';
 
@@ -159,6 +159,8 @@ interface EarnedBadge {
 	stage: RunStage;
 	/** Data da vitória no ginásio. */
 	earnedAt: number;
+	/** Espécies do time que venceu (null = não registrado). */
+	species: string[] | null;
 }
 
 interface RunSummary {
@@ -166,6 +168,8 @@ interface RunSummary {
 	/** Insígnias da jornada (ginásios vencidos), na ordem dos ginásios. */
 	badges: EarnedBadge[];
 	gymCount: number;
+	/** Vitória sobre o Campeão (só nas jornadas vencidas), com o time que venceu. */
+	champion: { stage: RunStage, species: string[] | null } | null;
 	/** Placar da jornada: vitórias e derrotas nas batalhas (empates e interrompidas não contam). */
 	wins: number;
 	losses: number;
@@ -176,20 +180,46 @@ function summarizeRun(run: Run): RunSummary {
 	const stages = store.getRunStages(run.id);
 	const battles = store.getRunBattles(run.id);
 	// Vitória em cada ginásio (a primeira, se houver mais de uma)
-	const wonAt = new Map<number, number>();
+	const wonAt = new Map<number, RunBattle>();
 	for (const battle of battles) {
 		if (battle.kind !== 'gym' || battle.result !== 'win' || wonAt.has(battle.position)) continue;
-		wonAt.set(battle.position, battle.endedAt || battle.startedAt);
+		wonAt.set(battle.position, battle);
 	}
 	const gyms = stages.filter(stage => stage.kind === 'gym');
+	const championStage = stages.find(stage => stage.kind === 'champion');
+	const championWin = battles.find(battle => battle.kind === 'champion' && battle.result === 'win');
 	return {
 		run,
-		badges: gyms.filter(stage => wonAt.has(stage.position))
-			.map(stage => ({ stage, earnedAt: wonAt.get(stage.position)! })),
+		badges: gyms.filter(stage => wonAt.has(stage.position)).map(stage => {
+			const battle = wonAt.get(stage.position)!;
+			return { stage, earnedAt: battle.endedAt || battle.startedAt, species: battle.playerSpecies };
+		}),
 		gymCount: gyms.length,
+		champion: championStage && championWin ? { stage: championStage, species: championWin.playerSpecies } : null,
 		wins: battles.filter(b => b.result === 'win').length,
 		losses: battles.filter(b => b.result === 'loss').length,
 	};
+}
+
+/** Ícones do time que venceu a batalha; sem registro (vitórias antigas), um aviso. */
+function speciesIcons(TL: Translator, species: string[] | null) {
+	if (!species?.length) return `<em>${TL`Not recorded`}</em>`;
+	return species.map(name => `<psicon pokemon="${Utils.escapeHTML(name)}" />`).join('');
+}
+
+/** Detalhe de uma conquista: o time que venceu cada insígnia e o Campeão. */
+function winningTeams(TL: Translator, summary: RunSummary) {
+	let buf = `<details><summary>${TL`Winning teams`}</summary><div class="ladder"><table>` +
+		`<tr><th></th><th>${TL`Trainer`}</th><th>${TL`Team`}</th></tr>`;
+	for (const badge of summary.badges) {
+		buf += `<tr><td>${stageBadge(badge.stage)} ${badgeName(TL, badge.stage)}</td>` +
+			`<td>${trainerName(badge.stage)}</td><td>${speciesIcons(TL, badge.species)}</td></tr>`;
+	}
+	if (summary.champion) {
+		buf += `<tr><td>${TL`Champion`}</td><td>${trainerName(summary.champion.stage)}</td>` +
+			`<td>${speciesIcons(TL, summary.champion.species)}</td></tr>`;
+	}
+	return buf + `</table></div></details>`;
 }
 
 function badgeIcons(summary: RunSummary) {
@@ -360,7 +390,8 @@ export const pages: Chat.PageTable = {
 					`<th>${this.TL`Badges`}</th></tr>`;
 				for (const summary of wins) {
 					buf += `<tr><td><strong>${challengeName(summary.run.challengeId)}</strong></td>` +
-						`<td>${formatDate(summary.run.endedAt)}</td><td>${badgeIcons(summary)}</td></tr>`;
+						`<td>${formatDate(summary.run.endedAt)}</td><td>${badgeIcons(summary)}</td></tr>` +
+						`<tr><td colspan="3">${winningTeams(this.TL, summary)}</td></tr>`;
 				}
 				buf += `</table></div>`;
 			}

@@ -151,7 +151,8 @@ export async function startStageBattle(
 		hooks: battleHooks(ref),
 	});
 	if (!room) return null;
-	ref.id = store.startBattle(run.id, stage.kind, stage.position, room.roomid).id;
+	const species = (Teams.unpack(ready.settings.team) || []).map(set => set.species);
+	ref.id = store.startBattle(run.id, stage.kind, stage.position, room.roomid, species).id;
 	if (challenge.teamLock && !run.teamHash) store.setTeamHash(run.id, hash);
 	refreshChallengePage(user.id, challengeId);
 	room.add(`|raw|<div class="broadcast-blue"><strong>${Utils.escapeHTML(challenge.name)}</strong> &ndash; ` +

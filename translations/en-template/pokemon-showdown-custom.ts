@@ -296,4 +296,6 @@ export const translations: TranslationCatalog = {
 	"Invite not found: it was already used, expired or revoked.": null,
 	"Invite revoked.": null,
 	"Enter the username.": null,
+	"Not recorded": null,
+	"Winning teams": null,
 };

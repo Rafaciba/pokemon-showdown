@@ -296,4 +296,6 @@ export const translations: TranslationCatalog = {
 	"Invite not found: it was already used, expired or revoked.": "Convite não encontrado: ele já foi usado, venceu ou foi revogado.",
 	"Invite revoked.": "Convite revogado.",
 	"Enter the username.": "Informe o nome de usuário.",
+	"Not recorded": "Não registrado",
+	"Winning teams": "Times vencedores",
 };

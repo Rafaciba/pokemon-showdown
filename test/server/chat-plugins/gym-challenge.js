@@ -610,6 +610,22 @@ describe('Gym Challenge', () => {
 				assert.deepEqual(store.getRunBattles(run.id).map(b => b.result), ['win', null]);
 			});
 
+			it('keeps the player species only for wins', () => {
+				const c = store.createChallenge(challengeInput());
+				const run = store.createRun(c.id, 'ash', []);
+				const team = ['Blastoise', 'Pidgeot'];
+				const won = store.startBattle(run.id, 'gym', 1, 'battle-1', team);
+				const lost = store.startBattle(run.id, 'gym', 2, 'battle-2', team);
+				const voided = store.startBattle(run.id, 'champion', 1, 'battle-3', team);
+				const old = store.startBattle(run.id, 'gym', 3, 'battle-4');
+				assert.deepEqual(won.playerSpecies, team);
+				assert(store.finishBattle(won.id, 'win'));
+				assert(store.finishBattle(lost.id, 'loss'));
+				assert(store.finishBattle(voided.id, 'void'));
+				assert(store.finishBattle(old.id, 'win'));
+				assert.deepEqual(store.getRunBattles(run.id).map(b => b.playerSpecies), [team, null, null, null]);
+			});
+
 			it('saves the state of battles in progress only', () => {
 				const c = store.createChallenge(challengeInput());
 				const run = store.createRun(c.id, 'ash', []);

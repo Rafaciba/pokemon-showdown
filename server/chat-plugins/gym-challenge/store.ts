@@ -133,6 +133,11 @@ export interface RunBattle {
 	endedAt: number | null;
 	/** Quando o estado da batalha foi salvo pela última vez (null = nunca, ou já terminou). */
 	savedAt: number | null;
+	/**
+	 * Espécies do time do jogador, só nas vitórias (null = derrota, interrompida ou
+	 * vitória de antes da migração 6). Só as espécies: o perfil mostra os ícones.
+	 */
+	playerSpecies: string[] | null;
 }
 
 const MIGRATIONS: string[] = [
@@ -250,6 +255,12 @@ const MIGRATIONS: string[] = [
 	`
 	ALTER TABLE run_stages ADD COLUMN trainer_avatar TEXT;
 	`,
+	// 6: espécies do time do jogador em cada batalha, mantidas só nas vitórias
+	// (conquistas no perfil). As batalhas contra NPC não têm log, então as vitórias
+	// anteriores ficam sem o time.
+	`
+	ALTER TABLE run_battles ADD COLUMN player_species TEXT;
+	`,
 ];
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -308,7 +319,18 @@ function toRunBattle(row: Row): RunBattle {
 	return {
 		id: row.id, runId: row.run_id, kind: row.kind, position: row.position, roomid: row.roomid, result: row.result,
 		startedAt: row.started_at, endedAt: row.ended_at, savedAt: row.saved_at,
+		playerSpecies: parseSpecies(row.player_species),
 	};
+}
+
+function parseSpecies(value: string | null): string[] | null {
+	if (!value) return null;
+	try {
+		const list: unknown = JSON.parse(value);
+		return Array.isArray(list) ? list.filter((item): item is string => typeof item === 'string') : null;
+	} catch {
+		return null;
+	}
 }
 
 export class GymStore {
@@ -618,22 +640,24 @@ export class GymStore {
 		return row ? toRunBattle(row) : null;
 	}
 
-	startBattle(runId: number, kind: StageKind, position: number, roomid: string): RunBattle {
+	startBattle(runId: number, kind: StageKind, position: number, roomid: string, playerSpecies: string[] = []): RunBattle {
 		const result = this.db.prepare(`
-			INSERT INTO run_battles (run_id, kind, position, roomid, started_at) VALUES (?, ?, ?, ?, ?)
-		`).run(runId, kind, position, roomid, now());
+			INSERT INTO run_battles (run_id, kind, position, roomid, started_at, player_species) VALUES (?, ?, ?, ?, ?, ?)
+		`).run(runId, kind, position, roomid, now(), playerSpecies.length ? JSON.stringify(playerSpecies) : null);
 		return this.getRunBattle(Number(result.lastInsertRowid))!;
 	}
 
 	/**
 	 * Registra o resultado; só vale para batalhas em andamento. Devolve false se já havia resultado.
-	 * O estado salvo deixa de ser necessário e é apagado (minimização de dados).
+	 * O estado salvo deixa de ser necessário e é apagado, e as espécies do time só ficam
+	 * nas vitórias (minimização de dados).
 	 */
 	finishBattle(id: number, result: BattleResult): boolean {
 		return this.db.prepare(`
-			UPDATE run_battles SET result = ?, ended_at = ?, input_log = NULL, saved_at = NULL
+			UPDATE run_battles SET result = ?, ended_at = ?, input_log = NULL, saved_at = NULL,
+				player_species = CASE WHEN ? = 'win' THEN player_species ELSE NULL END
 			WHERE id = ? AND result IS NULL
-		`).run(result, now(), id).changes === 1;
+		`).run(result, now(), result, id).changes === 1;
 	}
 
 	/** Salva o estado de uma batalha em andamento. Devolve false se ela já terminou. */

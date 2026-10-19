@@ -4,6 +4,7 @@
  * - /convite [nome]      (admin) gera um código de convite de uso único
  * - /redefinirsenha nome (admin) gera um código para o jogador redefinir a senha
  * - /conta               link para a página da conta (trocar senha, excluir conta)
+ * - API usada também pela página de convites do painel admin (gym-challenge/admin.ts)
  * - exclusão dos dados de jogo de contas excluídas no login (ladder, ranks, forfeit nas
  *   batalhas em andamento e o handler onAccountPurge para os outros plugins),
  *   consultada a cada minuto
@@ -20,8 +21,17 @@ import * as fs from 'node:fs/promises';
 import { FS, Utils } from '../../lib';
 import { LadderStore } from '../ladders-local';
 import { database as PrivateMessagesDatabase } from '../private-messages';
+import type { Translator } from '../../sim/dex-text';
 
-interface InternalReply {
+/** Convite pendente, como o login devolve (sem o código). */
+export interface PendingInvite {
+	id: number;
+	userid: string | null;
+	createdAt: number;
+	expiresAt: number;
+}
+
+export interface InternalReply {
 	ok: boolean;
 	error?: string;
 	code?: string;
@@ -31,13 +41,15 @@ interface InternalReply {
 	username?: string;
 	/** /internal/purges: contas excluídas cujos dados de jogo ainda precisam ser apagados */
 	userids?: string[];
+	/** /internal/invites: convites pendentes */
+	invites?: PendingInvite[];
 }
 
 function isAdmin(user: User) {
 	return user.registered && Users.globalAuth.get(user.id) === '~';
 }
 
-async function callLoginServer(path: string, body: Record<string, string>): Promise<InternalReply> {
+export async function callLoginServer(path: string, body: Record<string, string>): Promise<InternalReply> {
 	const settings = Config.customlogin;
 	if (!settings?.internalUrl || !settings?.tokenPath) {
 		throw new Chat.ErrorMessage(`Login server integration is not configured (Config.customlogin).`);
@@ -287,8 +299,36 @@ export function start() {
 	timers[PURGE_TIMER] = list;
 }
 
-function formatExpiry(expiresAt: number) {
+/** Idioma das mensagens de erro do login (pt ou en), conforme o idioma escolhido no jogo. */
+export function loginLang(user: User) {
+	return user.language === 'portuguese' ? 'pt' : 'en';
+}
+
+export function formatExpiry(expiresAt: number) {
 	return new Date(expiresAt * 1000).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+}
+
+/** Quadro com o convite gerado (chat e painel admin). Só quem gerou vê. */
+export function inviteBox(TL: Translator, reply: InternalReply) {
+	const expiry = formatExpiry(reply.expiresAt!);
+	const reserved = reply.userid ?
+		`${TL`Reserved for the username`}: <strong>${Utils.escapeHTML(reply.userid)}</strong><br />` : '';
+	return `<strong>${TL`Invite code`}:</strong> <code>${Utils.escapeHTML(reply.code!)}</code><br />` +
+		reserved +
+		`${TL`Valid until ${expiry} (single use).`}<br />` +
+		`${TL`Sign-up link`}: <a href="${Utils.escapeHTML(reply.url!)}">${Utils.escapeHTML(reply.url!)}</a><br />` +
+		`<small>${TL`Only you can see this message. Send the code privately.`}</small>`;
+}
+
+/** Quadro com o código de redefinição de senha (chat e painel admin). Só quem gerou vê. */
+export function resetBox(TL: Translator, reply: InternalReply, username: string) {
+	const expiry = formatExpiry(reply.expiresAt!);
+	const player = Utils.escapeHTML(reply.username || username);
+	return `<strong>${TL`Password reset code for ${player}`}:</strong> ` +
+		`<code>${Utils.escapeHTML(reply.code!)}</code><br />` +
+		`${TL`Valid until ${expiry} (single use).`}<br />` +
+		`${TL`The player must use it at`} <a href="${Utils.escapeHTML(reply.url!)}">${Utils.escapeHTML(reply.url!)}</a><br />` +
+		`<small>${TL`Only you can see this message. Send the code privately.`}</small>`;
 }
 
 export const commands: Chat.ChatCommands = {
@@ -296,20 +336,11 @@ export const commands: Chat.ChatCommands = {
 	async convite(target, room, user) {
 		if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can create invites.`);
 		const username = target.trim();
-		const reply = await callLoginServer('/internal/invite', username ? { username } : {});
+		const reply = await callLoginServer('/internal/invite', { lang: loginLang(user), ...(username ? { username } : {}) });
 		if (!reply.ok || !reply.code || !reply.url || !reply.expiresAt) {
 			throw new Chat.ErrorMessage(reply.error || this.TL`Could not create the invite.`);
 		}
-		const expiry = formatExpiry(reply.expiresAt);
-		const reserved = reply.userid ?
-			`${this.TL`Reserved for the username`}: <strong>${Utils.escapeHTML(reply.userid)}</strong><br />` : '';
-		this.sendReplyBox(
-			`<strong>${this.TL`Invite code`}:</strong> <code>${Utils.escapeHTML(reply.code)}</code><br />` +
-			reserved +
-			`${this.TL`Valid until ${expiry} (single use).`}<br />` +
-			`${this.TL`Sign-up link`}: <a href="${Utils.escapeHTML(reply.url)}">${Utils.escapeHTML(reply.url)}</a><br />` +
-			`<small>${this.TL`Only you can see this message. Send the code privately.`}</small>`
-		);
+		this.sendReplyBox(inviteBox(this.TL, reply));
 		// LGPD: o modlog fica depois da exclusão da conta; não guarda o nome de jogadores
 		this.globalModlog('INVITE', null, username ? 'reserved name' : 'open');
 	},
@@ -323,19 +354,11 @@ export const commands: Chat.ChatCommands = {
 		if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can reset passwords.`);
 		const username = target.trim();
 		if (!toID(username)) return this.parse('/help redefinirsenha');
-		const reply = await callLoginServer('/internal/reset', { username });
+		const reply = await callLoginServer('/internal/reset', { username, lang: loginLang(user) });
 		if (!reply.ok || !reply.code || !reply.url || !reply.expiresAt) {
 			throw new Chat.ErrorMessage(reply.error || this.TL`Could not create the reset code.`);
 		}
-		const expiry = formatExpiry(reply.expiresAt);
-		const player = Utils.escapeHTML(reply.username || username);
-		this.sendReplyBox(
-			`<strong>${this.TL`Password reset code for ${player}`}:</strong> ` +
-			`<code>${Utils.escapeHTML(reply.code)}</code><br />` +
-			`${this.TL`Valid until ${expiry} (single use).`}<br />` +
-			`${this.TL`The player must use it at`} <a href="${Utils.escapeHTML(reply.url)}">${Utils.escapeHTML(reply.url)}</a><br />` +
-			`<small>${this.TL`Only you can see this message. Send the code privately.`}</small>`
-		);
+		this.sendReplyBox(resetBox(this.TL, reply, username));
 		this.globalModlog('PASSWORDRESET', null, 'reset code issued');
 	},
 	redefinirsenhahelp: [

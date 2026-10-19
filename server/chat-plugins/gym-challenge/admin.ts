@@ -8,6 +8,7 @@
  *   view-ginasiosadmin-sprites-<id>-<página>[-<busca>]  galeria de sprites do treinador
  *   view-ginasiosadmin-desafio-<id>       criar ("novo") / editar / abrir / encerrar desafio
  *   view-ginasiosadmin-jornadas-<id>      jornadas do desafio (encerrar a de um jogador)
+ *   view-ginasiosadmin-convites           convites (gerar, listar, revogar) e redefinição de senha
  *
  * Visual: apenas elementos que o cliente oficial já estiliza (pad, ladder,
  * button, textbox, psicon, formatselect), como nas páginas oficiais do PS.
@@ -29,6 +30,7 @@ import { badgeIcon, badgeLabel, badgeOptions, getBadge } from './badges';
 import { isTrainerSprite, searchTrainerSprites, spriteQuery, trainerSpriteImg } from './trainer-sprites';
 import { closeRun, runState } from './runs';
 import { formatDate, profileButton, runStatusLabel } from './player';
+import { callLoginServer, formatExpiry, inviteBox, loginLang, resetBox } from '../custom-accounts';
 import type {
 	Challenge, ChallengeInput, ChallengeStatus, GymStore, StageKind, Trainer, TrainerInput,
 } from './store';
@@ -66,6 +68,28 @@ function takeDraft(user: User, page: string) {
 	return values;
 }
 
+// --- Códigos gerados na página de convites --------------------------------
+// O código (convite ou redefinição) só existe em claro no momento em que é gerado:
+// o login guarda só o hash. Ele aparece uma única vez, na próxima vez que a página
+// de convites é desenhada, e sai da memória. Se a página não for aberta, some em 10 min.
+
+const ISSUED_TTL = 10 * 60 * 1000;
+const issuedCodes = new Map<ID, { html: string, at: number }>();
+
+function keepIssued(user: User, html: string) {
+	const now = Date.now();
+	for (const [id, entry] of issuedCodes) {
+		if (now - entry.at > ISSUED_TTL) issuedCodes.delete(id);
+	}
+	issuedCodes.set(user.id, { html, at: now });
+}
+
+function takeIssued(user: User) {
+	const entry = issuedCodes.get(user.id);
+	issuedCodes.delete(user.id);
+	return entry && Date.now() - entry.at <= ISSUED_TTL ? entry.html : '';
+}
+
 // --- Elementos de página --------------------------------------------------
 
 function teamIcons(team: string) {
@@ -91,7 +115,8 @@ function selectBox(name: string, options: [string, string][], current: string) {
 function navButtons(TL: Translator) {
 	return `<p>` +
 		`<button class="button" name="gymGo" value="${PAGE}">${TL`Admin panel`}</button> ` +
-		`<button class="button" name="gymGo" value="${PAGE}-treinadores">${TL`Trainers`}</button>` +
+		`<button class="button" name="gymGo" value="${PAGE}-treinadores">${TL`Trainers`}</button> ` +
+		`<button class="button" name="gymGo" value="${PAGE}-convites">${TL`Invites`}</button>` +
 		`</p>`;
 }
 
@@ -685,6 +710,50 @@ export const pages: Chat.PageTable = {
 			return buf + `</div>`;
 		},
 
+		async convites(query, user) {
+			// Página aberta antes do login terminar (link direto, recarga): o cliente pede de novo após logar
+			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
+			if (!isAdmin(user)) this.pageDoesNotExist();
+			this.title = this.TL`Invites`;
+			const issued = takeIssued(user);
+			const reply = await callLoginServer('/internal/invites', {});
+			let buf = `<div class="pad">` +
+				`<h2>${this.TL`Invites and passwords`}</h2>` +
+				navButtons(this.TL) +
+				(issued ? `<div class="infobox">${issued}</div>` : '') +
+				`<hr />` +
+				`<h3>${this.TL`New invite`}</h3>` +
+				`<p>${this.TL`Single-use code, valid for 3 days. With a username, only that name can sign up with it.`}</p>` +
+				`<form data-submitsend="/ginasioadmin gerarconvite {username}"><p>` +
+				`<input name="username" class="textbox" maxlength="18" placeholder="${this.TL`Username (optional)`}" /> ` +
+				`<button class="button" type="submit"><strong>${this.TL`Generate invite`}</strong></button></p></form>` +
+				`<h3>${this.TL`Pending invites`}</h3>`;
+			const invites = reply.ok ? reply.invites || [] : null;
+			if (!invites) {
+				buf += `<p><em>${this.TL`Could not load the pending invites.`}</em></p>`;
+			} else if (!invites.length) {
+				buf += `<p><em>${this.TL`No pending invites.`}</em></p>`;
+			} else {
+				buf += `<p><small>${this.TL`The codes are not shown: they are only stored as a hash.`}</small></p>` +
+					`<div class="ladder"><table>` +
+					`<tr><th>${this.TL`Created`}</th><th>${this.TL`Valid until`}</th>` +
+					`<th>${this.TL`Reserved for`}</th><th></th></tr>`;
+				for (const invite of invites) {
+					buf += `<tr><td>${formatExpiry(invite.createdAt)}</td><td>${formatExpiry(invite.expiresAt)}</td>` +
+						`<td>${invite.userid ? Utils.escapeHTML(invite.userid) : `<em>${this.TL`anyone`}</em>`}</td>` +
+						`<td><button class="button" name="send" value="/ginasioadmin revogarconvite ${Number(invite.id)}">` +
+						`${this.TL`Revoke`}</button></td></tr>`;
+				}
+				buf += `</table></div>`;
+			}
+			buf += `<hr /><h3>${this.TL`Password reset`}</h3>` +
+				`<p>${this.TL`Single-use code, valid for 24 hours, for a player who forgot the password. The player uses it on the reset page.`}</p>` +
+				`<form data-submitsend="/ginasioadmin redefinirsenha {username}"><p>` +
+				`<input name="username" class="textbox" maxlength="18" placeholder="${this.TL`Player username`}" /> ` +
+				`<button class="button" type="submit"><strong>${this.TL`Generate reset code`}</strong></button></p></form>`;
+			return buf + `</div>`;
+		},
+
 		jornadas(query, user) {
 			// Página aberta antes do login terminar (link direto, recarga): o cliente pede de novo após logar
 			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
@@ -1067,6 +1136,51 @@ export const commands: Chat.ChatCommands = {
 			this.globalModlog('GYMRUN', null, `closed run #${run.id} (challenge #${run.challengeId})`);
 			this.sendReply(this.TL`Journey closed.`);
 			return this.parse(`/join ${PAGE}-jornadas-${run.challengeId}`);
+		},
+
+		async gerarconvite(target, room, user, connection) {
+			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can create invites.`);
+			const username = target.trim();
+			const reply = await callLoginServer('/internal/invite', { lang: loginLang(user), ...(username ? { username } : {}) });
+			if (!reply.ok || !reply.code || !reply.url || !reply.expiresAt) {
+				connection.popup(reply.error || this.TL`Could not create the invite.`);
+			} else {
+				keepIssued(user, inviteBox(this.TL, reply));
+				// LGPD: o modlog fica depois da exclusão da conta; não guarda o nome de jogadores
+				this.globalModlog('INVITE', null, username ? 'reserved name' : 'open');
+			}
+			return this.parse(`/join ${PAGE}-convites`);
+		},
+
+		async revogarconvite(target, room, user, connection) {
+			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can create invites.`);
+			const id = target.trim();
+			if (!/^[1-9][0-9]*$/.test(id)) throw new Chat.ErrorMessage(this.TL`Invite not found.`);
+			const reply = await callLoginServer('/internal/invites/revoke', { id });
+			if (!reply.ok) {
+				connection.popup(this.TL`Invite not found: it was already used, expired or revoked.`);
+			} else {
+				this.globalModlog('INVITEREVOKE', null, `#${id}`);
+				this.sendReply(this.TL`Invite revoked.`);
+			}
+			return this.parse(`/join ${PAGE}-convites`);
+		},
+
+		async redefinirsenha(target, room, user, connection) {
+			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can reset passwords.`);
+			const username = target.trim();
+			if (!toID(username)) {
+				connection.popup(this.TL`Enter the username.`);
+				return this.parse(`/join ${PAGE}-convites`);
+			}
+			const reply = await callLoginServer('/internal/reset', { username, lang: loginLang(user) });
+			if (!reply.ok || !reply.code || !reply.url || !reply.expiresAt) {
+				connection.popup(reply.error || this.TL`Could not create the reset code.`);
+			} else {
+				keepIssued(user, resetBox(this.TL, reply, username));
+				this.globalModlog('PASSWORDRESET', null, 'reset code issued');
+			}
+			return this.parse(`/join ${PAGE}-convites`);
 		},
 
 		apagardesafio(target, room, user, connection) {

@@ -25,7 +25,7 @@ import {
 import { checkFormat, importTeam, checkTeamType, normalizeTeamText, trainerTypes } from './teams';
 import { activeStages, challengeProblems, DEFAULT_CHALLENGE, fieldKey } from './challenges';
 import { AI_LEVELS, isAILevel } from './levels';
-import { challengeFormatName } from './formats';
+import { challengeFormatName, doublesFormatId } from './formats';
 import { reloadFormats } from './reload';
 import { badgeIcon, badgeLabel, badgeOptions, getBadge } from './badges';
 import { isTrainerSprite, searchTrainerSprites, spriteQuery, trainerSpriteImg } from './trainer-sprites';
@@ -542,7 +542,8 @@ export const pages: Chat.PageTable = {
 					`<td>${trainerSpriteImg(trainer.avatar, 48)}</td>` +
 					`<td><strong>${Utils.escapeHTML(trainer.name)}</strong>` +
 					(trainer.title ? `<br /><small>${Utils.escapeHTML(trainer.title)}</small>` : '') + `</td>` +
-					`<td>${typeIcon(trainer.type) || `<em>${this.TL`none`}</em>`}</td>` +
+					`<td>${typeIcon(trainer.type) || `<em>${this.TL`none`}</em>`}` +
+					(trainer.doubles ? `<br /><small>${this.TL`Doubles`}</small>` : '') + `</td>` +
 					`<td>${teamIcons(trainer.team)}</td>` +
 					`<td>${used}</td>` +
 					`<td><button class="button" name="gymGo" value="${PAGE}-treinador-${trainer.id}">` +
@@ -571,6 +572,7 @@ export const pages: Chat.PageTable = {
 				type: trainer?.type || '',
 				team: trainer ? Teams.export(Teams.unpack(trainer.team) || []) : '',
 				avatar: '',
+				doubles: trainer?.doubles ? 'yes' : 'no',
 			};
 			const types = trainerTypes();
 			const typeOptions = ['', ...types].map(type => [type, type || this.TL`(no type: Champion only)`] as [string, string]);
@@ -592,7 +594,7 @@ export const pages: Chat.PageTable = {
 			let buf = `<div class="pad">` +
 				`<h2>${trainer ? Utils.escapeHTML(trainer.name) : this.TL`New trainer`}</h2>` +
 				navButtons(this.TL) +
-				`<form data-submitsend="/ginasioadmin salvartreinador ${id},{name},{title},{type},{avatar},{team}">` +
+				`<form data-submitsend="/ginasioadmin salvartreinador ${id},{name},{title},{type},{doubles},{avatar},{team}">` +
 				`<p><label class="label">${this.TL`Name`}:<br />` +
 				`<input name="name" class="textbox" maxlength="${NAME_MAX_LENGTH}" value="${Utils.escapeHTML(values.name)}" />` +
 				`</label></p>` +
@@ -601,6 +603,10 @@ export const pages: Chat.PageTable = {
 				`</label></p>` +
 				`<p><label class="label">${this.TL`Trainer type`}:<br />${selectBox('type', typeOptions, values.type)}</label>` +
 				`<br /><small>${this.TL`Gym leaders and Elite Four members need a type; every Pokémon in the team must have it.`}` +
+				`</small></p>` +
+				`<p><label class="label">${this.TL`Doubles battle`}:<br />` +
+				selectBox('doubles', [['no', this.TL`No`], ['yes', this.TL`Yes`]], values.doubles || 'no') + `</label>` +
+				`<br /><small>${this.TL`Battles against this trainer are in doubles, with the challenge rules. The team needs at least 2 Pokémon.`}` +
 				`</small></p>` +
 				newSprite +
 				// Botões tratados pelo nosso fork do cliente (client-custom.js): montar no
@@ -620,7 +626,8 @@ export const pages: Chat.PageTable = {
 					`<p>${trainerSpriteImg(trainer.avatar, 80) || `<em>${this.TL`No sprite`}</em>`}</p>` +
 					`<p><button class="button" name="gymGo" value="${PAGE}-sprites-${trainer.id}-1">` +
 					`${this.TL`Choose sprite`}</button></p>` +
-					`<hr /><h3>${this.TL`Team`}</h3><p>${teamIcons(trainer.team)} ${typeIcon(trainer.type)}</p>`;
+					`<hr /><h3>${this.TL`Team`}</h3><p>${teamIcons(trainer.team)} ${typeIcon(trainer.type)}` +
+					(trainer.doubles ? ` <small>${this.TL`Doubles`}</small>` : '') + `</p>`;
 			}
 			if (trainer) {
 				const challengeIds = store.challengesUsingTrainer(trainer.id);
@@ -902,7 +909,7 @@ export const commands: Chat.ChatCommands = {
 
 		salvartreinador(target, room, user, connection) {
 			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
-			const [rawId, rawName, rawTitle, rawType, rawAvatar, rawTeam] = Utils.splitFirst(target, ',', 5);
+			const [rawId, rawName, rawTitle, rawType, rawDoubles, rawAvatar, rawTeam] = Utils.splitFirst(target, ',', 6);
 			const isNew = rawId.trim() === 'novo';
 			const id = Number(rawId);
 			const store = getStore();
@@ -912,6 +919,7 @@ export const commands: Chat.ChatCommands = {
 			const name = (rawName || '').trim();
 			const title = (rawTitle || '').trim();
 			const type = (rawType || '').trim() || null;
+			const doubles = (rawDoubles || '').trim() === 'yes';
 			problems.push(...checkName(name).map(p => renderProblem(this.TL, p)));
 			if (title.length > TITLE_MAX_LENGTH || /[|,]/.test(title) || hasForbiddenChars(title)) {
 				problems.push(this.TL`The title can be at most ${TITLE_MAX_LENGTH} characters long and cannot contain | or ,.`);
@@ -927,6 +935,9 @@ export const commands: Chat.ChatCommands = {
 			} else {
 				// Sempre valida (Pokémon, itens, habilidades e golpes existentes); com tipo, também o tipo
 				problems.push(...checkTeamType(imported.team, type));
+				if (doubles && (Teams.unpack(imported.team) || []).length < 2) {
+					problems.push(this.TL`A doubles trainer needs at least 2 Pokémon in the team.`);
+				}
 				// Desafios abertos precisam continuar válidos com o time novo
 				if (!isNew) {
 					for (const cid of store.challengesUsingTrainer(id)) {
@@ -945,13 +956,15 @@ export const commands: Chat.ChatCommands = {
 			}
 			const page = `treinador-${isNew ? 'novo' : id}`;
 			if (problems.length || 'error' in imported) {
-				saveDraft(user, page, { name, title, type: type || '', avatar, team: normalizeTeamText(rawTeam || '') });
+				saveDraft(user, page, {
+					name, title, type: type || '', doubles: doubles ? 'yes' : 'no', avatar, team: normalizeTeamText(rawTeam || ''),
+				});
 				const list = problems.map(p => `- ${p}`).join('\n');
 				connection.popup(`${this.TL`The trainer was not saved:`}\n\n${list}`);
 				return this.parse(`/join ${PAGE}-${page}`);
 			}
 
-			const input: TrainerInput = { name, title, type, team: imported.team, avatar };
+			const input: TrainerInput = { name, title, type, team: imported.team, avatar, doubles };
 			let trainer: Trainer | null;
 			if (isNew) {
 				trainer = store.createTrainer(input);
@@ -1047,8 +1060,12 @@ export const commands: Chat.ChatCommands = {
 			if (store.listChallenges().some(c => c.id !== id && toID(c.name) === toID(input.name))) {
 				problems.push({ message: TLkey`There is already a challenge with this name.`, args: [] });
 			}
-			const existing = Dex.formats.get(challengeFormatName(input.name, Dex.formats.get(input.baseFormat).mod));
-			if (input.name && existing.exists && existing.gymChallenge !== String(id)) {
+			const formatName = challengeFormatName(input.name, Dex.formats.get(input.baseFormat).mod);
+			const existing = Dex.formats.get(formatName);
+			// A variante em dupla (treinadores em dupla) também não pode repetir
+			const existingDoubles = Dex.formats.get(doublesFormatId(formatName));
+			const taken = [existing, existingDoubles].some(format => format.exists && format.gymChallenge !== String(id));
+			if (input.name && taken) {
 				problems.push({ message: TLkey`This name conflicts with an existing format.`, args: [] });
 			}
 

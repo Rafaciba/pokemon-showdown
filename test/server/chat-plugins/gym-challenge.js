@@ -59,6 +59,18 @@ describe('Gym Challenge', () => {
 			assert.deepEqual(store.listTrainers().map(t => t.name), ['Agatha', 'Brock']);
 		});
 
+		it('records the doubles option of trainers, off by default', () => {
+			const brock = store.createTrainer(trainerInput('Brock', 'Rock'));
+			assert.equal(brock.doubles, false);
+			assert.equal(store.updateTrainer(brock.id, { ...trainerInput('Brock', 'Rock'), doubles: true }).doubles, true);
+			const c = store.createChallenge(challengeInput());
+			const run = store.createRun(c.id, 'ash', [{
+				kind: 'gym', position: 1, trainerId: brock.id, trainerName: 'Brock', trainerTitle: '', type: 'Rock', team: 'packed',
+				aiLevel: 'random', badgeId: null, badgeName: null, badgeImage: null, trainerAvatar: null, doubles: true,
+			}]);
+			assert.equal(store.getRunStages(run.id)[0].doubles, true);
+		});
+
 		it('creates challenges as drafts and records status changes', () => {
 			const challenge = store.createChallenge(challengeInput());
 			assert.equal(challenge.status, 'draft');
@@ -366,7 +378,7 @@ describe('Gym Challenge', () => {
 			const closed = open({ name: 'Encerrado' });
 			store.setChallengeStatus(closed.id, 'closed');
 			const list = formats.buildChallengeFormats(known, dbPath);
-			assert.equal(list.length, 1);
+			assert.equal(list.length, 2, 'o formato e a variante em dupla');
 			assert.equal(list[0].name, '[Gen 9] [Desafio] Kanto');
 			assert.equal(list[0].teambuilderBase, 'gen9nationaldexag');
 			assert.deepEqual(list[0].ruleset, ['[Gen 9] National Dex AG', 'Terastal Clause', '- Mega']);
@@ -374,11 +386,21 @@ describe('Gym Challenge', () => {
 			assert.equal(list[0].mod, 'gen9');
 			assert.equal(list[0].searchShow, true);
 			assert.equal(list[0].challengeShow, false);
+			// Variante em dupla (treinadores em dupla): as mesmas regras, fora do menu
+			assert.equal(list[1].name, '[Gen 9] [Desafio] Kanto (Dupla)');
+			assert.equal(list[1].gameType, 'doubles');
+			assert.deepEqual(list[1].ruleset, list[0].ruleset);
+			assert.equal(list[1].searchShow, false);
+			assert.equal(list[1].gymDoubles, true);
+			assert.equal(list[1].gymChallenge, String(kanto.id));
+			assert.equal(formats.doublesFormatId(list[0].name), 'gen9desafiokantodupla');
 		});
 
 		it('keeps the base game type', () => {
 			open({ name: 'Duplas', baseFormat: 'gen9nationaldexdoubles' });
-			assert.equal(formats.buildChallengeFormats(known, dbPath)[0].gameType, 'doubles');
+			const list = formats.buildChallengeFormats(known, dbPath);
+			assert.equal(list[0].gameType, 'doubles');
+			assert.equal(list.length, 1, 'formato base em dupla: sem variante');
 		});
 
 		it('skips challenges that would break the format list', () => {
@@ -390,7 +412,8 @@ describe('Gym Challenge', () => {
 			const consoleError = console.error;
 			console.error = (...args) => errors.push(args.join(' '));
 			try {
-				assert.deepEqual(formats.buildChallengeFormats(known, dbPath).map(f => f.name), ['[Gen 9] [Desafio] Valida']);
+				assert.deepEqual(formats.buildChallengeFormats(known, dbPath).map(f => f.name),
+					['[Gen 9] [Desafio] Valida', '[Gen 9] [Desafio] Valida (Dupla)']);
 			} finally {
 				console.error = consoleError;
 			}
@@ -460,6 +483,9 @@ describe('Gym Challenge', () => {
 			const withSprite = new Map(trainers);
 			withSprite.set(1, { ...trainers.get(1), avatar: 'brock' });
 			assert.equal(journey.drawRunStages(challenge(), stages, [], withSprite)[0].trainerAvatar, 'brock');
+			const withDoubles = new Map(trainers);
+			withDoubles.set(1, { ...trainers.get(1), doubles: true });
+			assert.deepEqual(journey.drawRunStages(challenge(), stages, [], withDoubles).map(s => s.doubles), [true, false, false]);
 
 			const pool = [{ trainerId: 1, aiLevel: null, badgeId: 'hoenn-stone' }, { trainerId: 2, aiLevel: null, badgeId: null }];
 			const drawn = journey.drawRunStages(challenge({ typeMode: 'random', gymCount: 2 }), [stage('champion', 1, 7)], pool, trainers);
@@ -770,6 +796,73 @@ describe('Gym Challenge', () => {
 			assert.equal(state.turn, 3);
 		});
 
+		describe('doubles', () => {
+			/** Pedido em dupla: os dois primeiros do time estão ativos. */
+			const doublesRequest = (team, extra = [{}, {}]) => ({
+				active: team.slice(0, 2).map((m, i) => ({
+					moves: m.moves.map(id => ({ move: id, id, pp: 10, maxpp: 10, target: Dex.moves.get(id).target, disabled: false })),
+					...extra[i],
+				})),
+				side: { name: 'NPC', id: 'p2', pokemon: team },
+			});
+			const doublesLog = (a, b) => [
+				'|gametype|doubles', '|teamsize|p1|6',
+				`|switch|p1a: ${a}|${a}, L100|100/100`, `|switch|p1b: ${b}|${b}, L100|100/100`, '|turn|1',
+			];
+
+			it('reads both active slots and position swaps', () => {
+				const state = readBattleState([
+					...doublesLog('Charizard', 'Venusaur'),
+					'|-boost|p1a: Charizard|spa|1', '|switch|p1a: Blastoise|Blastoise, L100|100/100', '|swap|p1b: Venusaur|0',
+				]);
+				assert.equal(state.gameType, 'doubles');
+				assert.deepEqual(state.sides.p1.activeSlots, ['Venusaur', 'Blastoise']);
+				assert.deepEqual(state.sides.p1.pokemon.get('Charizard').boosts, {}, 'quem sai da posição perde os boosts');
+			});
+
+			it('aims single-target moves at the most vulnerable foe', () => {
+				// Sem banco: só a escolha do alvo (com banco, o Médio trocaria o Starmie, ameaçado pelo Venusaur)
+				const team = [mon('Starmie', ['hydropump'], { active: true }), mon('Snorlax', ['bodyslam'], { active: true })];
+				const choice = choose('medium', doublesRequest(team), doublesLog('Venusaur', 'Charizard'));
+				assert.equal(choice.split(', ')[0], 'move 1 2', 'Hydro Pump no Charizard (posição 2), não no Venusaur');
+			});
+
+			it('avoids spread moves that hit the ally hard', () => {
+				const foes = doublesLog('Tyranitar', 'Scizor');
+				const withHeatran = [
+					mon('Garchomp', ['earthquake', 'dragonclaw'], { active: true }), mon('Heatran', ['flamethrower'], { active: true }),
+				];
+				assert.match(choose('medium', doublesRequest(withHeatran), foes).split(', ')[0], /^move 2 [12]$/,
+					'Heatran leva 4x de Earthquake: Dragon Claw');
+				const withZapdos = [
+					mon('Garchomp', ['earthquake', 'dragonclaw'], { active: true }), mon('Zapdos', ['thunderbolt'], { active: true }),
+				];
+				assert.equal(choose('medium', doublesRequest(withZapdos), foes).split(', ')[0], 'move 1',
+					'Zapdos é imune: Earthquake nos dois adversários');
+			});
+
+			it('mega evolves at most one Pokémon per turn', () => {
+				const team = [
+					mon('Charizard', ['flamethrower'], { active: true }), mon('Venusaur', ['gigadrain'], { active: true }),
+				];
+				const choice = choose('hard', doublesRequest(team, [{ canMegaEvo: true }, { canMegaEvo: true }]),
+					doublesLog('Snorlax', 'Blissey'));
+				assert.equal(choice.split(' mega').length - 1, 1);
+			});
+
+			it('sends a different Pokémon to each forced switch', () => {
+				const team = [
+					mon('Charizard', ['flamethrower'], { active: true, hp: 0 }), mon('Venusaur', ['gigadrain'], { active: true, hp: 0 }),
+					mon('Blastoise', ['surf']), mon('Pikachu', ['thunderbolt']),
+				];
+				const request = { forceSwitch: [true, true], side: { name: 'NPC', id: 'p2', pokemon: team } };
+				const [first, second] = choose('hard', request, doublesLog('Snorlax', 'Blissey')).split(', ');
+				assert.match(first, /^switch [34]$/);
+				assert.match(second, /^switch [34]$/);
+				assert.notEqual(first, second);
+			});
+		});
+
 		it('easy goes for raw damage, medium checks types', () => {
 			const team = [mon('Garchomp', ['earthquake', 'dragonclaw'], { active: true }), mon('Starmie', ['surf'])];
 			const log = logWith('Skarmory');
@@ -852,12 +945,9 @@ describe('Gym Challenge', () => {
 			assert.equal(choose('hard', moveRequest(charm, { trapped: true }), logWith('Snorlax')), 'move 1');
 		});
 
-		it('mega evolves and defers doubles to the default choice', () => {
+		it('mega evolves', () => {
 			const team = [mon('Charizard', ['flamethrower'], { active: true })];
 			assert.equal(choose('medium', moveRequest(team, { canMegaEvo: true }), logWith('Snorlax')), 'move 1 mega');
-			const doubles = moveRequest(team);
-			doubles.active.push(doubles.active[0]);
-			assert.equal(choose('hard', doubles, logWith('Snorlax')), 'default');
 		});
 
 		it('creates the AI for each level', () => {

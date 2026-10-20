@@ -29,11 +29,13 @@ export interface Trainer {
 	/** Time empacotado (Teams.pack). */
 	team: string;
 	avatar: string;
+	/** Batalhas contra este treinador são em dupla (padrão: não). */
+	doubles: boolean;
 	createdAt: number;
 	updatedAt: number;
 }
 
-export type TrainerInput = Pick<Trainer, 'name' | 'title' | 'type' | 'team' | 'avatar'>;
+export type TrainerInput = Pick<Trainer, 'name' | 'title' | 'type' | 'team' | 'avatar'> & { doubles?: boolean };
 
 export interface Challenge {
 	id: number;
@@ -119,6 +121,8 @@ export interface RunStage {
 	badgeImage: string | null;
 	/** Cópia do sprite do treinador (id oficial do PS); null = sem sprite. */
 	trainerAvatar: string | null;
+	/** Cópia da opção "batalha em dupla" do treinador. */
+	doubles?: boolean;
 }
 
 export interface RunBattle {
@@ -261,6 +265,11 @@ const MIGRATIONS: string[] = [
 	`
 	ALTER TABLE run_battles ADD COLUMN player_species TEXT;
 	`,
+	// 7: treinadores de batalha em dupla, com cópia na jornada
+	`
+	ALTER TABLE trainers ADD COLUMN doubles INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE run_stages ADD COLUMN doubles INTEGER NOT NULL DEFAULT 0;
+	`,
 ];
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -272,7 +281,7 @@ type Row = Record<string, any>;
 function toTrainer(row: Row): Trainer {
 	return {
 		id: row.id, name: row.name, title: row.title, type: row.type, team: row.team, avatar: row.avatar,
-		createdAt: row.created_at, updatedAt: row.updated_at,
+		doubles: !!row.doubles, createdAt: row.created_at, updatedAt: row.updated_at,
 	};
 }
 
@@ -312,6 +321,7 @@ function toRunStage(row: Row): RunStage {
 		kind: row.kind, position: row.position, trainerId: row.trainer_id, trainerName: row.trainer_name,
 		trainerTitle: row.trainer_title, type: row.type, team: row.team, aiLevel: row.ai_level,
 		badgeId: row.badge_id, badgeName: row.badge_name, badgeImage: row.badge_image, trainerAvatar: row.trainer_avatar,
+		doubles: !!row.doubles,
 	};
 }
 
@@ -397,17 +407,17 @@ export class GymStore {
 	createTrainer(input: TrainerInput): Trainer {
 		const time = now();
 		const result = this.db.prepare(`
-			INSERT INTO trainers (name, title, type, team, avatar, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`).run(input.name, input.title, input.type, input.team, input.avatar, time, time);
+			INSERT INTO trainers (name, title, type, team, avatar, doubles, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`).run(input.name, input.title, input.type, input.team, input.avatar, input.doubles ? 1 : 0, time, time);
 		return this.getTrainer(Number(result.lastInsertRowid))!;
 	}
 
 	updateTrainer(id: number, input: TrainerInput): Trainer | null {
 		this.db.prepare(`
-			UPDATE trainers SET name = ?, title = ?, type = ?, team = ?, avatar = ?, updated_at = ?
+			UPDATE trainers SET name = ?, title = ?, type = ?, team = ?, avatar = ?, doubles = ?, updated_at = ?
 			WHERE id = ?
-		`).run(input.name, input.title, input.type, input.team, input.avatar, now(), id);
+		`).run(input.name, input.title, input.type, input.team, input.avatar, input.doubles ? 1 : 0, now(), id);
 		return this.getTrainer(id);
 	}
 
@@ -550,14 +560,14 @@ export class GymStore {
 			const insert = this.db.prepare(`
 				INSERT INTO run_stages (
 					run_id, kind, position, trainer_id, trainer_name, trainer_title, type, team, ai_level,
-					badge_id, badge_name, badge_image, trainer_avatar
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					badge_id, badge_name, badge_image, trainer_avatar, doubles
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`);
 			for (const stage of stages) {
 				insert.run(
 					runId, stage.kind, stage.position, stage.trainerId, stage.trainerName, stage.trainerTitle,
 					stage.type, stage.team, stage.aiLevel, stage.badgeId ?? null, stage.badgeName ?? null, stage.badgeImage ?? null,
-					stage.trainerAvatar ?? null
+					stage.trainerAvatar ?? null, stage.doubles ? 1 : 0
 				);
 			}
 			return this.getRun(runId)!;

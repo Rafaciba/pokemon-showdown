@@ -19,6 +19,8 @@ import { DEFAULT_DB_PATH } from './store';
 
 export const FORMAT_PREFIX = '[Desafio] ';
 export const FORMAT_SECTION = 'Desafio de Ginásios';
+/** Sufixo do nome da variante em dupla do formato de um desafio. */
+export const DOUBLES_SUFFIX = ' (Dupla)';
 
 /** Dados mínimos de um formato base, como aparecem em config/formats.ts. */
 export interface BaseFormatData {
@@ -48,6 +50,14 @@ interface OpenChallengeRow {
 export function challengeFormatName(challengeName: string, baseMod = 'gen9') {
 	const gen = /^gen(\d+)/.exec(baseMod)?.[1] || '9';
 	return `[Gen ${gen}] ${FORMAT_PREFIX}${challengeName}`;
+}
+
+/**
+ * Id da variante em dupla do formato de um desafio (treinadores em dupla): as mesmas
+ * regras, em dupla. Ela não aparece no menu; só as batalhas da jornada a usam.
+ */
+export function doublesFormatId(formatName: string) {
+	return toID(formatName + DOUBLES_SUFFIX);
 }
 
 function readOpenChallenges(dbPath: string): OpenChallengeRow[] {
@@ -96,7 +106,7 @@ export function buildChallengeFormats(knownFormats: BaseFormatData[], dbPath = D
 		}
 		used.add(id);
 		const rules = row.custom_rules.split(',').map(rule => rule.trim()).filter(Boolean);
-		formats.push({
+		const format = {
 			name,
 			desc: `Desafio de Ginásios: ${row.name}. Batalhas contra treinadores controlados pelo computador.`,
 			mod: base.mod || 'gen9',
@@ -110,7 +120,25 @@ export function buildChallengeFormats(knownFormats: BaseFormatData[], dbPath = D
 			gymChallenge: String(row.id),
 			// O teambuilder do cliente decide geração e Pokédex pelo id do formato
 			teambuilderBase: toID(base.name),
-		});
+		};
+		formats.push(format);
+		// Variante em dupla (treinadores em dupla), se o formato base for individual
+		if (!base.gameType || base.gameType === 'singles') {
+			const doublesId = doublesFormatId(name);
+			if (used.has(doublesId)) {
+				console.error(`[gym-challenge] desafio #${row.id} sem variante em dupla: o id "${doublesId}" já existe`);
+				continue;
+			}
+			used.add(doublesId);
+			formats.push({
+				...format,
+				name: name + DOUBLES_SUFFIX,
+				desc: `${format.desc} Batalhas em dupla.`,
+				gameType: 'doubles' as any,
+				searchShow: false,
+				gymDoubles: true,
+			});
+		}
 	}
 	return formats;
 }

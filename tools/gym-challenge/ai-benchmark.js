@@ -9,6 +9,7 @@
  *   node tools/gym-challenge/ai-benchmark.js [batalhas] [formato] [confrontos]
  *   ex.: node tools/gym-challenge/ai-benchmark.js 100 gen9randombattle
  *        node tools/gym-challenge/ai-benchmark.js 300 gen9randombattle "hard-speedAware:medium,hard:medium"
+ *        node tools/gym-challenge/ai-benchmark.js 100 gen9randomdoublesbattle   (batalhas em dupla)
  *
  * Variantes para calibrar: "hard-hazards" é o Difícil sem a regra hazards;
  * "medium+statusMoves" é o Médio com ela (regras em heuristic-ai.ts → LevelRules).
@@ -43,6 +44,8 @@ function makeAI(spec) {
 	return new HeuristicAI(level, Math.random, overrides);
 }
 const MAX_INVALID = 3;
+/** Escolhas recusadas pelo simulador, por nível (uma IA correta não erra). */
+const invalidChoices = {};
 
 /** Lado de uma batalha controlado por uma NpcAI, como no NpcBattle (log público + pedidos). */
 function drive(stream, level) {
@@ -50,6 +53,7 @@ function drive(stream, level) {
 	const log = [];
 	let request = null;
 	let invalid = 0;
+	let lastChoice = null;
 	const decide = forced => {
 		if (!request || request.wait) return;
 		let choice = forced;
@@ -62,6 +66,7 @@ function drive(stream, level) {
 			}
 		}
 		if (choice) void stream.write(choice);
+		lastChoice = choice;
 	};
 	void (async () => {
 		for await (const chunk of stream) {
@@ -73,6 +78,9 @@ function drive(stream, level) {
 					decide();
 				} else if (line.startsWith('|error|[Invalid choice]')) {
 					invalid++;
+					invalidChoices[level] = (invalidChoices[level] || 0) + 1;
+					// BENCH_DEBUG=1 mostra cada escolha recusada e o motivo
+					if (process.env.BENCH_DEBUG) console.log(`[${level}] "${lastChoice}" → ${line}`);
 					decide(invalid >= MAX_INVALID ? 'default' : undefined);
 				} else if (line.startsWith('|split|')) {
 					skipSecret = true;
@@ -117,7 +125,9 @@ async function battle(p1Level, p2Level) {
 		}
 		const decided = BATTLES - ties;
 		const rate = decided ? (winsA / decided * 100).toFixed(1) : '-';
+		const errors = Object.entries(invalidChoices).map(([level, count]) => `${level} ${count}`).join(', ');
 		console.log(`${a} x ${b}: ${a} venceu ${winsA}/${decided} (${rate}%), empates ${ties}` +
-			` [${((Date.now() - started) / 1000).toFixed(0)}s]`);
+			` [${((Date.now() - started) / 1000).toFixed(0)}s]` + (errors ? ` escolhas recusadas: ${errors}` : ''));
+		for (const level in invalidChoices) delete invalidChoices[level];
 	}
 })();

@@ -24,6 +24,11 @@ declare module '../sim/dex-formats' {
 		 * cliente em `|customformats|` (server/rooms.ts → customFormatsText).
 		 */
 		teambuilderBase?: string;
+		/**
+		 * pokemon-showdown-custom: variante em dupla do formato de um desafio (treinadores
+		 * em dupla). Fica fora do menu; só as batalhas da jornada a usam.
+		 */
+		gymDoubles?: boolean;
 	}
 }
 

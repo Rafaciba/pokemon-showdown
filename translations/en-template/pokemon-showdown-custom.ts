@@ -340,4 +340,11 @@ export const translations: TranslationCatalog = {
 	"Account {previous} renamed to {username}.": null,
 	"Account renamed": null,
 	"previous name: {previous}": null,
+	"Doubles": null,
+	"Doubles battle": null,
+	"Battles against this trainer are in doubles, with the challenge rules. The team needs at least 2 Pokémon.": null,
+	"A doubles trainer needs at least 2 Pokémon in the team.": null,
+	"doubles battle": null,
+	"The doubles battles of this challenge are unavailable. Tell an administrator.": null,
+	"This trainer battles in doubles: your team needs at least 2 Pokémon.": null,
 };

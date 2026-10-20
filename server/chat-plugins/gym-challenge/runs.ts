@@ -17,6 +17,7 @@ import { createNpcBattle, NpcBattle, type NpcBattleHooks, type NpcBattleResult }
 import { createAI } from './ai';
 import { isAILevel } from './levels';
 import { badgeIcon } from './badges';
+import { doublesFormatId } from './formats';
 import type { Problem } from './rules';
 import type { Challenge, Run, RunBattle, RunStage, RunStatus } from './store';
 
@@ -96,7 +97,8 @@ function stageLabel(stage: RunStage, gymCount: number) {
 }
 
 function trainerLabel(stage: RunStage) {
-	return [stage.trainerTitle, stage.trainerName].filter(Boolean).join(' ') + (stage.type ? ` (${stage.type})` : '');
+	return [stage.trainerTitle, stage.trainerName].filter(Boolean).join(' ') + (stage.type ? ` (${stage.type})` : '') +
+		(stage.doubles ? ' - Doubles' : '');
 }
 
 /**
@@ -136,6 +138,22 @@ export async function startStageBattle(
 	const { run, challenge, progress } = state;
 	const stage = progress.next!;
 
+	// Treinador em dupla: a variante em dupla do formato (as mesmas regras)
+	let battleFormat = ready.formatid;
+	if (stage.doubles) {
+		const base = Dex.formats.get(ready.formatid);
+		const doubles = Dex.formats.get(doublesFormatId(base.name));
+		if (base.gameType !== 'doubles') {
+			if (!doubles.exists || !doubles.gymDoubles) {
+				return problem(TLkey`The doubles battles of this challenge are unavailable. Tell an administrator.`);
+			}
+			battleFormat = doubles.id;
+		}
+		if ((Teams.unpack(ready.settings.team) || []).length < 2) {
+			return problem(TLkey`This trainer battles in doubles: your team needs at least 2 Pokémon.`);
+		}
+	}
+
 	const hash = teamHash(ready.settings.team);
 	if (challenge.teamLock && run.teamHash && run.teamHash !== hash) {
 		return problem(TLkey`This journey has a team lock: use the same team as in the first battle (only nicknames and order may change). To use another team, give up and start a new journey.`);
@@ -143,7 +161,7 @@ export async function startStageBattle(
 
 	const ref = { id: 0 };
 	const room = createNpcBattle(user, {
-		format: ready.formatid,
+		format: battleFormat,
 		team: ready.settings.team,
 		npc: npcFor(stage),
 		title: `${user.name} vs. ${stage.trainerName}`,

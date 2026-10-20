@@ -16,7 +16,15 @@
  *     buffs do adversário com Haze, Clear Smog ou golpes que forçam a troca.
  *
  * A IA vê só o que um espectador vê (battle-view.ts) mais o próprio time (pedido do
- * simulador). Batalhas em dupla usam o bot aleatório por enquanto.
+ * simulador).
+ *
+ * Batalhas em dupla (treinadores em dupla, 2026-10-19): as mesmas regras de cada nível,
+ * para cada um dos dois Pokémon ativos. Golpes de um alvo vão no adversário com a melhor
+ * pontuação (de preferência o que dá para nocautear); golpes em área somam o dano nos
+ * dois adversários (com a redução de 25% das batalhas em dupla) e descontam o dano no
+ * próprio aliado (Earthquake, Surf); a Megaevolução é de um por turno; as trocas nunca
+ * escolhem o mesmo Pokémon do banco para as duas posições; a prévia de times põe os dois
+ * melhores confrontos na frente. O caminho das batalhas individuais não mudou.
  *
  * @license MIT
  */
@@ -127,6 +135,26 @@ function offensiveBoosts(fighter: Fighter) {
 	return ['atk', 'spa', 'spe'].reduce((sum, stat) => sum + Math.max(0, fighter.boosts[stat] || 0), 0);
 }
 
+/** Golpes que atingem os dois adversários (e, com allAdjacent, também o aliado). */
+const SPREAD_TARGETS = new Set(['allAdjacentFoes', 'allAdjacent']);
+/** Golpes de um alvo que, em dupla, precisam do número do alvo na escolha. */
+const SINGLE_TARGETS = new Set(['normal', 'any', 'adjacentFoe']);
+/** Golpes em área causam 75% do dano em dupla. */
+const SPREAD_FACTOR = 0.75;
+
+/** Revival Blessing: o primeiro Pokémon desmaiado do banco (slot da escolha), ou null. */
+function revivalSlot(team: PokemonSwitchRequestData[], exclude: ReadonlySet<number> = new Set()): number | null {
+	const index = team.findIndex((mon, i) => !mon.active && !exclude.has(i + 1) && mon.condition.endsWith(' fnt'));
+	return index < 0 ? null : index + 1;
+}
+
+/** Adversário ativo numa posição, com o número de alvo dele na escolha ("move 1 2"). */
+interface Foe {
+	seen: SeenPokemon;
+	fighter: Fighter;
+	target: number;
+}
+
 /** Perigo imediato (só o Difícil avalia): o adversário nocauteia neste turno, e antes de nós? */
 interface Danger {
 	koThisTurn: boolean;
@@ -196,6 +224,8 @@ export class HeuristicAI implements NpcAI {
 	private lastRequest = '';
 	private lastAction: 'move' | 'switch' | '' = '';
 	private lastMoveId = '';
+	/** Em dupla, o último golpe de cada posição (Protect repetido falha). */
+	private lastMoveIds: string[] = [];
 
 	/** `overrides` liga ou desliga regras do nível (para calibrar no banco de testes). */
 	constructor(level: HeuristicLevel, random: () => number = Math.random, overrides: Partial<LevelRules> = {}) {
@@ -216,12 +246,18 @@ export class HeuristicAI implements NpcAI {
 
 		if (request.teamPreview) return this.chooseTeam(request.side.pokemon, state, theirSide, request.maxChosenTeamSize);
 		if (request.forceSwitch) {
-			if (request.forceSwitch.length > 1) return 'default';
-			const slot = this.bestSwitch(request.side.pokemon, state, ourSide, theirSide, null);
+			if (request.forceSwitch.length > 1) {
+				if (retry) return 'default';
+				return this.doublesForceSwitch(request.forceSwitch, request.side.pokemon, state, ourSide, theirSide);
+			}
+			// Revival Blessing: o simulador pede um Pokémon desmaiado para reviver
+			const slot = request.side.pokemon.some(mon => mon.reviving) ? revivalSlot(request.side.pokemon) :
+				this.bestSwitch(request.side.pokemon, state, ourSide, theirSide, null);
 			this.lastAction = 'switch';
 			return slot ? `switch ${slot}` : 'default';
 		}
-		if (request.active.length > 1) return 'default';
+		// Em dupla, uma escolha recusada não se repete: o simulador escolhe
+		if (request.active.length > 1) return retry ? 'default' : this.chooseDoubles(request, state, ourSide, theirSide);
 		return this.chooseMove(request, state, ourSide, theirSide, retry);
 	}
 
@@ -263,6 +299,19 @@ export class HeuristicAI implements NpcAI {
 		const view = state.sides[theirSide];
 		const active = view?.active ? view.pokemon.get(view.active) : undefined;
 		return active && !active.fainted ? active : null;
+	}
+
+	/** Adversários ativos (em dupla, as duas posições), com o número de alvo de cada um. */
+	private opponents(state: BattleState, theirSide: string): Foe[] {
+		const view = state.sides[theirSide];
+		if (!view) return [];
+		const slots = view.activeSlots.length ? view.activeSlots : [view.active];
+		const foes: Foe[] = [];
+		slots.forEach((name, index) => {
+			const seen = name ? view.pokemon.get(name) : undefined;
+			if (seen && !seen.fainted) foes.push({ seen, fighter: this.theirFighter(seen), target: index + 1 });
+		});
+		return foes;
 	}
 
 	/** Maior dano estimado de um lado no outro. */
@@ -314,18 +363,18 @@ export class HeuristicAI implements NpcAI {
 				name: species, species, level: 100, hp: 100, status: '', fainted: false,
 				moves: new Set(), boosts: {}, substitute: false,
 			}));
-			let bestSlot = 1;
-			let bestScore = -Infinity;
-			team.forEach((mon, index) => {
+			const scores = team.map((mon, index) => {
 				const ours = this.ourFighter(mon, state, '', false);
 				const score = theirs.reduce((sum, foe) => sum + this.matchup(ours, foe, state, '', false), 0) / theirs.length;
-				if (score > bestScore) {
-					bestScore = score;
-					bestSlot = index + 1;
-				}
+				return { slot: index + 1, score };
 			});
-			order.splice(order.indexOf(bestSlot), 1);
-			order.unshift(bestSlot);
+			// Em dupla começam dois: os melhores confrontos vão na frente
+			const leads = state.gameType === 'doubles' ? 2 : 1;
+			const best = [...scores].sort((a, b) => b.score - a.score).slice(0, leads).map(entry => entry.slot);
+			for (const slot of [...best].reverse()) {
+				order.splice(order.indexOf(slot), 1);
+				order.unshift(slot);
+			}
 		}
 		return `team ${order.slice(0, maxSize || order.length).join('')}`;
 	}
@@ -334,19 +383,21 @@ export class HeuristicAI implements NpcAI {
 
 	/** Melhor Pokémon do banco para entrar (null se não houver). */
 	private bestSwitch(
-		team: PokemonSwitchRequestData[], state: BattleState, ourSide: string, theirSide: string, minScore: number | null
+		team: PokemonSwitchRequestData[], state: BattleState, ourSide: string, theirSide: string, minScore: number | null,
+		exclude: ReadonlySet<number> = new Set()
 	): number | null {
-		const opponent = this.opponent(state, theirSide);
+		// Em dupla, o confronto é a média contra os dois adversários ativos
+		const foes = this.opponents(state, theirSide);
 		let best: number | null = null;
 		let bestScore = -Infinity;
 		team.forEach((mon, index) => {
-			if (mon.active || mon.condition.endsWith(' fnt') || mon.condition.startsWith('0')) return;
+			if (mon.active || exclude.has(index + 1) || mon.condition.endsWith(' fnt') || mon.condition.startsWith('0')) return;
 			const ours = this.ourFighter(mon, state, ourSide, false);
 			let score: number;
-			if (!opponent || !this.rules.typeSwitching) {
+			if (!foes.length || !this.rules.typeSwitching) {
 				score = ours.hp; // Fácil, ou sem adversário à vista: o mais saudável
 			} else {
-				score = this.matchup(ours, this.theirFighter(opponent), state, ourSide, true);
+				score = foes.reduce((sum, foe) => sum + this.matchup(ours, foe.fighter, state, ourSide, true), 0) / foes.length;
 			}
 			if (score > bestScore) {
 				bestScore = score;
@@ -540,14 +591,14 @@ export class HeuristicAI implements NpcAI {
 	/** Troca voluntária, conforme o nível; devolve o slot ou null. */
 	private voluntarySwitch(
 		team: PokemonSwitchRequestData[], me: Fighter, opponent: Fighter | null, bestScore: number,
-		state: BattleState, ourSide: string, theirSide: string, danger: Danger
+		state: BattleState, ourSide: string, theirSide: string, danger: Danger, exclude: ReadonlySet<number> = new Set()
 	): number | null {
 		if (!this.rules.typeSwitching) {
 			// Fácil: sem golpe de dano útil, ou com pouco HP (às vezes) e alguém saudável no banco
 			const noDamage = bestScore <= 0;
 			const weak = me.hp <= 25 && this.random() < 0.5;
 			if (!noDamage && !weak) return null;
-			const slot = this.bestSwitch(team, state, ourSide, theirSide, null);
+			const slot = this.bestSwitch(team, state, ourSide, theirSide, null, exclude);
 			const candidate = slot ? team[slot - 1] : null;
 			if (!candidate) return null;
 			const [current, max] = candidate.condition.split(' ')[0].split('/').map(Number);
@@ -565,7 +616,7 @@ export class HeuristicAI implements NpcAI {
 		if (bestScore >= opponent.hp + 25) return null; // dá para nocautear: fica
 		const current = this.matchup(me, opponent, state, ourSide, false);
 		const margin = this.rules.carefulSwitching ? 15 : 20;
-		const slot = this.bestSwitch(team, state, ourSide, theirSide, current + margin);
+		const slot = this.bestSwitch(team, state, ourSide, theirSide, current + margin, exclude);
 		if (!slot) return null;
 		if (!this.rules.carefulSwitching) {
 			// Médio: quem entra precisa resistir ou ser neutro aos tipos do adversário e ter HP razoável
@@ -573,5 +624,139 @@ export class HeuristicAI implements NpcAI {
 			if (candidate.hp < 40 || opponent.types.some(type => typeFactor(type, candidate, true) >= 2)) return null;
 		}
 		return slot;
+	}
+
+	// --- Batalhas em dupla -------------------------------------------------------
+
+	/** Trocas obrigatórias em dupla: cada posição recebe um Pokémon diferente do banco. */
+	private doublesForceSwitch(
+		forced: boolean[], team: PokemonSwitchRequestData[], state: BattleState, ourSide: string, theirSide: string
+	) {
+		const taken = new Set<number>();
+		const choices = forced.map((mustSwitch, index) => {
+			if (!mustSwitch) return 'pass';
+			const slot = team[index]?.reviving ? revivalSlot(team, taken) :
+				this.bestSwitch(team, state, ourSide, theirSide, null, taken);
+			if (!slot) return 'pass';
+			taken.add(slot);
+			return `switch ${slot}`;
+		});
+		this.lastAction = 'switch';
+		return choices.join(', ');
+	}
+
+	/** Uma escolha para cada Pokémon ativo, separadas por vírgula ("move 1 2, switch 3"). */
+	private chooseDoubles(request: MoveRequest, state: BattleState, ourSide: string, theirSide: string) {
+		const team = request.side.pokemon;
+		const foes = this.opponents(state, theirSide);
+		const switching = new Set<number>();
+		const canSwitchNow = this.lastAction !== 'switch';
+		let megaUsed = false;
+		const choices = request.active.map((active, index) => {
+			const mon = team[index];
+			if (!mon || mon.condition.endsWith(' fnt') || mon.condition.startsWith('0')) return 'pass';
+			const me = this.ourFighter(mon, state, ourSide, true);
+			const allyMon = team[1 - index];
+			const ally = allyMon?.active && !allyMon.condition.endsWith(' fnt') ?
+				this.ourFighter(allyMon, state, ourSide, true) : null;
+			const options = active.moves
+				.map((slot, moveIndex) => ({ slot, moveIndex, move: getMove(slot.id) }))
+				.filter(({ slot, move }) => !slot.disabled && (slot.pp === undefined || slot.pp > 0) && move.exists);
+			if (!options.length) return 'move 1';
+
+			// O adversário que mais ameaça este Pokémon guia o perigo e as trocas
+			let threat: Foe | null = null;
+			let threatDamage = -1;
+			for (const foe of foes) {
+				const damage = this.bestDamage(foe.fighter, me);
+				if (damage > threatDamage) {
+					threatDamage = damage;
+					threat = foe;
+				}
+			}
+			const danger: Danger = { koThisTurn: false, outsped: false };
+			if (this.rules.speedAware && threat) {
+				danger.koThisTurn = threatDamage >= me.hp;
+				danger.outsped = speedOf(threat.fighter) > speedOf(me);
+			}
+
+			this.lastMoveId = this.lastMoveIds[index] || '';
+			const scored = options.map(option => ({
+				...option, ...this.scoreDoublesMove(option.move, index, me, ally, foes, state, ourSide, theirSide, danger),
+			}));
+			scored.sort((a, b) => b.score - a.score);
+			const best = scored[0];
+
+			if (canSwitchNow && !active.trapped && !active.maybeTrapped) {
+				const slot = this.voluntarySwitch(
+					team, me, threat?.fighter || null, best.score, state, ourSide, theirSide, danger, switching
+				);
+				if (slot) {
+					switching.add(slot);
+					return `switch ${slot}`;
+				}
+			}
+			this.lastMoveIds[index] = best.move.id;
+			const mega = active.canMegaEvo && !megaUsed ? ' mega' : '';
+			if (mega) megaUsed = true;
+			// Golpe preso (segundo turno de Electro Shot, Outrage...) chega sem "target" e não aceita alvo
+			// Sem adversário à vista, um golpe de um alvo vai no da primeira posição
+			const needsTarget = !!best.slot.target && SINGLE_TARGETS.has(best.slot.target);
+			const target = best.slot.target ? (best.target || (needsTarget ? 1 : 0)) : 0;
+			const targetText = target ? ` ${target}` : '';
+			return `move ${best.moveIndex + 1}${targetText}${mega}`;
+		});
+		this.lastAction = switching.size ? 'switch' : 'move';
+		return choices.join(', ');
+	}
+
+	/** Pontuação de um golpe em dupla e o alvo (0 = o golpe não precisa de alvo). */
+	private scoreDoublesMove(
+		move: Move, index: number, me: Fighter, ally: Fighter | null, foes: Foe[],
+		state: BattleState, ourSide: string, theirSide: string, danger: Danger
+	): { score: number, target: number } {
+		const allyTarget = -(2 - index); // posição 1 → aliado em -2; posição 2 → aliado em -1
+		if (move.category !== 'Status') {
+			if (!foes.length) return { score: effectivePower(move, false) / 10, target: 0 };
+			if (SPREAD_TARGETS.has(move.target)) {
+				let score = 0;
+				for (const foe of foes) {
+					const damage = estimateDamage(me, move, foe.fighter, this.rules) * SPREAD_FACTOR;
+					score += Math.min(damage, foe.fighter.hp);
+					if (this.rules.typeAware && damage >= foe.fighter.hp) score += 25;
+				}
+				// Earthquake, Surf e afins atingem o aliado também
+				if (move.target === 'allAdjacent' && ally) {
+					const hit = estimateDamage(me, move, ally, this.rules) * SPREAD_FACTOR;
+					score -= this.rules.typeAware ? Math.min(hit, ally.hp) * 1.5 + (hit >= ally.hp ? 60 : 0) : Math.min(hit, ally.hp);
+				}
+				if (danger.koThisTurn && danger.outsped && move.priority <= 0) score *= 0.5;
+				return { score, target: 0 };
+			}
+			let best = { score: -Infinity, target: foes[0].target };
+			for (const foe of foes) {
+				const score = this.scoreMove(move, me, foe.fighter, foe.seen, state, ourSide, theirSide, danger);
+				if (score > best.score) best = { score, target: foe.target };
+			}
+			return { score: best.score, target: SINGLE_TARGETS.has(move.target) ? best.target : 0 };
+		}
+		// Golpes no aliado (Helping Hand e afins): pouco valor, só com aliado em campo
+		// Sem aliado o golpe falha, mas o simulador ainda exige o alvo
+		if (move.target === 'adjacentAlly') return { score: ally ? 8 : -5, target: allyTarget };
+		if (move.target === 'adjacentAllyOrSelf') return { score: 5, target: -(index + 1) };
+		const factor = danger.koThisTurn ? 0.3 : 1;
+		if (SINGLE_TARGETS.has(move.target) && foes.length) {
+			let best = { score: -Infinity, target: foes[0].target };
+			for (const foe of foes) {
+				const score = this.scoreStatusMove(move, me, foe.fighter, foe.seen, state, ourSide, theirSide) * factor;
+				if (score > best.score) best = { score, target: foe.target };
+			}
+			return best;
+		}
+		const primary = foes[0] || null;
+		const score = this.scoreStatusMove(
+			move, me, primary?.fighter || null, primary?.seen || null, state, ourSide, theirSide
+		);
+		return { score: score * factor, target: 0 };
 	}
 }

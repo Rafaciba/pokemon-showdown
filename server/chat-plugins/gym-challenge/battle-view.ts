@@ -29,8 +29,10 @@ export interface SeenPokemon {
 export interface SideView {
 	/** Pokémon já vistos, por apelido. */
 	pokemon: Map<string, SeenPokemon>;
-	/** Apelido do Pokémon ativo. */
+	/** Apelido do Pokémon ativo (em dupla, o da primeira posição). */
 	active: string | null;
+	/** Apelidos dos Pokémon ativos por posição (a, b...); em dupla, duas posições. */
+	activeSlots: (string | null)[];
 	/** Tamanho do time, quando o log informa (prévia de times ou |teamsize|). */
 	teamSize: number | null;
 	/** Espécies mostradas na prévia de times. */
@@ -43,16 +45,24 @@ export interface BattleState {
 	sides: { [side: string]: SideView };
 	turn: number;
 	weather: string;
+	/** 'singles', 'doubles'... (linha |gametype| do início da batalha). */
+	gameType: string;
 }
 
 function emptySide(): SideView {
-	return { pokemon: new Map(), active: null, teamSize: null, preview: [], conditions: new Map() };
+	return { pokemon: new Map(), active: null, activeSlots: [], teamSize: null, preview: [], conditions: new Map() };
 }
 
 /** "p1a: Apelido" → ['p1', 'Apelido'] */
 function parseIdent(ident: string): [string, string] {
 	const colon = ident.indexOf(':');
 	return [ident.slice(0, 2), ident.slice(colon + 1).trim()];
+}
+
+/** "p1b: Apelido" → 1 (posição: a = 0, b = 1, c = 2) */
+function parsePosition(ident: string): number {
+	const letter = ident.charAt(2);
+	return /[a-c]/.test(letter) ? letter.charCodeAt(0) - 97 : 0;
 }
 
 /** "Garchomp, L80, M" → ['Garchomp', 80] */
@@ -78,7 +88,7 @@ function conditionId(text: string) {
 }
 
 export function readBattleState(log: readonly string[]): BattleState {
-	const state: BattleState = { sides: { p1: emptySide(), p2: emptySide() }, turn: 0, weather: '' };
+	const state: BattleState = { sides: { p1: emptySide(), p2: emptySide() }, turn: 0, weather: '', gameType: 'singles' };
 	const side = (id: string) => (state.sides[id] ||= emptySide());
 	const pokemonOf = (ident: string) => {
 		const [sideId, name] = parseIdent(ident);
@@ -92,6 +102,9 @@ export function readBattleState(log: readonly string[]): BattleState {
 		case 'turn':
 			state.turn = Number(parts[2]) || state.turn;
 			break;
+		case 'gametype':
+			state.gameType = parts[2] || 'singles';
+			break;
 		case 'teamsize':
 			side(parts[2]).teamSize = Number(parts[3]) || null;
 			break;
@@ -104,8 +117,10 @@ export function readBattleState(log: readonly string[]): BattleState {
 			const [sideId, name] = parseIdent(parts[2]);
 			const [species, level] = parseDetails(parts[3]);
 			const view = side(sideId);
-			// Quem sai perde os boosts e o Substitute
-			const previous = view.active ? view.pokemon.get(view.active) : undefined;
+			const position = parsePosition(parts[2]);
+			// Quem sai daquela posição perde os boosts e o Substitute
+			const leaving = view.activeSlots[position];
+			const previous = leaving ? view.pokemon.get(leaving) : undefined;
 			if (previous) {
 				previous.boosts = {};
 				previous.substitute = false;
@@ -121,7 +136,19 @@ export function readBattleState(log: readonly string[]): BattleState {
 			mon.hp = hp;
 			if (status !== null) mon.status = status;
 			mon.fainted = fainted;
-			view.active = name;
+			view.activeSlots[position] = name;
+			if (position === 0) view.active = name;
+			break;
+		}
+		case 'swap': {
+			// Ally Switch e similares: "|swap|p1a: Apelido|1" leva o Pokémon à posição 1 (b)
+			const [sideId, name] = parseIdent(parts[2]);
+			const view = side(sideId);
+			const from = view.activeSlots.indexOf(name);
+			const to = Number(parts[3]);
+			if (from < 0 || !Number.isInteger(to)) break;
+			[view.activeSlots[from], view.activeSlots[to]] = [view.activeSlots[to] ?? null, name];
+			view.active = view.activeSlots[0] ?? null;
 			break;
 		}
 		case 'detailschange': case '-formechange': {

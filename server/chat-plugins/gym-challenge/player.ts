@@ -73,10 +73,11 @@ function trainerName(stage: RunStage) {
 	return Utils.escapeHTML([stage.trainerTitle, stage.trainerName].filter(Boolean).join(' '));
 }
 
-/** Sprite (cópia gravada na jornada) e nome do treinador. */
-function trainerCell(stage: RunStage) {
+/** Sprite (cópia gravada na jornada) e nome do treinador, com o aviso de batalha em dupla. */
+function trainerCell(TL: Translator, stage: RunStage) {
 	const sprite = trainerSpriteImg(stage.trainerAvatar, 40);
-	return sprite ? `${sprite} ${trainerName(stage)}` : trainerName(stage);
+	const doubles = stage.doubles ? ` <small>(${TL`doubles battle`})</small>` : '';
+	return (sprite ? `${sprite} ${trainerName(stage)}` : trainerName(stage)) + doubles;
 }
 
 function navButtons(TL: Translator) {
@@ -132,7 +133,7 @@ function journeyTables(TL: Translator, state: RunState) {
 			action = `<button class="button" name="send" value="/ginasio escolher ${challenge.id},${stage.position}">` +
 				`${TL`Battle this gym next`}</button>`;
 		}
-		buf += `<tr><td>${stage.position}</td><td>${trainerCell(stage)}</td><td>${typeIcon(stage.type)}</td>` +
+		buf += `<tr><td>${stage.position}</td><td>${trainerCell(TL, stage)}</td><td>${typeIcon(stage.type)}</td>` +
 			`<td>${badge ? stageBadge(stage) : ''}</td><td>${action}</td></tr>`;
 	}
 	buf += `</table></div>`;
@@ -150,7 +151,7 @@ function journeyTables(TL: Translator, state: RunState) {
 		if (allBadges && index < progress.leagueWins) status = TL`Defeated in this attempt`;
 		else if (allBadges && isNext(stage)) status = `<strong>${TL`Next battle`}</strong>`;
 		const label = stage.kind === 'elite4' ? `${TL`Elite Four`} ${stage.position}` : TL`Champion`;
-		buf += `<tr><td>${label}</td><td>${trainerCell(stage)}</td><td>${typeIcon(stage.type)}</td><td>${status}</td></tr>`;
+		buf += `<tr><td>${label}</td><td>${trainerCell(TL, stage)}</td><td>${typeIcon(stage.type)}</td><td>${status}</td></tr>`;
 	});
 	return buf + `</table></div>`;
 }

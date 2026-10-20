@@ -340,4 +340,11 @@ export const translations: TranslationCatalog = {
 	"Account {previous} renamed to {username}.": "Conta {previous} renomeada para {username}.",
 	"Account renamed": "Conta renomeada",
 	"previous name: {previous}": "nome anterior: {previous}",
+	"Doubles": "Dupla",
+	"Doubles battle": "Batalha em dupla",
+	"Battles against this trainer are in doubles, with the challenge rules. The team needs at least 2 Pokémon.": "As batalhas contra este treinador são em dupla, com as regras do desafio. O time precisa de pelo menos 2 Pokémon.",
+	"A doubles trainer needs at least 2 Pokémon in the team.": "Um treinador em dupla precisa de pelo menos 2 Pokémon no time.",
+	"doubles battle": "batalha em dupla",
+	"The doubles battles of this challenge are unavailable. Tell an administrator.": "As batalhas em dupla deste desafio estão indisponíveis. Avise um administrador.",
+	"This trainer battles in doubles: your team needs at least 2 Pokémon.": "Este treinador batalha em dupla: o seu time precisa de pelo menos 2 Pokémon.",
 };

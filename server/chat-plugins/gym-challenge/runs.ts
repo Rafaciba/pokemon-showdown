@@ -204,7 +204,9 @@ function battleHooks(ref: { id: number }): NpcBattleHooks {
 			if (ref.id) store.saveBattleState(ref.id, inputLog);
 		},
 		// Aprendizado da Mestre: posições anônimas de todas as batalhas da jornada
-		onPositions: (positions, npcWon) => recordBattlePositions(store, positions, npcWon),
+		onPositions: (positions, npcWon, doubles) => (
+			recordBattlePositions(store, positions, npcWon, doubles ? 'doubles' : 'singles')
+		),
 	};
 }
 

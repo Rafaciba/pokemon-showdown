@@ -26,6 +26,9 @@
  * escolhem o mesmo Pokémon do banco para as duas posições; a prévia de times põe os dois
  * melhores confrontos na frente. O caminho das batalhas individuais não mudou.
  *
+ * Mestre em dupla (etapa 5): pesos próprios, treinados só em batalhas em dupla, e a
+ * busca simplificada no simulador (sim-search.ts → simSearchDoubles).
+ *
  * @license MIT
  */
 import type { ChoiceRequest, MoveRequest, PokemonSwitchRequestData } from '../../../sim/side';
@@ -38,7 +41,7 @@ import {
 	effectivePower, estimateDamage, getMove, offensiveBoosts, speciesStats, speedOf, stabMoves, typeFactor,
 	STATUS_IMMUNE_TYPES, type Fighter,
 } from './battle-math';
-import { simSearchForcedSwitch, simSearchMove, type SimSearchOptions } from './sim-search';
+import { simSearchDoubles, simSearchForcedSwitch, simSearchMove, type SimSearchOptions } from './sim-search';
 import type { MasterSearchQuery } from './master-search-process';
 
 export type HeuristicLevel = 'easy' | 'medium' | 'hard' | 'master';
@@ -202,9 +205,12 @@ interface Danger {
 	outsped: boolean;
 }
 
-/** Busca da Mestre: o modelo de avaliação e o olhar à frente (simplificado ou no simulador). */
+/** Busca da Mestre: os modelos de avaliação (individual e dupla) e a busca no simulador. */
 export interface MasterSearch {
-	model: ValueModel;
+	/** Modelo das batalhas individuais; sem ele, a Mestre joga só com as regras em individual. */
+	model: ValueModel | null;
+	/** Modelo das batalhas em dupla; sem ele, a Mestre joga só com as regras em dupla. */
+	doublesModel?: ValueModel | null;
 	sim: SimSearchOptions;
 	/** No servidor: a busca no simulador roda noutro processo (master-search-process.ts). */
 	remote?: (query: MasterSearchQuery) => Promise<string | null>;
@@ -213,8 +219,11 @@ export interface MasterSearch {
 export class HeuristicAI implements NpcAI {
 	readonly level: HeuristicLevel;
 	private readonly rules: LevelRules;
-	private readonly w: Readonly<HeuristicWeights>;
-	/** Mestre: busca no simulador do PS com o modelo de avaliação (batalhas individuais; sim-search.ts). */
+	/** Pesos da batalha atual: `singlesWeights` ou `doublesWeights`, conforme o tipo de batalha. */
+	private w: Readonly<HeuristicWeights>;
+	private readonly singlesWeights: Readonly<HeuristicWeights>;
+	private readonly doublesWeights: Readonly<HeuristicWeights>;
+	/** Mestre: busca no simulador do PS com o modelo de avaliação (sim-search.ts). */
 	private readonly search: MasterSearch | null;
 	private readonly random: () => number;
 	private lastRequest = '';
@@ -223,15 +232,21 @@ export class HeuristicAI implements NpcAI {
 	/** Em dupla, o último golpe de cada posição (Protect repetido falha). */
 	private lastMoveIds: string[] = [];
 
-	/** `overrides` liga ou desliga regras do nível (para calibrar no banco de testes). */
+	/**
+	 * `overrides` liga ou desliga regras do nível (para calibrar no banco de testes);
+	 * `doublesWeights` são os pesos das batalhas em dupla (padrão: os mesmos `weights`).
+	 */
 	constructor(
 		level: HeuristicLevel, random: () => number = Math.random, overrides: Partial<LevelRules> = {},
 		weights: Readonly<HeuristicWeights> = DEFAULT_WEIGHTS,
-		search: MasterSearch | null = null
+		search: MasterSearch | null = null,
+		doublesWeights: Readonly<HeuristicWeights> = weights
 	) {
 		this.level = level;
 		this.rules = { ...RULES[level], ...overrides };
 		this.w = weights;
+		this.singlesWeights = weights;
+		this.doublesWeights = doublesWeights;
 		this.search = search;
 		this.random = random;
 	}
@@ -243,6 +258,7 @@ export class HeuristicAI implements NpcAI {
 		const retry = key === this.lastRequest;
 		this.lastRequest = key;
 		const state = readBattleState(view.log);
+		this.w = state.gameType === 'doubles' ? this.doublesWeights : this.singlesWeights;
 		const ourSide = request.side.id;
 		const theirSide = ourSide === 'p1' ? 'p2' : 'p1';
 
@@ -254,17 +270,18 @@ export class HeuristicAI implements NpcAI {
 			}
 			// Revival Blessing: o simulador pede um Pokémon desmaiado para reviver
 			const reviving = request.side.pokemon.some(mon => mon.reviving);
-			if (this.search?.remote && !reviving && !retry) {
+			const singlesModel = this.search?.model;
+			if (this.search?.remote && singlesModel && !reviving && !retry) {
 				const fallback = this.bestSwitch(request.side.pokemon, state, ourSide, theirSide, null);
 				const ruleChoice = fallback ? `switch ${fallback}` : 'default';
 				this.lastAction = 'switch';
 				return this.search.remote({
-					kind: 'switch', request, log: view.log, ruleChoice, options: this.search.sim, model: this.search.model,
+					kind: 'switch', request, log: view.log, ruleChoice, options: this.search.sim, model: singlesModel,
 				})
 					.then(choice => choice || ruleChoice);
 			}
-			const searched = this.search && !reviving && !retry ?
-				simSearchForcedSwitch(request, state, this.search.model, this.search.sim) : null;
+			const searched = this.search && singlesModel && !reviving && !retry ?
+				simSearchForcedSwitch(request, state, singlesModel, this.search.sim) : null;
 			if (searched) {
 				this.lastAction = 'switch';
 				return searched;
@@ -275,12 +292,29 @@ export class HeuristicAI implements NpcAI {
 			return slot ? `switch ${slot}` : 'default';
 		}
 		// Em dupla, uma escolha recusada não se repete: o simulador escolhe
-		if (request.active.length > 1) return retry ? 'default' : this.chooseDoubles(request, state, ourSide, theirSide);
+		if (request.active.length > 1) {
+			if (retry) return 'default';
+			const doublesRule = this.chooseDoubles(request, state, ourSide, theirSide);
+			const doublesModel = this.search?.doublesModel;
+			if (!this.search || !doublesModel) return doublesRule;
+			// Mestre: a busca pode trocar a parte de cada Pokémon
+			if (this.search.remote) {
+				return this.search.remote({
+					kind: 'doubles', request, log: view.log, ruleChoice: doublesRule, options: this.search.sim,
+					model: doublesModel,
+				})
+					.then(choice => this.noteDoublesChoice(request, choice || doublesRule, doublesRule));
+			}
+			const searched = simSearchDoubles(request, state, doublesModel, this.search.sim, doublesRule);
+			return this.noteDoublesChoice(request, searched, doublesRule);
+		}
 		const ruleChoice = this.chooseMove(request, state, ourSide, theirSide, retry);
+		const model = this.search?.model;
+		if (!this.search || !model || retry) return ruleChoice;
 		// Mestre: a busca pode trocar a jogada das regras; numa escolha recusada, as regras decidem
-		if (this.search?.remote && !retry) {
+		if (this.search.remote) {
 			return this.search.remote({
-				kind: 'move', request, log: view.log, ruleChoice, options: this.search.sim, model: this.search.model,
+				kind: 'move', request, log: view.log, ruleChoice, options: this.search.sim, model,
 			})
 				.then(choice => {
 					const final = choice || ruleChoice;
@@ -288,12 +322,10 @@ export class HeuristicAI implements NpcAI {
 					return final;
 				});
 		}
-		if (this.search && !retry) {
-			const choice = simSearchMove(request, state, this.search.model, this.search.sim, ruleChoice);
-			if (choice && choice !== ruleChoice) {
-				this.lastAction = choice.startsWith('switch') ? 'switch' : 'move';
-				return choice;
-			}
+		const choice = simSearchMove(request, state, model, this.search.sim, ruleChoice);
+		if (choice && choice !== ruleChoice) {
+			this.lastAction = choice.startsWith('switch') ? 'switch' : 'move';
+			return choice;
 		}
 		return ruleChoice;
 	}
@@ -689,6 +721,18 @@ export class HeuristicAI implements NpcAI {
 		});
 		this.lastAction = 'switch';
 		return choices.join(', ');
+	}
+
+	/** Mestre em dupla: a busca trocou a escolha das regras; atualiza a última jogada de cada posição. */
+	private noteDoublesChoice(request: MoveRequest, choice: string, ruleChoice: string) {
+		if (choice === ruleChoice) return choice;
+		const parts = choice.split(',').map(part => part.trim());
+		parts.forEach((part, index) => {
+			const move = /^move (\d+)/.exec(part);
+			if (move) this.lastMoveIds[index] = toID(request.active[index]?.moves[Number(move[1]) - 1]?.id || '');
+		});
+		this.lastAction = parts.some(part => part.startsWith('switch')) ? 'switch' : 'move';
+		return choice;
 	}
 
 	/** Uma escolha para cada Pokémon ativo, separadas por vírgula ("move 1 2, switch 3"). */

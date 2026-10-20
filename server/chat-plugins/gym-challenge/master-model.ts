@@ -30,6 +30,25 @@ export const MASTER_MODEL: ValueModel | null = {
 };
 
 /**
+ * Modelo das batalhas em dupla (saída de train-value.js --doubles, campo "model"): 20 mil batalhas simuladas,
+ * 75.0% de acerto do vencedor em posições fora do treino (2026-10-20). Usa as características de dupla
+ * (position.ts).
+ */
+export const MASTER_DOUBLES_MODEL: ValueModel | null = {
+	version: 'sim-dupla-2026-10-20', samples: 333774, battles: 18000,
+	features: ['ourHp', 'theirHp', 'ourAlive', 'theirAlive', 'ourActiveHp', 'theirActiveHp', 'ourDamage', 'theirDamage',
+		'faster', 'weKo', 'theyKo', 'koFirst', 'ourBench', 'theirBench', 'ourBoosts', 'theirBoosts', 'ourStatus',
+		'theirStatus', 'ourHazards', 'theirHazards', 'ourScreens', 'theirScreens'],
+	mean: [3.28601, 3.29034, 3.94876, 3.94813, 1.3398, 1.34479, 0.89857, 0.95335, 0.00767, 0.64249, 0.70106, -0.02164,
+		0.01221, 0.00968, -0.032, -0.03204, 0.12558, 0.12552, 0.01335, 0.01223, 0.01864, 0.01864],
+	scale: [1.80625, 1.80537, 1.71559, 1.71587, 0.54299, 0.54117, 0.46507, 0.47025, 0.70952, 0.68873, 0.70093, 0.46459,
+		0.25952, 0.17034, 0.2638, 0.26381, 0.29838, 0.29836, 0.08486, 0.07692, 0.16276, 0.16276],
+	weights: [1.55292, -1.59592, 0.99515, -1.00511, 0.27572, -0.32794, 0.33506, -0.29468, 0.20941, -0.0565, 0.1004,
+		0.29523, 0.10174, -0.03592, 0.07519, -0.10791, -0.10241, 0.11267, -0.09008, 0.10236, 0.0443, -0.03171],
+	bias: 0.00961,
+};
+
+/**
  * Busca no simulador (sim-search.ts): 2 palpites do time do adversário, margem de 0,05 e
  * até 1 s por jogada. Com mais palpites não houve ganho mensurável (etapa 3).
  */

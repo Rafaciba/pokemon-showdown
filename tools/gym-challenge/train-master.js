@@ -22,6 +22,7 @@
  *     --validate 2000    batalhas da validação final
  *     --out <arquivo>    pesos e histórico (gravado a cada geração; com --resume, continua)
  *     --seed <texto>     semente do treino (as batalhas se repetem com a mesma semente)
+ *     --mode doubles     só batalhas em dupla (pesos da Mestre em dupla; etapa 5)
  *
  * @license MIT
  */
@@ -47,8 +48,9 @@ const SIGMA0 = Number(option('sigma', 0.3));
 const WORKERS = Number(option('workers', 8));
 const PACKS = option('packs', '');
 const VALIDATE = Math.max(2, Number(option('validate', 2000)) & ~1);
-const OUT = option('out', path.resolve(__dirname, 'master-training.json'));
-const SEED = option('seed', 'liga-de-desafios');
+const DOUBLES = option('mode', 'mixed') === 'doubles';
+const OUT = option('out', path.resolve(__dirname, DOUBLES ? 'master-training-doubles.json' : 'master-training.json'));
+const SEED = option('seed', DOUBLES ? 'liga-de-desafios-dupla' : 'liga-de-desafios');
 const RESUME = args.includes('--resume');
 
 // --- Pesos ---------------------------------------------------------------------------
@@ -108,23 +110,26 @@ function loadPackTeams() {
 	for (const file of fs.readdirSync(PACKS).filter(name => name.endsWith('.json')).sort()) {
 		const pack = JSON.parse(fs.readFileSync(path.join(PACKS, file), 'utf8'));
 		for (const trainer of pack.trainers || []) {
-			if (trainer.doubles) continue;
+			// Em dupla, os times de todos os treinadores (com pelo menos 2 Pokémon)
+			if (trainer.doubles && !DOUBLES) continue;
 			const sets = Teams.import(trainer.team);
-			if (sets?.length) teams.push({ name: trainer.name, team: Teams.pack(sets) });
+			if (sets?.length >= (DOUBLES ? 2 : 1)) teams.push({ name: trainer.name, team: Teams.pack(sets) });
 		}
 	}
 	return teams;
 }
 
 const packTeams = loadPackTeams();
-const PACK_FORMAT = packTeams.length ?
-	Dex.formats.validate('gen9nationaldexag@@@Standard NatDex, Terastal Clause, Z-Move Clause, Dynamax Clause') : '';
+const PACK_FORMAT = !packTeams.length ? '' : Dex.formats.validate(DOUBLES ?
+	'gen9nationaldexdoubles@@@Terastal Clause, Z-Move Clause, Dynamax Clause' :
+	'gen9nationaldexag@@@Standard NatDex, Terastal Clause, Z-Move Clause, Dynamax Clause');
 
 /**
  * Batalhas de um lote: cada semente vira duas batalhas (a Mestre de cada lado).
  * Em 10 sementes: 4 de Random Battle, 2 de Random Doubles e 4 com times dos pacotes
  * (Random Battle no lugar, sem pacotes). Uma em cada três contra o Médio, as demais
- * contra o Difícil.
+ * contra o Difícil. Com --mode doubles: 6 de Random Doubles e 4 com os times dos
+ * pacotes, em dupla.
  */
 function scenarios(namespace, count) {
 	const list = [];
@@ -139,7 +144,7 @@ function scenarios(namespace, count) {
 			let b = bytes.readUInt32BE(4) % packTeams.length;
 			if (b === a) b = (b + 1) % packTeams.length;
 			base = { kind: 'packs', format: PACK_FORMAT, seed, team1: packTeams[a].team, team2: packTeams[b].team };
-		} else if (slot >= 4) {
+		} else if (slot >= 4 || DOUBLES) {
 			base = { kind: 'doubles', format: 'gen9randomdoublesbattle', seed };
 		} else {
 			base = { kind: 'singles', format: 'gen9randombattle', seed };

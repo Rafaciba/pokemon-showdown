@@ -442,4 +442,9 @@ export const translations: TranslationCatalog = {
 	"Retraining started.": null,
 	"Model not found.": null,
 	"Model in use changed. New battles against the Master AI use it.": null,
+	"Singles": null,
+	"Battle type": null,
+	"Singles and doubles battles have separate data, models and retraining.": null,
+	"Strength of the levels": null,
+	"Wins of the row level against the column level, in battles between AIs with random teams (measured on {date}, at least {battles} battles per matchup).": null,
 };

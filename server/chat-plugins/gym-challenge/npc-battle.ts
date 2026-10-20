@@ -50,7 +50,9 @@ export interface NpcBattleHooks {
 	 * individuais, vistas pelo NPC e pelo desafiante, e se o NPC venceu. Chamado no fim
 	 * de uma batalha que vale e terminou com vencedor (não em empates).
 	 */
-	onPositions?: (positions: { perspective: 'npc' | 'player', features: number[] }[], npcWon: boolean) => void;
+	onPositions?: (
+		positions: { perspective: 'npc' | 'player', features: number[] }[], npcWon: boolean, doubles: boolean
+	) => void;
 }
 
 interface NpcBattleOptions extends RoomBattleOptions {
@@ -89,6 +91,8 @@ export class NpcBattle extends RoomBattle {
 	private replaying = !!this.options.inputLog;
 	/** Posições para o aprendizado da Mestre (só em memória até o fim da batalha). */
 	private positions: { perspective: 'npc' | 'player', features: number[] }[] = [];
+	/** As posições gravadas são de uma batalha em dupla. */
+	private positionsDoubles = false;
 
 	get npc(): NpcSpec {
 		return this.options.npc;
@@ -193,7 +197,7 @@ export class NpcBattle extends RoomBattle {
 			}
 			if (result !== 'tie' && this.positions.length) {
 				try {
-					this.options.hooks.onPositions?.(this.positions, result === 'loss');
+					this.options.hooks.onPositions?.(this.positions, result === 'loss', this.positionsDoubles);
 				} catch (err: any) {
 					Monitor.crashlog(err, 'A gym challenge battle positions', { roomid: this.roomid });
 				}
@@ -253,15 +257,19 @@ export class NpcBattle extends RoomBattle {
 	}
 
 	/**
-	 * Grava as características da posição vista por um lado (pedido de jogada numa
-	 * batalha individual), para o aprendizado da Mestre. Nunca atrapalha a batalha.
+	 * Grava as características da posição vista por um lado (pedido de jogada, em
+	 * individual ou em dupla), para o aprendizado da Mestre. Nunca atrapalha a batalha.
 	 */
 	private recordPosition(perspective: 'npc' | 'player', requestJSON: string) {
 		if (this.replaying || !this.options.hooks.onPositions) return;
 		try {
 			const request = JSON.parse(requestJSON) as ChoiceRequest;
-			if (request.wait || request.teamPreview || request.forceSwitch || request.active?.length !== 1) return;
-			this.positions.push({ perspective, features: positionFeatures(buildPosition(request, readBattleState(this.npcLog))) });
+			if (request.wait || request.teamPreview || request.forceSwitch || !request.active?.length) return;
+			const state = readBattleState(this.npcLog);
+			// Triplas e outros tipos de batalha ficam de fora
+			if (state.gameType !== 'singles' && state.gameType !== 'doubles') return;
+			this.positionsDoubles = state.gameType === 'doubles';
+			this.positions.push({ perspective, features: positionFeatures(buildPosition(request, state)) });
 		} catch (err: any) {
 			Monitor.crashlog(err, 'A gym challenge battle position', { roomid: this.roomid });
 		}

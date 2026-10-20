@@ -83,6 +83,9 @@ export interface PoolEntry {
 	badgeId: string | null;
 }
 
+/** Tipo de batalha dos dados e dos modelos da IA Mestre (cada um tem o seu modelo). */
+export type BattleKind = 'singles' | 'doubles';
+
 /** Posição de aprendizado da IA Mestre (anônima). */
 export interface LearningPosition {
 	battle: string;
@@ -95,6 +98,7 @@ export interface LearningPosition {
 export interface StoredModel {
 	id: number;
 	version: string;
+	kind: BattleKind;
 	source: 'sim' | 'retrain';
 	status: 'active' | 'retired' | 'rejected';
 	/** JSON do ValueModel (value-model.ts). */
@@ -107,6 +111,7 @@ export type TrainingOutcome = 'accepted' | 'rejected' | 'skipped' | 'failed';
 
 export interface TrainingRecord {
 	id: number;
+	kind: BattleKind;
 	startedAt: number;
 	finishedAt: number | null;
 	trigger: 'schedule' | 'manual';
@@ -337,6 +342,12 @@ const MIGRATIONS: string[] = [
 		version      TEXT,
 		report       TEXT
 	) STRICT;
+	`,
+	// 9: IA Mestre em dupla (etapa 5): posições, modelos e retreinos separados por tipo de batalha
+	`
+	ALTER TABLE ai_positions ADD COLUMN doubles INTEGER NOT NULL DEFAULT 0 CHECK (doubles IN (0, 1));
+	ALTER TABLE ai_models ADD COLUMN kind TEXT NOT NULL DEFAULT 'singles' CHECK (kind IN ('singles', 'doubles'));
+	ALTER TABLE ai_trainings ADD COLUMN kind TEXT NOT NULL DEFAULT 'singles' CHECK (kind IN ('singles', 'doubles'));
 	`,
 ];
 
@@ -777,38 +788,42 @@ export class GymStore {
 	// --- Aprendizado da IA Mestre ----------------------------------------------------
 
 	/** Grava as posições de uma batalha (código aleatório, sem ligação com a jornada). */
-	addPositions(battle: string, positions: { perspective: 'npc' | 'player', features: number[], won: boolean }[]) {
+	addPositions(
+		battle: string, positions: { perspective: 'npc' | 'player', features: number[], won: boolean }[], kind: BattleKind
+	) {
 		if (!positions.length) return;
 		this.transaction(() => {
 			const insert = this.db.prepare(`
-				INSERT INTO ai_positions (battle, seq, perspective, features, won) VALUES (?, ?, ?, ?, ?)
+				INSERT INTO ai_positions (battle, seq, perspective, features, won, doubles) VALUES (?, ?, ?, ?, ?, ?)
 			`);
 			positions.forEach((position, seq) => {
-				insert.run(battle, seq, position.perspective, JSON.stringify(position.features), position.won ? 1 : 0);
+				insert.run(battle, seq, position.perspective, JSON.stringify(position.features), position.won ? 1 : 0,
+					kind === 'doubles' ? 1 : 0);
 			});
 		});
 	}
 
-	listPositions(): LearningPosition[] {
-		return (this.db.prepare('SELECT * FROM ai_positions').all() as Row[]).map(row => ({
+	listPositions(kind: BattleKind): LearningPosition[] {
+		const rows = this.db.prepare('SELECT * FROM ai_positions WHERE doubles = ?').all(kind === 'doubles' ? 1 : 0) as Row[];
+		return rows.map(row => ({
 			battle: row.battle, perspective: row.perspective, features: JSON.parse(row.features),
 			won: row.won === 1, used: row.used === 1,
 		}));
 	}
 
 	/** Batalhas e posições gravadas, e batalhas ainda não usadas num retreino. */
-	positionStats() {
+	positionStats(kind: BattleKind) {
 		const row = this.db.prepare(`
 			SELECT COUNT(DISTINCT battle) AS battles, COUNT(*) AS positions,
 				COUNT(DISTINCT CASE WHEN used = 0 THEN battle END) AS fresh
-			FROM ai_positions
-		`).get() as Row;
+			FROM ai_positions WHERE doubles = ?
+		`).get(kind === 'doubles' ? 1 : 0) as Row;
 		return { battles: row.battles as number, positions: row.positions as number, freshBattles: row.fresh as number };
 	}
 
-	/** Marca todas as posições como usadas (depois de uma tentativa de retreino). */
-	markPositionsUsed() {
-		this.db.prepare('UPDATE ai_positions SET used = 1 WHERE used = 0').run();
+	/** Marca as posições de um tipo de batalha como usadas (depois de uma tentativa de retreino). */
+	markPositionsUsed(kind: BattleKind) {
+		this.db.prepare('UPDATE ai_positions SET used = 1 WHERE used = 0 AND doubles = ?').run(kind === 'doubles' ? 1 : 0);
 	}
 
 	listModels(): StoredModel[] {
@@ -820,36 +835,41 @@ export class GymStore {
 		return row ? toStoredModel(row) : null;
 	}
 
-	getActiveModel(): StoredModel | null {
-		const row = this.db.prepare(`SELECT * FROM ai_models WHERE status = 'active' ORDER BY id DESC LIMIT 1`).get() as
-			Row | undefined;
+	getActiveModel(kind: BattleKind): StoredModel | null {
+		const row = this.db.prepare(`
+			SELECT * FROM ai_models WHERE status = 'active' AND kind = ? ORDER BY id DESC LIMIT 1
+		`).get(kind) as Row | undefined;
 		return row ? toStoredModel(row) : null;
 	}
 
-	/** Grava um modelo; com status 'active', o que estava em uso vira 'retired'. */
+	/** Grava um modelo; com status 'active', o que estava em uso no mesmo tipo de batalha vira 'retired'. */
 	addModel(input: Omit<StoredModel, 'id'>): StoredModel {
 		return this.transaction(() => {
-			if (input.status === 'active') this.db.prepare(`UPDATE ai_models SET status = 'retired' WHERE status = 'active'`).run();
+			if (input.status === 'active') {
+				this.db.prepare(`UPDATE ai_models SET status = 'retired' WHERE status = 'active' AND kind = ?`).run(input.kind);
+			}
 			this.db.prepare(`
-				INSERT INTO ai_models (version, source, status, model, trained_at, report) VALUES (?, ?, ?, ?, ?, ?)
-			`).run(input.version, input.source, input.status, input.model, input.trainedAt,
+				INSERT INTO ai_models (version, kind, source, status, model, trained_at, report) VALUES (?, ?, ?, ?, ?, ?, ?)
+			`).run(input.version, input.kind, input.source, input.status, input.model, input.trainedAt,
 				input.report ? JSON.stringify(input.report) : null);
 			return this.getModel(input.version)!;
 		});
 	}
 
-	/** Põe em uso um modelo já gravado (reversão pelo painel). */
+	/** Põe em uso um modelo já gravado (reversão pelo painel), no lugar do modelo do mesmo tipo de batalha. */
 	activateModel(version: string): boolean {
 		return this.transaction(() => {
-			if (!this.getModel(version)) return false;
-			this.db.prepare(`UPDATE ai_models SET status = 'retired' WHERE status = 'active'`).run();
+			const model = this.getModel(version);
+			if (!model) return false;
+			this.db.prepare(`UPDATE ai_models SET status = 'retired' WHERE status = 'active' AND kind = ?`).run(model.kind);
 			this.db.prepare(`UPDATE ai_models SET status = 'active' WHERE version = ?`).run(version);
 			return true;
 		});
 	}
 
-	startTraining(trigger: 'schedule' | 'manual'): number {
-		const result = this.db.prepare('INSERT INTO ai_trainings (started_at, trigger) VALUES (?, ?)').run(now(), trigger);
+	startTraining(trigger: 'schedule' | 'manual', kind: BattleKind): number {
+		const result = this.db.prepare('INSERT INTO ai_trainings (started_at, trigger, kind) VALUES (?, ?, ?)')
+			.run(now(), trigger, kind);
 		return Number(result.lastInsertRowid);
 	}
 
@@ -861,7 +881,7 @@ export class GymStore {
 
 	listTrainings(limit = 20): TrainingRecord[] {
 		return (this.db.prepare('SELECT * FROM ai_trainings ORDER BY id DESC LIMIT ?').all(limit) as Row[]).map(row => ({
-			id: row.id, startedAt: row.started_at, finishedAt: row.finished_at, trigger: row.trigger,
+			id: row.id, kind: row.kind, startedAt: row.started_at, finishedAt: row.finished_at, trigger: row.trigger,
 			outcome: row.outcome, version: row.version, report: row.report ? JSON.parse(row.report) : null,
 		}));
 	}
@@ -880,7 +900,7 @@ export class GymStore {
 
 function toStoredModel(row: Row): StoredModel {
 	return {
-		id: row.id, version: row.version, source: row.source, status: row.status, model: row.model,
+		id: row.id, version: row.version, kind: row.kind, source: row.source, status: row.status, model: row.model,
 		trainedAt: row.trained_at, report: row.report ? JSON.parse(row.report) : null,
 	};
 }

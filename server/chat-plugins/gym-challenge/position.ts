@@ -7,6 +7,9 @@
  * (`positionFeatures`) que o modelo de avaliação (value-model.ts) usa para estimar a
  * chance de vitória. Não há dado de jogador: só espécies, HP, status, boosts e campo.
  *
+ * Em dupla (etapa 5), as mesmas características, somadas ou com a média dos dois
+ * Pokémon ativos de cada lado (ver `positionFeatures`), com um modelo próprio.
+ *
  * @license MIT
  */
 import type { ChoiceRequest, PokemonSwitchRequestData } from '../../../sim/side';
@@ -37,6 +40,8 @@ export interface Position {
 	us: SidePosition;
 	them: SidePosition;
 	weather: string;
+	/** Batalha em dupla: dois Pokémon ativos de cada lado. */
+	doubles: boolean;
 }
 
 function ourMon(mon: PokemonSwitchRequestData, seen: SeenPokemon | undefined): MonState {
@@ -109,15 +114,17 @@ export function buildPosition(request: ChoiceRequest, state: BattleState): Posit
 		unseen: 0,
 		conditions: new Map(ourView?.conditions || []),
 	};
-	const activeName = theirView?.activeSlots[0] ?? theirView?.active ?? null;
+	const doubles = state.gameType === 'doubles';
+	const activeNames = doubles ? (theirView?.activeSlots || []).filter(Boolean) :
+		[theirView?.activeSlots[0] ?? theirView?.active ?? null];
 	const seenMons = theirView ? [...theirView.pokemon.values()] : [];
 	const total = Math.max(theirView?.teamSize || 0, theirView?.preview.length || 0, seenMons.length);
 	const them: SidePosition = {
-		mons: seenMons.map(seen => theirMon(seen, seen.name === activeName && !seen.fainted)),
+		mons: seenMons.map(seen => theirMon(seen, activeNames.includes(seen.name) && !seen.fainted)),
 		unseen: Math.max(0, total - seenMons.length),
 		conditions: new Map(theirView?.conditions || []),
 	};
-	return { us, them, weather: state.weather };
+	return { us, them, weather: state.weather, doubles };
 }
 
 // --- Características -------------------------------------------------------------------
@@ -134,6 +141,11 @@ const STATUS_BURDEN: { [status: string]: number } = { slp: 1, frz: 1, par: 0.6, 
 
 export function activeOf(side: SidePosition): MonState | null {
 	return side.mons.find(mon => mon.active && mon.hp > 0) || null;
+}
+
+/** Pokémon ativos (em dupla, até dois). */
+export function activesOf(side: SidePosition): MonState[] {
+	return side.mons.filter(mon => mon.active && mon.hp > 0);
 }
 
 export function bestDamage(attacker: MonState, defender: MonState) {
@@ -186,8 +198,53 @@ function boostSum(mon: MonState | null) {
 	return Object.values(mon.boosts).reduce((sum, stage) => sum + (stage || 0), 0);
 }
 
+/** Quem nocauteia primeiro num confronto: 1 nós, -1 eles, 0 ninguém (ou empate). */
+function koFirstOf(me: MonState, foe: MonState) {
+	const ourDamage = Math.min(bestDamage(me, foe), foe.hp);
+	const theirDamage = Math.min(bestDamage(foe, me), me.hp);
+	const faster = Math.sign(speedOf(me) - speedOf(foe));
+	const weKo = ourDamage >= foe.hp;
+	const theyKo = theirDamage >= me.hp;
+	return weKo && (faster > 0 || !theyKo) ? 1 : theyKo && (faster < 0 || !weKo) ? -1 : 0;
+}
+
+function average(values: number[]) {
+	return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+}
+
+/**
+ * Características de uma posição em dupla, na mesma ordem: HP, dano e boosts dos ativos
+ * são somados (dano: o melhor alvo de cada um); velocidade, "quem nocauteia primeiro" e
+ * o confronto do banco são a média dos pares; weKo e theyKo contam os Pokémon ameaçados.
+ */
+function doublesFeatures(position: Position): number[] {
+	const ours = sideTotals(position.us);
+	const theirs = sideTotals(position.them);
+	const mine = activesOf(position.us);
+	const foes = activesOf(position.them);
+	const pairs = mine.flatMap(me => foes.map(foe => [me, foe] as const));
+	const damageOf = (attackers: MonState[], defenders: MonState[]) => attackers.reduce((sum, attacker) => sum +
+		Math.max(0, ...defenders.map(defender => Math.min(bestDamage(attacker, defender), defender.hp))), 0);
+	const threatened = (targets: MonState[], attackers: MonState[]) => targets.filter(target => (
+		attackers.some(attacker => bestDamage(attacker, target) >= target.hp)
+	)).length;
+	const hpOf = (mons: MonState[]) => mons.reduce((sum, mon) => sum + mon.hp, 0);
+	const boostsOf = (mons: MonState[]) => mons.reduce((sum, mon) => sum + boostSum(mon), 0);
+	return [
+		ours.hp / 100, theirs.hp / 100, ours.alive, theirs.alive, hpOf(mine) / 100, hpOf(foes) / 100,
+		damageOf(mine, foes) / 100, damageOf(foes, mine) / 100,
+		average(pairs.map(([me, foe]) => Math.sign(speedOf(me) - speedOf(foe)))),
+		threatened(foes, mine), threatened(mine, foes), average(pairs.map(([me, foe]) => koFirstOf(me, foe))),
+		average(foes.map(foe => benchMatchup(position.us, foe))) / 100,
+		average(mine.map(me => benchMatchup(position.them, me))) / 100,
+		boostsOf(mine) / 6, boostsOf(foes) / 6, ours.status, theirs.status,
+		ours.hazards / 100, theirs.hazards / 100, ours.screens, theirs.screens,
+	];
+}
+
 /** Características da posição, na ordem de FEATURES (escalas próximas de 0 a 1 ou de -1 a 1). */
 export function positionFeatures(position: Position): number[] {
+	if (position.doubles) return doublesFeatures(position);
 	const ours = sideTotals(position.us);
 	const theirs = sideTotals(position.them);
 	const me = activeOf(position.us);

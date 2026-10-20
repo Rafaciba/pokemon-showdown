@@ -3,8 +3,8 @@
  *
  * A Mestre joga com as regras do Difícil (heuristic-ai.ts) e com os seus próprios
  * pesos (HeuristicWeights). Os pesos abaixo vêm do treino em batalhas simuladas
- * contra o Difícil e o Médio (tools/gym-challenge/train-master.js; etapa 2). O
- * aprendizado com as batalhas do servidor (etapa 4) passará a ajustá-los. Plano,
+ * contra o Difícil e o Médio (tools/gym-challenge/train-master.js; etapa 2). Em dupla,
+ * a Mestre usa pesos próprios, treinados só em batalhas em dupla (etapa 5). Plano,
  * decisões e resultados em docs/arquitetura-desafio-ginasios.md, seção "IA Mestre".
  *
  * @license MIT
@@ -26,6 +26,26 @@ export const TRAINED_WEIGHTS: Readonly<HeuristicWeights> = Object.freeze({
 	enterKo: 187.947, switchMargin: 40.562, stayIfKo: 22.428, allyHitFactor: 0.595, allyKo: 55.184, allySupport: 9.6,
 });
 
+/**
+ * Pesos das batalhas em dupla (saída de train-master.js --mode doubles, campo "weights"): 40 gerações, 12
+ * variações e 400 batalhas em dupla por candidato em cada geração (2026-10-20).
+ */
+export const TRAINED_DOUBLES_WEIGHTS: Readonly<HeuristicWeights> = Object.freeze({
+	koBonus: 31.634, priorityKoBonus: 19.82, outspedFactor: 0.235, phazeVsBoosts: 23.47, doomedStatusFactor: 0.173,
+	healLowHp: 47.921, healLow: 48.307, healMidHp: 65.794, healMid: 24.037, stall: 40.584, stallHp: 56.238,
+	screens: 12.618, screensHp: 87.138, hazeVsBoosts: 158.038, hazardHp: 60.183, stealthRock: 58.765,
+	stickyWeb: 45.535, spikes: 46.321, toxicSpikes: 16.386, statusHp: 40.153, sleep: 46.694, toxic: 72.218,
+	paralysis: 73.595, burnPhysical: 66.699, burnSpecial: 21.392, otherStatus: 60.254, boostHp: 51.711,
+	boostDamageTaken: 52.091, boostOffense: 26.856, boostSpeed: 43.449, boostDefense: 13.603, boostDrop: 10.205,
+	boostMax: 116.415, debuffHp: 29.918, debuffOffense: 7.093, debuffDefense: 6.254, debuffSpeed: 8.841,
+	debuffMax: 40.114, speedKo: 51.391, enterKo: 300, switchMargin: 25.179, stayIfKo: 24.666, allyHitFactor: 1.25,
+	allyKo: 21.673, allySupport: 8.361,
+});
+
 export function masterWeights(): Readonly<HeuristicWeights> {
 	return TRAINED_WEIGHTS;
+}
+
+export function masterDoublesWeights(): Readonly<HeuristicWeights> {
+	return TRAINED_DOUBLES_WEIGHTS;
 }

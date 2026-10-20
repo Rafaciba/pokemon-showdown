@@ -16,11 +16,12 @@ import * as ConfigLoader from '../../config-loader';
 import { ProcessManager } from '../../../lib';
 import type { ChoiceRequest, MoveRequest } from '../../../sim/side';
 import { readBattleState } from './battle-view';
-import { simSearchForcedSwitch, simSearchMove, type SimSearchOptions } from './sim-search';
+import { simSearchDoubles, simSearchForcedSwitch, simSearchMove, type SimSearchOptions } from './sim-search';
 import type { ValueModel } from './value-model';
 
 export interface MasterSearchQuery {
-	kind: 'move' | 'switch';
+	/** move/switch: batalhas individuais; doubles: pedido de jogada em dupla. */
+	kind: 'move' | 'switch' | 'doubles';
 	request: ChoiceRequest;
 	log: readonly string[];
 	ruleChoice: string | null;
@@ -36,9 +37,15 @@ export const PM = new ProcessManager.QueryProcessManager<MasterSearchQuery, { ch
 	'gymmastersearch', module, query => {
 		try {
 			const state = readBattleState(query.log);
-			const choice = query.kind === 'switch' ?
-				simSearchForcedSwitch(query.request as MoveRequest, state, query.model, query.options) :
-				simSearchMove(query.request as MoveRequest, state, query.model, query.options, query.ruleChoice);
+			const request = query.request as MoveRequest;
+			let choice: string | null;
+			if (query.kind === 'doubles') {
+				choice = query.ruleChoice && simSearchDoubles(request, state, query.model, query.options, query.ruleChoice);
+			} else if (query.kind === 'switch') {
+				choice = simSearchForcedSwitch(request, state, query.model, query.options);
+			} else {
+				choice = simSearchMove(request, state, query.model, query.options, query.ruleChoice);
+			}
 			return { choice };
 		} catch (err: any) {
 			Monitor.crashlog(err, 'A gym challenge master search', { kind: query.kind });

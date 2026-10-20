@@ -927,9 +927,27 @@ describe('Gym Challenge', () => {
 			assert(weights.outspedFactor <= 1 && weights.doomedStatusFactor <= 1);
 		});
 
+		it('has the measured strength of every pair of levels, in singles and doubles', () => {
+			const { strengthRate } = require('../../../dist/server/chat-plugins/gym-challenge/level-strength');
+			const { AI_LEVELS } = require('../../../dist/server/chat-plugins/gym-challenge/levels');
+			for (const kind of ['singles', 'doubles']) {
+				for (const level of AI_LEVELS) {
+					assert.equal(strengthRate(kind, level, level), null);
+					for (const opponent of AI_LEVELS.filter(other => other !== level)) {
+						const rate = strengthRate(kind, level, opponent);
+						assert(rate > 0 && rate < 1, `${kind} ${level} x ${opponent}`);
+						assert(Math.abs(rate + strengthRate(kind, opponent, level) - 1) < 1e-9);
+					}
+				}
+				assert(strengthRate(kind, 'master', 'hard') > 0.5, 'a Mestre vence a Difícil');
+			}
+		});
+
 		describe('master simulator search', () => {
 			const { FEATURES } = require('../../../dist/server/chat-plugins/gym-challenge/position');
-			const { simSearchMove, simSearchForcedSwitch } = require('../../../dist/server/chat-plugins/gym-challenge/sim-search');
+			const {
+				simSearchMove, simSearchForcedSwitch, simSearchDoubles,
+			} = require('../../../dist/server/chat-plugins/gym-challenge/sim-search');
 			/** Modelo sintético: vale mais ter HP e Pokémon vivos, e o adversário menos. */
 			const model = {
 				version: 'test', samples: 0, battles: 0, features: FEATURES, bias: 0,
@@ -960,6 +978,46 @@ describe('Gym Challenge', () => {
 				];
 				assert.equal(simSearchForcedSwitch({ side: { name: 'NPC', id: 'p2', pokemon: fainted } },
 					readBattleState(logWith('Arcanine')), model, options), 'switch 3', 'o Blastoise entra contra o Arcanine');
+			});
+
+			describe('in doubles', () => {
+				const request = team => ({
+					active: team.slice(0, 2).map(m => ({
+						moves: m.moves.map(id => ({ move: id, id, pp: 10, maxpp: 10, target: Dex.moves.get(id).target, disabled: false })),
+					})),
+					side: { name: 'NPC', id: 'p2', pokemon: team },
+				});
+				const log = readBattleState([
+					'|gametype|doubles', '|teamsize|p1|6',
+					'|switch|p1a: Heatran|Heatran, L100|30/100', '|switch|p1b: Blissey|Blissey, L100|100/100', '|turn|1',
+				]);
+				const team = [
+					mon('Garchomp', ['dragonclaw', 'highhorsepower'], { active: true }), mon('Snorlax', ['bodyslam'], { active: true }),
+					mon('Blastoise', ['surf']),
+				];
+
+				it('searches each Pokémon with the ally fixed, and keeps the rule choice without an advantage', function () {
+					this.timeout(30000);
+					const choice = simSearchDoubles(request(team), log, model, options, 'move 1 2, move 1 2');
+					assert.equal(choice.split(', ')[0], 'move 2 1', 'High Horsepower no Heatran (posição 1)');
+					assert.equal(simSearchDoubles(request(team), log, model, { ...options, margin: 1 }, 'move 1 2, move 1 2'),
+						'move 1 2, move 1 2', 'margem máxima: fica a jogada das regras');
+				});
+
+				it('lets the master use the doubles model and its own doubles weights', function () {
+					this.timeout(30000);
+					const master = new HeuristicAI('master', () => 0.99, {}, DEFAULT_WEIGHTS,
+						{ model: null, doublesModel: model, sim: options }, DEFAULT_WEIGHTS);
+					const view = {
+						log: ['|gametype|doubles', '|teamsize|p1|6', '|switch|p1a: Heatran|Heatran, L100|30/100',
+							'|switch|p1b: Blissey|Blissey, L100|100/100', '|turn|1'],
+					};
+					assert.equal(master.choose(request(team), view).split(', ')[0], 'move 2 1');
+					// Sem modelo de individual, as batalhas individuais ficam só com as regras
+					const single = { ...request(team), active: request(team).active.slice(0, 1) };
+					assert.equal(master.choose(single, { log: logWith('Heatran', '30/100') }),
+						new HeuristicAI('master', () => 0.99, {}, DEFAULT_WEIGHTS).choose(single, { log: logWith('Heatran', '30/100') }));
+				});
 			});
 		});
 
@@ -1135,7 +1193,7 @@ describe('Gym Challenge', () => {
 			const recorded = [];
 			room = createNpcBattle(user, {
 				format: 'gen9customgame', team: TEAM, npc: { name: 'Gym Bot', team: TEAM, ai: createAI('random') },
-				hooks: { onPositions: (positions, npcWon) => recorded.push({ positions, npcWon }) },
+				hooks: { onPositions: (positions, npcWon, doubles) => recorded.push({ positions, npcWon, doubles }) },
 			});
 			assert(room);
 			await waitFor(() => room.battle.p1.request.request && !room.battle.p1.request.isWait);
@@ -1143,7 +1201,8 @@ describe('Gym Challenge', () => {
 			await waitFor(() => room.battle.turn >= 1 && room.battle.p1.request.request && !room.battle.p1.request.isWait);
 			room.battle.forfeit(user);
 			await waitFor(() => recorded.length > 0);
-			const [{ positions, npcWon }] = recorded;
+			const [{ positions, npcWon, doubles }] = recorded;
+			assert.equal(doubles, false, 'batalha individual');
 			assert.equal(npcWon, true, 'o jogador desistiu');
 			assert(positions.some(p => p.perspective === 'npc') && positions.some(p => p.perspective === 'player'));
 			assert(positions.every(p => Array.isArray(p.features) && p.features.every(Number.isFinite)));
@@ -1402,52 +1461,63 @@ describe('Gym Challenge', () => {
 				return positions;
 			};
 
-			it('stores anonymous positions and counts new battles', () => {
+			it('stores anonymous positions and counts new battles, separately in doubles', () => {
 				learning.recordBattlePositions(store, fakeBattle(true), true);
 				learning.recordBattlePositions(store, fakeBattle(false), false);
-				const positions = store.listPositions();
+				learning.recordBattlePositions(store, fakeBattle(true), true, 'doubles');
+				assert.deepEqual(store.positionStats('doubles'), { battles: 1, positions: 10, freshBattles: 1 });
+				const positions = store.listPositions('singles');
 				assert.equal(positions.length, 20);
 				assert.deepEqual(Object.keys(positions[0]).sort(), ['battle', 'features', 'perspective', 'used', 'won']);
 				assert.match(positions[0].battle, /^[0-9a-f]{24}$/, 'só um código aleatório identifica a batalha');
 				const npc = positions.filter(p => p.perspective === 'npc');
 				assert.equal(npc.filter(p => p.won).length, 5, 'o NPC venceu uma das duas batalhas');
-				assert.deepEqual(store.positionStats(), { battles: 2, positions: 20, freshBattles: 2 });
-				store.markPositionsUsed();
-				assert.equal(store.positionStats().freshBattles, 0);
+				assert.deepEqual(store.positionStats('singles'), { battles: 2, positions: 20, freshBattles: 2 });
+				store.markPositionsUsed('singles');
+				assert.equal(store.positionStats('singles').freshBattles, 0);
+				assert.equal(store.positionStats('doubles').freshBattles, 1, 'cada tipo de batalha tem o seu retreino');
 			});
 
-			it('seeds the simulation model, and switches the model in use', () => {
-				const { MASTER_MODEL } = require('../../../dist/server/chat-plugins/gym-challenge/master-model');
-				assert.equal(learning.activeMasterModel(store).version, MASTER_MODEL.version);
-				assert.equal(store.getActiveModel().source, 'sim');
-				store.addModel({ version: 'real-1', source: 'retrain', status: 'active', model: JSON.stringify(MASTER_MODEL),
-					trainedAt: 1, report: null });
-				assert.equal(store.getActiveModel().version, 'real-1');
+			it('seeds the simulation models, and switches the model in use of each battle type', () => {
+				const { MASTER_MODEL, MASTER_DOUBLES_MODEL } = require('../../../dist/server/chat-plugins/gym-challenge/master-model');
+				assert.equal(learning.activeMasterModel(store, 'singles').version, MASTER_MODEL.version);
+				assert.equal(learning.activeMasterModel(store, 'doubles').version, MASTER_DOUBLES_MODEL.version);
+				assert.notEqual(MASTER_MODEL.version, MASTER_DOUBLES_MODEL.version);
+				assert.equal(store.getActiveModel('singles').source, 'sim');
+				store.addModel({ version: 'real-1', kind: 'singles', source: 'retrain', status: 'active',
+					model: JSON.stringify(MASTER_MODEL), trainedAt: 1, report: null });
+				assert.equal(store.getActiveModel('singles').version, 'real-1');
 				assert.equal(store.getModel(MASTER_MODEL.version).status, 'retired');
+				assert.equal(store.getActiveModel('doubles').version, MASTER_DOUBLES_MODEL.version, 'a dupla não muda');
 				assert(store.activateModel(MASTER_MODEL.version), 'reversão');
-				assert.equal(store.getActiveModel().version, MASTER_MODEL.version);
+				assert.equal(store.getActiveModel('singles').version, MASTER_MODEL.version);
+				assert.equal(store.getActiveModel('doubles').version, MASTER_DOUBLES_MODEL.version);
 				assert(!store.activateModel('nope'));
 			});
 
 			it('skips the retraining with few new battles', async () => {
 				learning.recordBattlePositions(store, fakeBattle(true), true);
-				const summary = await learning.runTraining(store, { trigger: 'manual' });
-				assert.equal(summary.outcome, 'skipped');
-				assert.equal(summary.report.reason, 'fewbattles');
-				assert.equal(store.listTrainings()[0].outcome, 'skipped');
+				const summaries = await learning.runTraining(store, { trigger: 'manual' });
+				assert.deepEqual(summaries.map(summary => [summary.kind, summary.outcome, summary.report.reason]),
+					[['singles', 'skipped', 'fewbattles'], ['doubles', 'skipped', 'fewbattles']]);
+				assert.deepEqual(store.listTrainings().map(training => [training.kind, training.outcome]),
+					[['doubles', 'skipped'], ['singles', 'skipped']]);
 			});
 
 			it('retrains from the simulation model and verifies the new one', async function () {
 				this.timeout(120000);
 				for (let i = 0; i < 40; i++) learning.recordBattlePositions(store, fakeBattle(i % 2 === 0), i % 2 === 0);
-				const summary = await learning.runTraining(store, { trigger: 'manual', minNewBattles: 10, verificationBattles: 2 });
+				const summaries = await learning.runTraining(store, { trigger: 'manual', minNewBattles: 10, verificationBattles: 2 });
+				const summary = summaries.find(entry => entry.kind === 'singles');
+				assert.equal(summaries.find(entry => entry.kind === 'doubles').outcome, 'skipped', 'sem batalhas em dupla');
 				assert(['accepted', 'rejected'].includes(summary.outcome), JSON.stringify(summary));
 				assert(summary.report.trainBattles > 0 && summary.report.holdoutBattles > 0);
 				assert(typeof summary.report.newLoss === 'number' && typeof summary.report.currentLoss === 'number');
-				assert.equal(store.positionStats().freshBattles, 0, 'as batalhas entram no retreino');
+				assert.equal(store.positionStats('singles').freshBattles, 0, 'as batalhas entram no retreino');
 				const saved = store.getModel(summary.version);
 				assert(saved, 'o modelo novo fica registrado, aceito ou não');
 				assert.equal(saved.status, summary.outcome === 'accepted' ? 'active' : 'rejected');
+				assert.equal(saved.kind, 'singles');
 				assert(learning.isTrainingWindow(new Date('2026-10-19T07:30:00Z')), 'segunda, 4h30 em Brasília');
 				assert(!learning.isTrainingWindow(new Date('2026-10-20T07:30:00Z')), 'terça');
 			});

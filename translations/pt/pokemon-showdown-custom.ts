@@ -442,4 +442,9 @@ export const translations: TranslationCatalog = {
 	"Retraining started.": "Retreino iniciado.",
 	"Model not found.": "Modelo não encontrado.",
 	"Model in use changed. New battles against the Master AI use it.": "Modelo em uso trocado. As novas batalhas contra a IA Mestre já usam ele.",
+	"Singles": "Individual",
+	"Battle type": "Tipo de batalha",
+	"Singles and doubles battles have separate data, models and retraining.": "Batalhas individuais e em dupla têm dados, modelos e retreinos separados.",
+	"Strength of the levels": "Força dos níveis",
+	"Wins of the row level against the column level, in battles between AIs with random teams (measured on {date}, at least {battles} battles per matchup).": "Vitórias do nível da linha contra o da coluna, em batalhas entre IAs com times aleatórios (medido em {date}, com pelo menos {battles} batalhas por confronto).",
 };

@@ -5,11 +5,12 @@
  * Random Battle e times dos pacotes), grava as características de cada posição dos
  * dois lados (position.ts) com o resultado de quem a viu e treina a regressão
  * logística (value-model.ts). 10% das batalhas ficam de fora do treino para medir o
- * modelo. Batalhas em dupla ficam para a etapa 5.
+ * modelo. Com --doubles, o modelo das batalhas em dupla (etapa 5): Random Doubles e
+ * os times dos pacotes em dupla, com as características de dupla (position.ts).
  *
  * Uso (no container server-setup, depois de `node build`):
  *   node tools/gym-challenge/train-value.js [--battles 20000] [--workers 10] [--packs /pacotes]
- *     [--out tools/gym-challenge/master-value-model.json] [--seed texto]
+ *     [--doubles] [--out tools/gym-challenge/master-value-model.json] [--seed texto]
  *
  * @license MIT
  */
@@ -32,8 +33,9 @@ function option(name, fallback) {
 const BATTLES = Number(option('battles', 20000));
 const WORKERS = Number(option('workers', 10));
 const PACKS = option('packs', '');
-const OUT = option('out', path.resolve(__dirname, 'master-value-model.json'));
-const SEED = option('seed', 'liga-de-desafios-valor');
+const DOUBLES = args.includes('--doubles');
+const OUT = option('out', path.resolve(__dirname, DOUBLES ? 'master-value-model-doubles.json' : 'master-value-model.json'));
+const SEED = option('seed', DOUBLES ? 'liga-de-desafios-valor-dupla' : 'liga-de-desafios-valor');
 
 /** Confrontos das batalhas de coleta (variedade de jogo bom e ruim). */
 const MATCHUPS = [
@@ -50,17 +52,20 @@ function loadPackTeams() {
 	const teams = [];
 	for (const file of fs.readdirSync(PACKS).filter(name => name.endsWith('.json')).sort()) {
 		for (const trainer of JSON.parse(fs.readFileSync(path.join(PACKS, file), 'utf8')).trainers || []) {
-			if (trainer.doubles) continue;
+			// Em dupla, os times de todos os treinadores (com pelo menos 2 Pokémon)
+			if (trainer.doubles && !DOUBLES) continue;
 			const sets = Teams.import(trainer.team);
-			if (sets?.length) teams.push(Teams.pack(sets));
+			if (sets?.length >= (DOUBLES ? 2 : 1)) teams.push(Teams.pack(sets));
 		}
 	}
 	return teams;
 }
 
 const packTeams = loadPackTeams();
-const PACK_FORMAT = packTeams.length ?
-	Dex.formats.validate('gen9nationaldexag@@@Standard NatDex, Terastal Clause, Z-Move Clause, Dynamax Clause') : '';
+const PACK_FORMAT = !packTeams.length ? '' : Dex.formats.validate(DOUBLES ?
+	'gen9nationaldexdoubles@@@Terastal Clause, Z-Move Clause, Dynamax Clause' :
+	'gen9nationaldexag@@@Standard NatDex, Terastal Clause, Z-Move Clause, Dynamax Clause');
+const RANDOM_FORMAT = DOUBLES ? 'gen9randomdoublesbattle' : 'gen9randombattle';
 
 function task(i) {
 	const bytes = hash(SEED, i);
@@ -74,7 +79,7 @@ function task(i) {
 		if (t2 === t1) t2 = (t2 + 1) % packTeams.length;
 		return { ...base, format: PACK_FORMAT, team1: packTeams[t1], team2: packTeams[t2] };
 	}
-	return { ...base, format: 'gen9randombattle' };
+	return { ...base, format: RANDOM_FORMAT };
 }
 
 function runAll() {
@@ -143,7 +148,7 @@ function toDataset(rows) {
 		state = (state * 1664525 + 1013904223) >>> 0;
 		return state / 4294967296;
 	};
-	const version = `sim-${new Date().toISOString().slice(0, 10)}`;
+	const version = `sim-${DOUBLES ? 'dupla-' : ''}${new Date().toISOString().slice(0, 10)}`;
 	const model = trainValueModel(trainData, FEATURES, { version, battles: battlesTrain }, { random });
 	const trainScore = scoreValueModel(model, trainData);
 	const holdoutScore = scoreValueModel(model, holdoutData);

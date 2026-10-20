@@ -22,8 +22,10 @@ global.Teams = Teams;
 const { BattleStream, getPlayerStreams } = require(`${dist}/sim/battle-stream`);
 const { createAI } = require(`${dist}/server/chat-plugins/gym-challenge/ai`);
 const { HeuristicAI, DEFAULT_WEIGHTS } = require(`${dist}/server/chat-plugins/gym-challenge/heuristic-ai`);
-const { masterWeights } = require(`${dist}/server/chat-plugins/gym-challenge/master-weights`);
-const { MASTER_MODEL, MASTER_SIM } = require(`${dist}/server/chat-plugins/gym-challenge/master-model`);
+const { masterWeights, masterDoublesWeights } = require(`${dist}/server/chat-plugins/gym-challenge/master-weights`);
+const {
+	MASTER_MODEL, MASTER_DOUBLES_MODEL, MASTER_SIM,
+} = require(`${dist}/server/chat-plugins/gym-challenge/master-model`);
 const { readBattleState } = require(`${dist}/server/chat-plugins/gym-challenge/battle-view`);
 const { buildPosition, positionFeatures } = require(`${dist}/server/chat-plugins/gym-challenge/position`);
 
@@ -35,26 +37,38 @@ const MAX_TURNS = 300;
 /**
  * IA a partir de uma especificação: "hard", uma variante como "hard-speedAware" ou
  * "medium+hazards+statusMoves" (liga/desliga regras de LevelRules), ou um objeto
- * { level, weights, model? } (pesos próprios, como os candidatos do treino da Mestre;
- * com model, busca no simulador). Para a Mestre: "master" é a do servidor (busca no
- * simulador, aqui no próprio processo), "master-search" é sem a busca (a da etapa 2),
- * "master!sim4" usa 4 palpites, "master^0.1" outra margem e "master~0.7" outro pessimismo.
+ * { level, weights, model?, doublesModel? } (pesos próprios, como os candidatos do treino
+ * da Mestre, que valem em individual e em dupla; com model, busca no simulador). Para a
+ * Mestre: "master" é a do servidor (busca no simulador, aqui no próprio processo),
+ * "master-search" é sem a busca (a da etapa 2), "master!sim4" usa 4 palpites,
+ * "master^0.1" outra margem, "master~0.7" outro pessimismo, "master@500" outro tempo
+ * máximo (ms), "master%4" avalia 4 respostas dos adversários em dupla e "master-dw" usa
+ * em dupla os pesos das batalhas individuais.
  */
 function makeAI(spec) {
 	if (typeof spec === 'object') {
-		const search = spec.model ? { model: spec.model, sim: { ...MASTER_SIM, ...spec.sim } } : null;
-		return new HeuristicAI(spec.level || 'master', Math.random, {}, { ...DEFAULT_WEIGHTS, ...spec.weights }, search);
+		const search = spec.model || spec.doublesModel ? {
+			model: spec.model, doublesModel: spec.doublesModel, sim: { ...MASTER_SIM, ...spec.sim },
+		} : null;
+		const weights = { ...DEFAULT_WEIGHTS, ...spec.weights };
+		return new HeuristicAI(spec.level || 'master', Math.random, {}, weights, search);
 	}
 	if (spec.startsWith('master')) {
 		const pessimism = /~([\d.]+)/.exec(spec);
 		const margin = /\^([\d.]+)/.exec(spec);
 		const samples = /!sim(\d+)/.exec(spec);
+		const budget = /@(\d+)/.exec(spec);
+		const responses = /%(\d+)/.exec(spec);
 		const model = spec.includes('-search') ? null : MASTER_MODEL;
 		const sim = {
 			...MASTER_SIM, ...(pessimism ? { pessimism: Number(pessimism[1]) } : {}),
 			...(margin ? { margin: Number(margin[1]) } : {}), ...(samples ? { samples: Number(samples[1]) } : {}),
+			...(budget ? { budgetMs: Number(budget[1]) } : {}),
+			...(responses ? { doublesResponses: Number(responses[1]) } : {}),
 		};
-		return new HeuristicAI('master', Math.random, {}, masterWeights(), model ? { model, sim } : null);
+		const doublesWeights = spec.includes('-dw') ? masterWeights() : masterDoublesWeights();
+		const search = model ? { model, doublesModel: MASTER_DOUBLES_MODEL, sim } : null;
+		return new HeuristicAI('master', Math.random, {}, masterWeights(), search, doublesWeights);
 	}
 	const [level, ...changes] = spec.split(/(?=[+-])/);
 	if (!changes.length) return createAI(level);
@@ -107,8 +121,8 @@ function drive(stream, spec, stats, side, samples) {
 				if (line.startsWith('|request|')) {
 					request = JSON.parse(line.slice(9));
 					invalid = 0;
-					// Posições para o modelo de avaliação: pedidos de jogada em batalhas individuais
-					if (samples && request.active?.length === 1 && !request.wait) {
+					// Posições para o modelo de avaliação: pedidos de jogada (individual ou dupla)
+					if (samples && request.active?.length && !request.wait && !request.forceSwitch) {
 						samples[side].push(positionFeatures(buildPosition(request, readBattleState(log))));
 					}
 					decide();

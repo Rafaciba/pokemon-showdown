@@ -1,5 +1,5 @@
 /**
- * pokemon-showdown-custom: busca da IA Mestre no simulador do PS (batalhas individuais).
+ * pokemon-showdown-custom: busca da IA Mestre no simulador do PS.
  *
  * Para decidir uma jogada, a Mestre monta batalhas no próprio simulador do PS com o
  * estado atual: o nosso time exato (pedido do simulador) e um PALPITE do time do
@@ -9,6 +9,11 @@
  * vê o time do jogador. Cada combinação de jogada nossa e resposta do adversário é
  * jogada por um turno, e a posição resultante é avaliada pelo modelo (value-model.ts).
  * Vários palpites (com sementes diferentes) são testados até o limite de tempo.
+ *
+ * Em dupla (etapa 5), a busca é simplificada para caber no mesmo tempo: cada Pokémon
+ * ativo é avaliado com o aliado fixo na jogada das regras (primeiro a posição 1,
+ * depois a 2, já com a escolha da 1), contra algumas combinações de golpes dos dois
+ * adversários, sem trocas deles. Trocas obrigatórias em dupla ficam com as regras.
  *
  * @license MIT
  */
@@ -35,12 +40,20 @@ export interface SimSearchOptions {
 	samples: number;
 	/** Semente fixa dos palpites (testes); sem ela, sorteios a cada busca. */
 	seed?: number;
+	/** Em dupla: combinações de golpes dos adversários avaliadas em cada palpite (padrão DOUBLES_RESPONSES). */
+	doublesResponses?: number;
 }
 
 /** Formato das batalhas simuladas: aceita tudo (Pokédex completa, Megaevolução). */
 const SIM_FORMAT = 'gen9nationaldexag';
+/** Em dupla: Pokédex completa, com Megaevolução (os times não passam pelo validador). */
+const SIM_DOUBLES_FORMAT = 'gen9nationaldexdoubles';
 /** Trocas do adversário consideradas (as primeiras do banco já visto). */
 const THEIR_SWITCHES = 2;
+/** Em dupla: combinações de golpes dos dois adversários avaliadas em cada palpite. */
+const DOUBLES_RESPONSES = 4;
+/** Golpes de um alvo, que em dupla precisam do número do alvo na escolha. */
+const SINGLE_TARGETS = new Set(['normal', 'any', 'adjacentFoe']);
 /** Golpe genérico de cada tipo, para espécies sem repertório conhecido: [físico, especial]. */
 const TYPE_MOVES: { [type: string]: [string, string] } = {
 	Normal: ['bodyslam', 'hypervoice'], Fire: ['flareblitz', 'flamethrower'], Water: ['waterfall', 'surf'],
@@ -112,6 +125,8 @@ interface Snapshot {
 	theirs: SeenPokemon[];
 	theirUnseen: number;
 	state: BattleState;
+	/** Em dupla, os dois primeiros de cada time são os ativos. */
+	doubles: boolean;
 }
 
 function snapshot(request: MoveRequest | { side: MoveRequest['side'] }, state: BattleState): Snapshot | null {
@@ -119,14 +134,21 @@ function snapshot(request: MoveRequest | { side: MoveRequest['side'] }, state: B
 	const theirSide = ourSide === 'p1' ? 'p2' : 'p1';
 	const view = state.sides[theirSide];
 	if (!view) return null;
-	const activeName = view.activeSlots[0] ?? view.active;
+	const doubles = state.gameType === 'doubles';
 	const seen = [...view.pokemon.values()];
-	const active = seen.find(mon => mon.name === activeName && !mon.fainted);
-	if (!active) return null;
+	const slots = doubles ? [0, 1] : [0];
+	const actives = slots.map(i => {
+		const name = doubles ? view.activeSlots[i] : view.activeSlots[0] ?? view.active;
+		return seen.find(mon => mon.name === name && !mon.fainted);
+	});
+	if (actives.some(active => !active)) return null;
+	// Em dupla, a busca só roda com as duas posições ocupadas dos dois lados
+	if (doubles && request.side.pokemon.slice(0, 2).some(mon => !mon.active || mon.condition.endsWith(' fnt'))) return null;
 	const total = Math.max(view.teamSize || 0, view.preview.length, seen.length);
 	return {
-		ourSide, ours: request.side.pokemon, theirs: [active, ...seen.filter(mon => mon !== active)],
-		theirUnseen: Math.max(0, total - seen.length), state,
+		ourSide, ours: request.side.pokemon,
+		theirs: [...actives as SeenPokemon[], ...seen.filter(mon => !actives.includes(mon))],
+		theirUnseen: Math.max(0, total - seen.length), state, doubles,
 	};
 }
 
@@ -159,7 +181,8 @@ function buildBattle(snap: Snapshot, random: () => number, seed: string, activeI
 	const theirSide = snap.ourSide === 'p1' ? 'p2' : 'p1';
 	let battle: Battle;
 	try {
-		battle = new Battle({ formatid: SIM_FORMAT as ID, seed: seed as `sodium,${string}` });
+		const formatid = (snap.doubles ? SIM_DOUBLES_FORMAT : SIM_FORMAT) as ID;
+		battle = new Battle({ formatid, seed: seed as `sodium,${string}` });
 		const ourPlayer = { name: 'us', team: order.map(i => ourTeam[i]) };
 		const theirPlayer = { name: 'them', team: theirTeam };
 		battle.setPlayer(snap.ourSide, ourPlayer);
@@ -189,11 +212,15 @@ function buildBattle(snap: Snapshot, random: () => number, seed: string, activeI
 	});
 	const ourActive = us.active[0];
 	const theirActive = them.active[0];
-	// Boosts dos ativos (o nosso só se não houve troca obrigatória)
+	// Boosts dos ativos (os nossos só se não houve troca obrigatória)
 	const ourView = snap.state.sides[snap.ourSide];
-	const ourSeen = ourView?.pokemon.get(nameOf(snap.ours[order[0]].ident));
-	if (activeIndex === undefined && ourSeen) Object.assign(ourActive.boosts, ourSeen.boosts);
-	Object.assign(theirActive.boosts, snap.theirs[0].boosts);
+	us.active.forEach((pokemon, i) => {
+		const ourSeen = ourView?.pokemon.get(nameOf(snap.ours[order[i]].ident));
+		if (pokemon && activeIndex === undefined && ourSeen) Object.assign(pokemon.boosts, ourSeen.boosts);
+	});
+	them.active.forEach((pokemon, i) => {
+		if (pokemon && snap.theirs[i]) Object.assign(pokemon.boosts, snap.theirs[i].boosts);
+	});
 	const sides = [[us, ourView, theirActive], [them, snap.state.sides[theirSide], ourActive]] as const;
 	for (const [side, view, source] of sides) {
 		for (const [id, layers] of view?.conditions || []) {
@@ -208,7 +235,7 @@ function buildBattle(snap: Snapshot, random: () => number, seed: string, activeI
 	}
 	us.pokemonLeft = us.pokemon.filter(pokemon => !pokemon.fainted).length;
 	them.pokemonLeft = them.pokemon.filter(pokemon => !pokemon.fainted).length + snap.theirUnseen;
-	if (ourActive.fainted || theirActive.fainted) return null;
+	if ([...us.active, ...them.active].some(pokemon => !pokemon || pokemon.fainted)) return null;
 	// Só a partir daqui o log interessa (o simulador limita o tamanho do log de um turno)
 	battle.log.length = 0;
 	return battle;
@@ -233,7 +260,10 @@ function positionOf(battle: Battle, ourSide: string, theirUnseen: number): Posit
 		};
 	};
 	const theirSide = ourSide === 'p1' ? 'p2' : 'p1';
-	return { us: sideOf(ourSide, 0), them: sideOf(theirSide, theirUnseen), weather: battle.field.weather };
+	return {
+		us: sideOf(ourSide, 0), them: sideOf(theirSide, theirUnseen), weather: battle.field.weather,
+		doubles: battle.gameType === 'doubles',
+	};
 }
 
 /** Joga um turno (e as trocas obrigatórias que vierem) e devolve a chance estimada, ou null se a escolha for inválida. */
@@ -273,22 +303,51 @@ function theirChoices(snap: Snapshot) {
 }
 
 /**
+ * Respostas dos dois adversários em dupla, no palpite desta semente: combinações dos
+ * golpes de cada um (golpes de um alvo vão no nosso Pokémon da posição `target`),
+ * sorteadas até `count`. Sem trocas.
+ */
+function theirDoublesChoices(snap: Snapshot, seedNumber: number, seed: string, target: number, count: number) {
+	const battle = buildBattle(snap, makeRandom(seedNumber), seed);
+	if (!battle) return [];
+	const theirSide = snap.ourSide === 'p1' ? 'p2' : 'p1';
+	const perFoe = battle.getSide(theirSide).active.map((pokemon, position) => pokemon.moveSlots.map((slot, i) => {
+		const moveTarget = Dex.moves.get(slot.id).target;
+		if (SINGLE_TARGETS.has(moveTarget)) return `move ${i + 1} ${target}`;
+		if (moveTarget === 'adjacentAlly') return `move ${i + 1} -${2 - position}`;
+		if (moveTarget === 'adjacentAllyOrSelf') return `move ${i + 1} -${position + 1}`;
+		return `move ${i + 1}`;
+	}));
+	if (perFoe.length < 2 || perFoe.some(options => !options.length)) return [];
+	const pairs = perFoe[0].flatMap(a => perFoe[1].map(b => `${a}, ${b}`));
+	const random = makeRandom(seedNumber ^ 0x5bd1e995);
+	for (let i = pairs.length - 1; i > 0; i--) {
+		const j = Math.floor(random() * (i + 1));
+		[pairs[i], pairs[j]] = [pairs[j], pairs[i]];
+	}
+	return pairs.slice(0, count);
+}
+
+/**
  * Valor de cada escolha nossa (no formato do protocolo), pela média dos palpites; null
  * se não deu para montar nenhuma batalha. `activeIndex`: troca obrigatória (avalia a
  * entrada desse Pokémon com a melhor jogada seguinte).
  */
 function searchValues(
-	snap: Snapshot, model: ValueModel, options: SimSearchOptions, ourChoices: string[], activeIndex?: number
+	snap: Snapshot, model: ValueModel, options: SimSearchOptions, ourChoices: string[], activeIndex?: number,
+	doublesTarget?: number
 ): Map<string, number> | null {
 	const started = Date.now();
 	const totals = new Map<string, { sum: number, count: number }>();
-	const responses = theirChoices(snap);
 	for (let sample = 0; sample < options.samples; sample++) {
 		if (sample > 0 && Date.now() - started > options.budgetMs) break;
 		simSearchStats.samples++;
 		const seedNumber = options.seed !== undefined ? (options.seed + sample * 7919) >>> 0 :
 			Math.floor(Math.random() * 4294967296);
 		const seed = `sodium,${seedNumber.toString(16).padStart(8, '0')}${'0'.repeat(24)}`;
+		const responses = doublesTarget ?
+			theirDoublesChoices(snap, seedNumber, seed, doublesTarget, options.doublesResponses ?? DOUBLES_RESPONSES) :
+			theirChoices(snap);
 		for (const ours of ourChoices) {
 			let worst = Infinity;
 			let sum = 0;
@@ -387,3 +446,76 @@ export function simSearchForcedSwitch(
 }
 
 export const DEFAULT_SIM_SEARCH: SimSearchOptions = { pessimism: 0.5, margin: 0.05, budgetMs: 1000, samples: 8 };
+
+// --- Dupla ----------------------------------------------------------------------------
+
+/**
+ * Escolhas de um Pokémon ativo em dupla (posição `index`), com o aliado já decidido em
+ * `allyChoice`: os golpes (os de um alvo, em cada adversário) e as trocas, sem repetir
+ * a troca nem a Megaevolução do aliado.
+ */
+function doublesOptions(request: MoveRequest, index: number, allyChoice: string): string[] {
+	const active = request.active[index];
+	const options: string[] = [];
+	const mega = active.canMegaEvo && !allyChoice.includes(' mega') ? ' mega' : '';
+	active.moves.forEach((slot, i) => {
+		if (slot.disabled || (slot.pp !== undefined && slot.pp <= 0)) return;
+		// Golpe preso (Outrage, segundo turno de Electro Shot...) chega sem "target" e não aceita alvo
+		if (!slot.target) {
+			options.push(`move ${i + 1}${mega}`);
+		} else if (SINGLE_TARGETS.has(slot.target)) {
+			options.push(`move ${i + 1} 1${mega}`, `move ${i + 1} 2${mega}`);
+		} else if (slot.target === 'adjacentAlly') {
+			options.push(`move ${i + 1} -${2 - index}${mega}`);
+		} else if (slot.target === 'adjacentAllyOrSelf') {
+			options.push(`move ${i + 1} -${index + 1}${mega}`);
+		} else {
+			options.push(`move ${i + 1}${mega}`);
+		}
+	});
+	if (!active.trapped && !active.maybeTrapped) {
+		const allySwitch = /^switch (\d+)/.exec(allyChoice)?.[1];
+		request.side.pokemon.forEach((mon, i) => {
+			if (!mon.active && !mon.condition.endsWith(' fnt') && String(i + 1) !== allySwitch) options.push(`switch ${i + 1}`);
+		});
+	}
+	return options;
+}
+
+/**
+ * Escolha num pedido de jogada em dupla: parte da escolha das regras (`ruleChoice`,
+ * "move 1 2, switch 3") e troca a parte de cada Pokémon quando a busca estima uma
+ * jogada melhor por mais que `options.margin`, com o aliado fixo.
+ */
+export function simSearchDoubles(
+	request: MoveRequest, state: BattleState, model: ValueModel, options: SimSearchOptions, ruleChoice: string
+): string {
+	const started = Date.now();
+	simSearchStats.searches++;
+	const snap = snapshot(request, state);
+	const parts = ruleChoice.split(',').map(part => part.trim());
+	if (!snap || !snap.doubles || parts.length !== 2 || request.active.length !== 2) {
+		simSearchStats.failed++;
+		return ruleChoice;
+	}
+	const perMon = { ...options, budgetMs: options.budgetMs / 2 };
+	let searched = false;
+	for (const index of [0, 1]) {
+		if (parts[index] === 'pass') continue;
+		const ally = parts[1 - index];
+		const ours = doublesOptions(request, index, ally);
+		if (!ours.includes(parts[index])) ours.push(parts[index]);
+		const full = new Map(ours.map(choice => [index === 0 ? `${choice}, ${ally}` : `${ally}, ${choice}`, choice]));
+		const values = searchValues(snap, model, perMon, [...full.keys()], undefined, index + 1);
+		if (!values) continue;
+		searched = true;
+		const { best, bestValue } = bestOf(values);
+		const ruleValue = values.get(index === 0 ? `${parts[0]}, ${ally}` : `${ally}, ${parts[1]}`);
+		if (ruleValue !== undefined && bestValue - ruleValue <= options.margin) continue;
+		parts[index] = full.get(best)!;
+		simSearchStats.changed++;
+	}
+	simSearchStats.totalMs += Date.now() - started;
+	if (!searched) simSearchStats.failed++;
+	return parts.join(', ');
+}

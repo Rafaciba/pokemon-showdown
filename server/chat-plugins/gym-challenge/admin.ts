@@ -27,6 +27,7 @@ import { ELITE4_SIZE, NAME_MAX_LENGTH, RULES_MAX_LENGTH, TITLE_MAX_LENGTH, type 
 import { normalizeTeamText, trainerTypes } from './teams';
 import { activeStages, challengeProblems, checkChallengeInput, DEFAULT_CHALLENGE, fieldKey } from './challenges';
 import { AI_LEVELS, isAILevel } from './levels';
+import { LEVEL_STRENGTH, strengthRate } from './level-strength';
 import {
 	applyImport, canImport, checkTrainer, exportPack, planHasProblems, planImport, type ImportPlan,
 } from './transfer';
@@ -36,7 +37,7 @@ import { isTrainerSprite, searchTrainerSprites, spriteQuery, trainerSpriteImg } 
 import { closeRun, runState } from './runs';
 import { formatDate, profileButton, runStatusLabel } from './player';
 import { callLoginServer, formatExpiry, inviteBox, loginLang, resetBox } from '../custom-accounts';
-import { activeMasterModel, MIN_NEW_BATTLES, VERIFICATION_MIN_SCORE } from './master-learning';
+import { activeMasterModel, BATTLE_KINDS, MIN_NEW_BATTLES, VERIFICATION_MIN_SCORE } from './master-learning';
 import { isTrainingRunning, requestTraining } from './master-training-process';
 import type {
 	Challenge, ChallengeInput, ChallengeStatus, GymStore, StageKind, Trainer, TrainerInput,
@@ -319,6 +320,27 @@ function trainingOutcome(TL: Translator, outcome: string | null) {
 	if (outcome === 'skipped') return TL`Skipped`;
 	if (outcome === 'failed') return TL`Failed`;
 	return TL`In progress`;
+}
+
+/** Nome do tipo de batalha dos dados e modelos da Mestre. */
+function battleKindLabel(TL: Translator, kind: string) {
+	return kind === 'doubles' ? TL`Doubles` : TL`Singles`;
+}
+
+/** Tabela da força dos níveis (level-strength.ts): vitórias do nível da linha contra o da coluna. */
+function levelStrengthTable(TL: Translator, kind: 'singles' | 'doubles') {
+	let buf = `<div class="ladder"><table><tr><th></th>`;
+	for (const opponent of AI_LEVELS) buf += `<th>${aiLevelLabel(TL, opponent)}</th>`;
+	buf += `</tr>`;
+	for (const level of AI_LEVELS) {
+		buf += `<tr><th>${aiLevelLabel(TL, level)}</th>`;
+		for (const opponent of AI_LEVELS) {
+			const rate = strengthRate(kind, level, opponent);
+			buf += `<td>${rate === null ? '-' : `${Math.round(rate * 100)}%`}</td>`;
+		}
+		buf += `</tr>`;
+	}
+	return buf + `</table></div>`;
 }
 
 /** Detalhes de um retreino: motivo e números da verificação. */
@@ -1113,38 +1135,49 @@ export const pages: Chat.PageTable = {
 			if (!isAdmin(user)) this.pageDoesNotExist();
 			this.title = this.TL`Master AI`;
 			const store = getStore();
-			activeMasterModel(store);
+			for (const kind of BATTLE_KINDS) activeMasterModel(store, kind);
 			const minimum = MIN_NEW_BATTLES;
 			const minScore = Math.round(VERIFICATION_MIN_SCORE * 100);
 			let buf = `<div class="pad"><h2>${this.TL`Master AI`}</h2>` + navButtons(this.TL) +
 				`<p>${this.TL`The Master AI learns from the Gym Challenge battles: it keeps anonymous positions (no player, challenge or time) and who won.`} ` +
-				`${this.TL`Every Monday at 4:00 (Brasília time), with at least ${minimum} new battles, it retrains. The new model is only used if it predicts the real results better and scores at least ${minScore}% against the current model in simulated battles.`}</p>`;
+				`${this.TL`Every Monday at 4:00 (Brasília time), with at least ${minimum} new battles, it retrains. The new model is only used if it predicts the real results better and scores at least ${minScore}% against the current model in simulated battles.`} ` +
+				`${this.TL`Singles and doubles battles have separate data, models and retraining.`}</p>`;
 
-			const active = store.getActiveModel();
-			buf += `<h3>${this.TL`Model in use`}</h3>`;
-			if (!active) {
-				buf += `<p><em>${this.TL`No model: the Master AI plays with its rules only.`}</em></p>`;
-			} else {
-				const source = active.source === 'sim' ? this.TL`Simulated battles` : this.TL`Real battles`;
-				buf += `<div class="ladder"><table>` +
-					`<tr><th>${this.TL`Version`}</th><td>${Utils.escapeHTML(active.version)}</td></tr>` +
-					`<tr><th>${this.TL`Source`}</th><td>${source}</td></tr>` +
-					`<tr><th>${this.TL`Trained`}</th><td>${formatExpiry(active.trainedAt)}</td></tr>` +
-					`</table></div>`;
+			for (const kind of BATTLE_KINDS) {
+				const active = store.getActiveModel(kind);
+				buf += `<h3>${battleKindLabel(this.TL, kind)}</h3><p><strong>${this.TL`Model in use`}</strong></p>`;
+				if (!active) {
+					buf += `<p><em>${this.TL`No model: the Master AI plays with its rules only.`}</em></p>`;
+				} else {
+					const source = active.source === 'sim' ? this.TL`Simulated battles` : this.TL`Real battles`;
+					buf += `<div class="ladder"><table>` +
+						`<tr><th>${this.TL`Version`}</th><td>${Utils.escapeHTML(active.version)}</td></tr>` +
+						`<tr><th>${this.TL`Source`}</th><td>${source}</td></tr>` +
+						`<tr><th>${this.TL`Trained`}</th><td>${formatExpiry(active.trainedAt)}</td></tr>` +
+						`</table></div>`;
+				}
+				const stats = store.positionStats(kind);
+				const battles = stats.battles;
+				const positions = stats.positions;
+				const fresh = stats.freshBattles;
+				buf += `<p><strong>${this.TL`Collected data`}</strong></p>` +
+					`<p>${this.TL`${battles} battles and ${positions} positions; ${fresh} new battles since the last retraining (minimum ${minimum}).`}</p>`;
 			}
 
-			const stats = store.positionStats();
 			const results = store.masterResults();
-			const battles = stats.battles;
-			const positions = stats.positions;
-			const fresh = stats.freshBattles;
 			const wins = results.wins;
 			const losses = results.losses;
-			buf += `<h3>${this.TL`Collected data`}</h3>` +
-				`<p>${this.TL`${battles} battles and ${positions} positions; ${fresh} new battles since the last retraining (minimum ${minimum}).`}</p>`;
 			if (wins + losses) {
 				const rate = Math.round(wins / (wins + losses) * 100);
 				buf += `<p>${this.TL`Master AI in the journeys: ${wins} wins and ${losses} losses (${rate}%).`}</p>`;
+			}
+			if (LEVEL_STRENGTH) {
+				const date = LEVEL_STRENGTH.measuredAt;
+				const battles = LEVEL_STRENGTH.battles;
+				buf += `<h3>${this.TL`Strength of the levels`}</h3>` +
+					`<p>${this.TL`Wins of the row level against the column level, in battles between AIs with random teams (measured on ${date}, at least ${battles} battles per matchup).`}</p>` +
+					`<p><strong>${this.TL`Singles`}</strong></p>${levelStrengthTable(this.TL, 'singles')}` +
+					`<p><strong>${this.TL`Doubles`}</strong></p>${levelStrengthTable(this.TL, 'doubles')}`;
 			}
 			if (isTrainingRunning()) {
 				buf += `<p><strong>${this.TL`Retraining in progress. It can take up to an hour; meanwhile the Master AI may play with its rules only.`}</strong></p>`;
@@ -1160,11 +1193,12 @@ export const pages: Chat.PageTable = {
 			if (!trainings.length) {
 				buf += `<p><em>${this.TL`No retraining yet.`}</em></p>`;
 			} else {
-				buf += `<div class="ladder"><table><tr><th>${this.TL`Started`}</th><th>${this.TL`Trigger`}</th>` +
-					`<th>${this.TL`Result`}</th><th>${this.TL`Details`}</th></tr>`;
+				buf += `<div class="ladder"><table><tr><th>${this.TL`Started`}</th><th>${this.TL`Battle type`}</th>` +
+					`<th>${this.TL`Trigger`}</th><th>${this.TL`Result`}</th><th>${this.TL`Details`}</th></tr>`;
 				for (const training of trainings) {
 					const trigger = training.trigger === 'manual' ? this.TL`Admin panel` : this.TL`Schedule`;
-					buf += `<tr><td>${formatExpiry(training.startedAt)}</td><td>${trigger}</td>` +
+					buf += `<tr><td>${formatExpiry(training.startedAt)}</td><td>${battleKindLabel(this.TL, training.kind)}</td>` +
+						`<td>${trigger}</td>` +
 						`<td>${trainingOutcome(this.TL, training.outcome)}</td><td>${trainingDetails(this.TL, training.report)}</td></tr>`;
 				}
 				buf += `</table></div>`;
@@ -1173,7 +1207,7 @@ export const pages: Chat.PageTable = {
 			const models = store.listModels();
 			if (models.length) {
 				buf += `<h3>${this.TL`Models`}</h3><div class="ladder"><table><tr><th>${this.TL`Version`}</th>` +
-					`<th>${this.TL`Source`}</th><th>${this.TL`Status`}</th><th>${this.TL`Trained`}</th><th></th></tr>`;
+					`<th>${this.TL`Battle type`}</th><th>${this.TL`Source`}</th><th>${this.TL`Status`}</th><th>${this.TL`Trained`}</th><th></th></tr>`;
 				for (const model of models) {
 					const source = model.source === 'sim' ? this.TL`Simulated battles` : this.TL`Real battles`;
 					const status = model.status === 'active' ? this.TL`In use` :
@@ -1182,7 +1216,8 @@ export const pages: Chat.PageTable = {
 						`<details><summary>${this.TL`Use this version`}</summary>` +
 						`<button class="button" name="send" value="/ginasioadmin usarmodelomestre ${Utils.escapeHTML(model.version)}">` +
 						`${this.TL`Confirm`}</button></details>`;
-					buf += `<tr><td>${Utils.escapeHTML(model.version)}</td><td>${source}</td><td>${status}</td>` +
+					buf += `<tr><td>${Utils.escapeHTML(model.version)}</td><td>${battleKindLabel(this.TL, model.kind)}</td>` +
+						`<td>${source}</td><td>${status}</td>` +
 						`<td>${formatExpiry(model.trainedAt)}</td><td>${action}</td></tr>`;
 				}
 				buf += `</table></div>`;

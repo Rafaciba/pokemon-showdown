@@ -52,5 +52,7 @@ export const Formats: FormatList = markCustom([
 		section: FORMAT_SECTION,
 		column: 4,
 	},
-	...buildChallengeFormats(officialFormats),
+	// Simulações fora do servidor (banco de testes e treino da IA Mestre) não precisam
+	// dos formatos de desafio nem do banco do plugin
+	...(process.env.GYM_CHALLENGE_FORMATS === 'off' ? [] : buildChallengeFormats(officialFormats)),
 ]);

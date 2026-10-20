@@ -909,11 +909,22 @@ describe('Gym Challenge', () => {
 			const team = [mon('Skarmory', ['stealthrock', 'toxic', 'bravebird'], { active: true }), mon('Starmie', ['surf'])];
 			const rocksUp = logWith('Snorlax', '100/100', ['|-sidestart|p1: Ash|move: Stealth Rock']);
 			for (const log of [logWith('Snorlax'), rocksUp]) {
-				assert.equal(createAI('master').choose(moveRequest(team), { log }), choose('hard', moveRequest(team), log));
+				const master = new HeuristicAI('master', () => 0.99, {}, DEFAULT_WEIGHTS);
+				assert.equal(master.choose(moveRequest(team), { log }), choose('hard', moveRequest(team), log));
 			}
 			const noRocks = new HeuristicAI('master', () => 0.99, {}, { ...DEFAULT_WEIGHTS, stealthRock: 0 });
 			assert.equal(noRocks.choose(moveRequest(team), { log: logWith('Snorlax') }), 'move 2',
 				'sem valor para Stealth Rock, vai de Toxic');
+		});
+
+		it('has a complete set of trained master weights within the training limits', () => {
+			const { masterWeights } = require('../../../dist/server/chat-plugins/gym-challenge/master-weights');
+			const weights = masterWeights();
+			assert.deepEqual(Object.keys(weights).sort(), Object.keys(DEFAULT_WEIGHTS).sort());
+			for (const [key, value] of Object.entries(weights)) {
+				assert(Number.isFinite(value) && value >= 0 && value <= 300, `${key} = ${value}`);
+			}
+			assert(weights.outspedFactor <= 1 && weights.doomedStatusFactor <= 1);
 		});
 
 		it('hard respects the Sleep Clause and Ground immunity to Thunder Wave', () => {

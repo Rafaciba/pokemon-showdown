@@ -1,0 +1,411 @@
+{
+	"seed": "liga-de-desafios",
+	"generation": 50,
+	"sigma": 0.06541961260422215,
+	"weights": {
+		"koBonus": 10.179,
+		"priorityKoBonus": 19.021,
+		"outspedFactor": 0.392,
+		"phazeVsBoosts": 37.82,
+		"doomedStatusFactor": 0.515,
+		"healLowHp": 66.27,
+		"healLow": 64.625,
+		"healMidHp": 39.194,
+		"healMid": 23.405,
+		"stall": 21.969,
+		"stallHp": 30.375,
+		"screens": 78.829,
+		"screensHp": 36.623,
+		"hazeVsBoosts": 42.195,
+		"hazardHp": 22.832,
+		"stealthRock": 29.165,
+		"stickyWeb": 56.892,
+		"spikes": 22.545,
+		"toxicSpikes": 35.378,
+		"statusHp": 30.849,
+		"sleep": 141.196,
+		"toxic": 50.092,
+		"paralysis": 31.981,
+		"burnPhysical": 88.321,
+		"burnSpecial": 33.064,
+		"otherStatus": 45.995,
+		"boostHp": 58.287,
+		"boostDamageTaken": 55.888,
+		"boostOffense": 29.77,
+		"boostSpeed": 9.497,
+		"boostDefense": 22.63,
+		"boostDrop": 11.211,
+		"boostMax": 103.183,
+		"debuffHp": 96.689,
+		"debuffOffense": 18.999,
+		"debuffDefense": 10.131,
+		"debuffSpeed": 13.824,
+		"debuffMax": 47.006,
+		"speedKo": 16.992,
+		"enterKo": 187.947,
+		"switchMargin": 40.562,
+		"stayIfKo": 22.428,
+		"allyHitFactor": 0.595,
+		"allyKo": 55.184,
+		"allySupport": 9.6
+	},
+	"history": [
+		{
+			"generation": 0,
+			"mean": 0.5395833333333333,
+			"best": 0.5354166666666667,
+			"sigma": 0.291
+		},
+		{
+			"generation": 1,
+			"mean": 0.4979166666666667,
+			"best": 0.5375,
+			"sigma": 0.28226999999999997
+		},
+		{
+			"generation": 2,
+			"mean": 0.5104166666666666,
+			"best": 0.54375,
+			"sigma": 0.27380189999999993
+		},
+		{
+			"generation": 3,
+			"mean": 0.4895833333333333,
+			"best": 0.5229166666666667,
+			"sigma": 0.26558784299999993
+		},
+		{
+			"generation": 4,
+			"mean": 0.51875,
+			"best": 0.55,
+			"sigma": 0.25762020770999994
+		},
+		{
+			"generation": 5,
+			"mean": 0.5375,
+			"best": 0.5458333333333333,
+			"sigma": 0.24989160147869993
+		},
+		{
+			"generation": 6,
+			"mean": 0.5208333333333334,
+			"best": 0.54375,
+			"sigma": 0.24239485343433892
+		},
+		{
+			"generation": 7,
+			"mean": 0.53125,
+			"best": 0.54375,
+			"sigma": 0.23512300783130874
+		},
+		{
+			"generation": 8,
+			"mean": 0.50625,
+			"best": 0.53125,
+			"sigma": 0.22806931759636948
+		},
+		{
+			"generation": 9,
+			"mean": 0.49583333333333335,
+			"best": 0.55625,
+			"sigma": 0.22122723806847838
+		},
+		{
+			"generation": 10,
+			"mean": 0.48333333333333334,
+			"best": 0.5375,
+			"sigma": 0.21459042092642402
+		},
+		{
+			"generation": 11,
+			"mean": 0.525,
+			"best": 0.51875,
+			"sigma": 0.2081527082986313
+		},
+		{
+			"generation": 12,
+			"mean": 0.49375,
+			"best": 0.5666666666666667,
+			"sigma": 0.20190812704967237
+		},
+		{
+			"generation": 13,
+			"mean": 0.48333333333333334,
+			"best": 0.5875,
+			"sigma": 0.1958508832381822
+		},
+		{
+			"generation": 14,
+			"mean": 0.5333333333333333,
+			"best": 0.54375,
+			"sigma": 0.18997535674103672
+		},
+		{
+			"generation": 15,
+			"mean": 0.53125,
+			"best": 0.5770833333333333,
+			"sigma": 0.1842760960388056
+		},
+		{
+			"generation": 16,
+			"mean": 0.5083333333333333,
+			"best": 0.5541666666666667,
+			"sigma": 0.17874781315764143
+		},
+		{
+			"generation": 17,
+			"mean": 0.5604166666666667,
+			"best": 0.5854166666666667,
+			"sigma": 0.17338537876291218
+		},
+		{
+			"generation": 18,
+			"mean": 0.575,
+			"best": 0.5958333333333333,
+			"sigma": 0.1681838174000248
+		},
+		{
+			"generation": 19,
+			"mean": 0.5479166666666667,
+			"best": 0.5854166666666667,
+			"sigma": 0.16313830287802406
+		},
+		{
+			"generation": 20,
+			"mean": 0.55625,
+			"best": 0.5729166666666666,
+			"sigma": 0.15824415379168333
+		},
+		{
+			"generation": 21,
+			"mean": 0.5270833333333333,
+			"best": 0.5833333333333334,
+			"sigma": 0.15349682917793284
+		},
+		{
+			"generation": 22,
+			"mean": 0.5520833333333334,
+			"best": 0.5604166666666667,
+			"sigma": 0.14889192430259485
+		},
+		{
+			"generation": 23,
+			"mean": 0.5854166666666667,
+			"best": 0.5875,
+			"sigma": 0.144425166573517
+		},
+		{
+			"generation": 24,
+			"mean": 0.5291666666666667,
+			"best": 0.5770833333333333,
+			"sigma": 0.1400924115763115
+		},
+		{
+			"generation": 25,
+			"mean": 0.5479166666666667,
+			"best": 0.5791666666666667,
+			"sigma": 0.13588963922902214
+		},
+		{
+			"generation": 26,
+			"mean": 0.53125,
+			"best": 0.5625,
+			"sigma": 0.13181295005215146
+		},
+		{
+			"generation": 27,
+			"mean": 0.5354166666666667,
+			"best": 0.56875,
+			"sigma": 0.12785856155058692
+		},
+		{
+			"generation": 28,
+			"mean": 0.5520833333333334,
+			"best": 0.5666666666666667,
+			"sigma": 0.1240228047040693
+		},
+		{
+			"generation": 29,
+			"mean": 0.5520833333333334,
+			"best": 0.5708333333333333,
+			"sigma": 0.12030212056294722
+		},
+		{
+			"generation": 30,
+			"mean": 0.53125,
+			"best": 0.5708333333333333,
+			"sigma": 0.11669305694605879
+		},
+		{
+			"generation": 31,
+			"mean": 0.4979166666666667,
+			"best": 0.5583333333333333,
+			"sigma": 0.11319226523767702
+		},
+		{
+			"generation": 32,
+			"mean": 0.525,
+			"best": 0.5770833333333333,
+			"sigma": 0.1097964972805467
+		},
+		{
+			"generation": 33,
+			"mean": 0.5520833333333334,
+			"best": 0.575,
+			"sigma": 0.1065026023621303
+		},
+		{
+			"generation": 34,
+			"mean": 0.53125,
+			"best": 0.5791666666666667,
+			"sigma": 0.10330752429126638
+		},
+		{
+			"generation": 35,
+			"mean": 0.5666666666666667,
+			"best": 0.58125,
+			"sigma": 0.10020829856252839
+		},
+		{
+			"generation": 36,
+			"mean": 0.5479166666666667,
+			"best": 0.5708333333333333,
+			"sigma": 0.09720204960565253
+		},
+		{
+			"generation": 37,
+			"mean": 0.5479166666666667,
+			"best": 0.58125,
+			"sigma": 0.09428598811748296
+		},
+		{
+			"generation": 38,
+			"mean": 0.5479166666666667,
+			"best": 0.5666666666666667,
+			"sigma": 0.09145740847395846
+		},
+		{
+			"generation": 39,
+			"mean": 0.5458333333333333,
+			"best": 0.575,
+			"sigma": 0.0887136862197397
+		},
+		{
+			"generation": 40,
+			"mean": 0.5625,
+			"best": 0.5979166666666667,
+			"sigma": 0.0860522756331475
+		},
+		{
+			"generation": 41,
+			"mean": 0.5416666666666666,
+			"best": 0.5645833333333333,
+			"sigma": 0.08347070736415307
+		},
+		{
+			"generation": 42,
+			"mean": 0.5145833333333333,
+			"best": 0.5791666666666667,
+			"sigma": 0.08096658614322848
+		},
+		{
+			"generation": 43,
+			"mean": 0.5395833333333333,
+			"best": 0.5875,
+			"sigma": 0.07853758855893161
+		},
+		{
+			"generation": 44,
+			"mean": 0.5541666666666667,
+			"best": 0.5833333333333334,
+			"sigma": 0.07618146090216367
+		},
+		{
+			"generation": 45,
+			"mean": 0.5791666666666667,
+			"best": 0.5833333333333334,
+			"sigma": 0.07389601707509875
+		},
+		{
+			"generation": 46,
+			"mean": 0.5604166666666667,
+			"best": 0.5583333333333333,
+			"sigma": 0.07167913656284579
+		},
+		{
+			"generation": 47,
+			"mean": 0.5333333333333333,
+			"best": 0.5583333333333333,
+			"sigma": 0.06952876246596042
+		},
+		{
+			"generation": 48,
+			"mean": 0.575,
+			"best": 0.59375,
+			"sigma": 0.0674428995919816
+		},
+		{
+			"generation": 49,
+			"mean": 0.58125,
+			"best": 0.58125,
+			"sigma": 0.06541961260422215
+		}
+	],
+	"validation": {
+		"battles": 4000,
+		"trained": 0.5385,
+		"baseline": 0.50825,
+		"trainedByKind": {
+			"singles/hard": {
+				"score": 572,
+				"count": 1068
+			},
+			"doubles/hard": {
+				"score": 267,
+				"count": 532
+			},
+			"singles/medium": {
+				"score": 336,
+				"count": 532
+			},
+			"packs/hard": {
+				"score": 568,
+				"count": 1068
+			},
+			"doubles/medium": {
+				"score": 134,
+				"count": 268
+			},
+			"packs/medium": {
+				"score": 277,
+				"count": 532
+			}
+		},
+		"baselineByKind": {
+			"singles/hard": {
+				"score": 545,
+				"count": 1068
+			},
+			"singles/medium": {
+				"score": 294,
+				"count": 532
+			},
+			"packs/hard": {
+				"score": 534,
+				"count": 1068
+			},
+			"doubles/medium": {
+				"score": 131,
+				"count": 268
+			},
+			"doubles/hard": {
+				"score": 263,
+				"count": 532
+			},
+			"packs/medium": {
+				"score": 266,
+				"count": 532
+			}
+		}
+	}
+}

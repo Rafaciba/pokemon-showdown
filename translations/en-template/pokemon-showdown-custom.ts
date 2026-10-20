@@ -447,4 +447,13 @@ export const translations: TranslationCatalog = {
 	"Singles and doubles battles have separate data, models and retraining.": null,
 	"Strength of the levels": null,
 	"Wins of the row level against the column level, in battles between AIs with random teams (measured on {date}, at least {battles} battles per matchup).": null,
+	"Search by name": null,
+	"Search by name or Pokémon": null,
+	"All types": null,
+	"Selection": null,
+	"All trainers": null,
+	"Selected only": null,
+	"Not selected only": null,
+	"Click a column title to sort.": null,
+	"Selected first": null,
 };

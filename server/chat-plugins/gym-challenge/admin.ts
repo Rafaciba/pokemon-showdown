@@ -505,6 +505,33 @@ function challengeSummary(TL: Translator, challenge: Challenge) {
 }
 
 // --- Treinadores do desafio ---------------------------------------------------
+// Busca, filtros e ordenação dos treinadores rodam no navegador (client-custom.js),
+// sem recarregar a página, para não perder o que ainda não foi salvo. O servidor só
+// marca os elementos com classes: "gym-pool" (tabela do sorteio), "gym-pool-name",
+// "gym-pool-type" e "gym-pool-level" (células), "gym-filter-text", "gym-filter-type" e
+// "gym-filter-checked" (filtros), botões "gymSort" (títulos das colunas) e
+// "gym-select-filter" (busca por nome ao lado de uma lista de treinadores).
+
+/** Botão de ordenação no título de uma coluna da tabela do sorteio. */
+function sortButton(key: string, label: string, title = '') {
+	return `<button type="button" name="gymSort" value="${key}" class="gym-sort"${title ? ` title="${title}"` : ''} ` +
+		`style="background: none; border: 0; padding: 0; font-weight: bold; cursor: pointer">${label}</button>`;
+}
+
+/** Campo de busca por nome que filtra a lista de treinadores logo depois dele. */
+function selectFilter(TL: Translator) {
+	return `<input type="text" class="textbox gym-select-filter" size="12" placeholder="${TL`Search by name`}" ` +
+		`aria-label="${TL`Search by name`}" />`;
+}
+
+/** Ícones do time com o nome de cada Pokémon (dica ao passar o mouse e busca por Pokémon). */
+function teamIconsWithNames(team: string) {
+	const sets = Teams.unpack(team) || [];
+	return sets.map(set => {
+		const species = Utils.escapeHTML(set.species);
+		return `<psicon pokemon="${species}" title="${species}" />`;
+	}).join('');
+}
 
 function stageName(TL: Translator, kind: StageKind, position: number) {
 	if (kind === 'gym') return TL`Gym ${position}`;
@@ -534,7 +561,7 @@ function stagesForm(TL: Translator, store: GymStore, challenge: Challenge) {
 				`${chosenBadgeIcon(stage?.badgeId || null, type)}</td>`;
 		}
 		return `<tr><td>${stageName(TL, kind, position)}</td>` +
-			`<td>${trainerSpriteImg(trainer?.avatar, 40)} ` +
+			`<td>${trainerSpriteImg(trainer?.avatar, 40)} ${selectFilter(TL)} ` +
 			`${selectBox(key, [['', TL`(none)`], ...candidates.map(t => [String(t.id), trainerLabel(t)] as [string, string])],
 				String(stage?.trainerId || ''))}</td>` +
 				`<td>${selectBox(`${key}level`, levelOptions(TL), stage?.aiLevel || '')}</td>` + badge +
@@ -552,20 +579,32 @@ function stagesForm(TL: Translator, store: GymStore, challenge: Challenge) {
 	} else {
 		const pool = new Map(store.getPool(challenge.id).map(entry => [entry.trainerId, entry]));
 		const gymCount = challenge.gymCount;
+		const types = [...new Set(typed.map(trainer => trainer.type!))].sort();
+		const filterLabel = TL`Search by name or Pokémon`;
 		gyms = `<p><small>${TL`Select the leaders that can be drawn. Each journey draws one leader for each of ${gymCount} different types.`}</small></p>` +
-			`<div class="ladder"><table><tr><th></th><th>${TL`Trainer`}</th><th>${TL`Trainer type`}</th>` +
-			`<th>${TL`Difficulty`}</th><th>${TL`Badge`}</th><th>${TL`Team`}</th></tr>`;
+			`<p><input type="text" class="textbox gym-filter-text" size="28" placeholder="${filterLabel}" aria-label="${filterLabel}" /> ` +
+			`<select class="gym-filter-type" aria-label="${TL`Trainer type`}"><option value="">${TL`All types`}</option>` +
+			types.map(type => `<option value="${Utils.escapeHTML(type)}">${Utils.escapeHTML(type)}</option>`).join('') +
+			`</select> <select class="gym-filter-checked" aria-label="${TL`Selection`}">` +
+			`<option value="">${TL`All trainers`}</option><option value="checked">${TL`Selected only`}</option>` +
+			`<option value="unchecked">${TL`Not selected only`}</option></select></p>` +
+			`<p><small>${TL`Click a column title to sort.`}</small></p>` +
+			`<div class="ladder"><table class="gym-pool"><tr><th>${sortButton('checked', '&#10003;', TL`Selected first`)}</th>` +
+			`<th>${sortButton('name', TL`Trainer`)}</th><th>${sortButton('type', TL`Trainer type`)}</th>` +
+			`<th>${sortButton('level', TL`Difficulty`)}</th><th>${TL`Badge`}</th><th>${TL`Team`}</th></tr>`;
 		const byType = [...typed].sort((a, b) => a.type!.localeCompare(b.type!) || a.name.localeCompare(b.name));
 		for (const trainer of byType) {
 			const key = `pool${fieldKey(trainer.id)}`;
 			fields.push(`${key}={${key}}`, `${key}level={${key}level}`, `${key}badge={${key}badge}`);
 			const entry = pool.get(trainer.id);
+			const type = Utils.escapeHTML(trainer.type!);
 			gyms += `<tr><td><input type="checkbox" name="${key}"${entry ? ' checked' : ''} /></td>` +
-				`<td>${trainerSpriteImg(trainer.avatar, 40)} ${Utils.escapeHTML(trainer.name)}</td><td>${typeIcon(trainer.type)}</td>` +
-				`<td>${selectBox(`${key}level`, levelOptions(TL), entry?.aiLevel || '')}</td>` +
+				`<td>${trainerSpriteImg(trainer.avatar, 40)} <span class="gym-pool-name">${Utils.escapeHTML(trainer.name)}</span></td>` +
+				`<td class="gym-pool-type" title="${type}">${typeIcon(trainer.type)}</td>` +
+				`<td class="gym-pool-level">${selectBox(`${key}level`, levelOptions(TL), entry?.aiLevel || '')}</td>` +
 				`<td>${badgeSelect(TL, `${key}badge`, trainer.type, entry?.badgeId || null)} ` +
 				`${chosenBadgeIcon(entry?.badgeId || null, trainer.type)}</td>` +
-				`<td>${teamIcons(trainer.team)}</td></tr>`;
+				`<td>${teamIconsWithNames(trainer.team)}</td></tr>`;
 		}
 		gyms += `</table></div>`;
 	}

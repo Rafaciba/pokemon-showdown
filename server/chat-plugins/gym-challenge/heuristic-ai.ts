@@ -33,6 +33,13 @@ import type { Move } from '../../../sim/dex-moves';
 import { toID } from '../../../sim/dex-data';
 import { readBattleState, remainingCount, type BattleState, type SeenPokemon } from './battle-view';
 import type { BattleView, NpcAI } from './ai';
+import type { ValueModel } from './value-model';
+import {
+	effectivePower, estimateDamage, getMove, offensiveBoosts, speciesStats, speedOf, stabMoves, typeFactor,
+	STATUS_IMMUNE_TYPES, type Fighter,
+} from './battle-math';
+import { simSearchForcedSwitch, simSearchMove, type SimSearchOptions } from './sim-search';
+import type { MasterSearchQuery } from './master-search-process';
 
 export type HeuristicLevel = 'easy' | 'medium' | 'hard' | 'master';
 
@@ -57,7 +64,7 @@ export interface LevelRules {
 	chooseLead: boolean;
 }
 
-const RULES: { [level in HeuristicLevel]: LevelRules } = {
+export const RULES: { [level in HeuristicLevel]: LevelRules } = {
 	easy: {
 		typeAware: false, defensiveMoves: false, statusMoves: false, hazards: false,
 		typeSwitching: false, carefulSwitching: false, speedAware: false, statBoosts: false, chooseLead: false,
@@ -169,64 +176,6 @@ const HAZARD_WEIGHTS: { [id: string]: keyof HeuristicWeights } = {
 	stealthrock: 'stealthRock', stickyweb: 'stickyWeb', spikes: 'spikes', toxicspikes: 'toxicSpikes',
 };
 const SCREENS = new Set(['reflect', 'lightscreen', 'auroraveil']);
-/** Habilidades que anulam um tipo de golpe (para estimar o risco de imunidade). */
-const IMMUNITY_ABILITIES: { [ability: string]: string } = {
-	levitate: 'Ground', eartheater: 'Ground', flashfire: 'Fire', wellbakedbody: 'Fire', waterabsorb: 'Water',
-	stormdrain: 'Water', dryskin: 'Water', voltabsorb: 'Electric', lightningrod: 'Electric', motordrive: 'Electric',
-	sapsipper: 'Grass',
-};
-/** Status → tipos imunes a ele. */
-const STATUS_IMMUNE_TYPES: { [status: string]: string[] } = {
-	brn: ['Fire'], par: ['Electric'], psn: ['Poison', 'Steel'], tox: ['Poison', 'Steel'], frz: ['Ice'], slp: [],
-};
-
-type Stats = { hp: number, atk: number, def: number, spa: number, spd: number, spe: number };
-
-/** Um lado do confronto, com o que se sabe dele. */
-interface Fighter {
-	species: string;
-	level: number;
-	types: string[];
-	stats: Stats;
-	/** HP em porcentagem. */
-	hp: number;
-	status: string;
-	boosts: { [stat: string]: number };
-	/** Habilidades possíveis (a nossa é conhecida; a do adversário, só as da espécie). */
-	abilities: string[];
-	/** Golpes conhecidos (todos os nossos; os revelados do adversário). */
-	moves: Move[];
-}
-
-/** Atributo estimado de um Pokémon do adversário (IVs máximos, EVs medianos, natureza neutra). */
-function estimateStat(base: number, level: number, isHP: boolean) {
-	const core = Math.floor((2 * base + 31 + 21) * level / 100);
-	return isHP ? core + level + 10 : core + 5;
-}
-
-function speciesStats(species: string, level: number): Stats {
-	const base = Dex.species.get(species).baseStats;
-	return {
-		hp: estimateStat(base.hp, level, true), atk: estimateStat(base.atk, level, false),
-		def: estimateStat(base.def, level, false), spa: estimateStat(base.spa, level, false),
-		spd: estimateStat(base.spd, level, false), spe: estimateStat(base.spe, level, false),
-	};
-}
-
-function boostFactor(stage = 0) {
-	return stage >= 0 ? (2 + stage) / 2 : 2 / (2 - stage);
-}
-
-/** Velocidade efetiva (boosts e paralisia). */
-function speedOf(fighter: Fighter) {
-	return fighter.stats.spe * boostFactor(fighter.boosts.spe) * (fighter.status === 'par' ? 0.5 : 1);
-}
-
-/** Soma dos buffs ofensivos (ataque, ataque especial, velocidade). */
-function offensiveBoosts(fighter: Fighter) {
-	return ['atk', 'spa', 'spe'].reduce((sum, stat) => sum + Math.max(0, fighter.boosts[stat] || 0), 0);
-}
-
 /** Golpes que atingem os dois adversários (e, com allAdjacent, também o aliado). */
 const SPREAD_TARGETS = new Set(['allAdjacentFoes', 'allAdjacent']);
 /** Golpes de um alvo que, em dupla, precisam do número do alvo na escolha. */
@@ -253,66 +202,20 @@ interface Danger {
 	outsped: boolean;
 }
 
-function getMove(id: string): Move {
-	let move = Dex.moves.get(id);
-	// Return/Frustration chegam com o poder no id (ex.: return102)
-	if (!move.exists) move = Dex.moves.get(id.replace(/\d+$/, ''));
-	return move;
-}
-
-/** Multiplicador de tipo; 1 quando o nível não considera tipos. */
-function typeFactor(moveType: string, defender: Fighter, typeAware: boolean) {
-	if (!typeAware) return 1;
-	if (!Dex.getImmunity(moveType, defender.types)) return 0;
-	let factor = 2 ** Dex.getEffectiveness(moveType, defender.types);
-	// Habilidade que anula o tipo: certa se for a única possível, provável se for uma das possíveis
-	const immune = defender.abilities.filter(ability => IMMUNITY_ABILITIES[toID(ability)] === moveType).length;
-	if (immune && immune === defender.abilities.length) factor = 0;
-	else if (immune) factor *= 0.5;
-	return factor;
-}
-
-/** Poder efetivo de um golpe de dano (golpes de dois turnos, recarga e autodestruição valem menos). */
-function effectivePower(move: Move, careful: boolean) {
-	if (move.category === 'Status') return 0;
-	let power = move.basePower || 60; // golpes de poder variável (Low Kick, Gyro Ball...)
-	if (move.multihit) power *= Array.isArray(move.multihit) ? 3 : move.multihit;
-	if (move.flags.charge) power *= 0.5;
-	if (move.flags.recharge) power *= 0.6;
-	if (careful && move.selfdestruct) power *= 0.3;
-	return power;
-}
-
-/** Dano estimado de `move` em porcentagem do HP máximo do defensor. */
-function estimateDamage(attacker: Fighter, move: Move, defender: Fighter, rules: LevelRules): number {
-	if (move.category === 'Status') return 0;
-	const accuracy = move.accuracy === true ? 1 : move.accuracy / 100;
-	if (move.damage === 'level') return attacker.level / defender.stats.hp * 100 * accuracy;
-	if (typeof move.damage === 'number') return move.damage / defender.stats.hp * 100 * accuracy;
-	const physical = move.category === 'Physical';
-	const [attackStat, defenseStat] = physical ? ['atk', 'def'] as const : ['spa', 'spd'] as const;
-	const attack = attacker.stats[attackStat] * boostFactor(attacker.boosts[attackStat]);
-	const defense = defender.stats[defenseStat] * boostFactor(defender.boosts[defenseStat]);
-	const base = Math.floor(2 * attacker.level / 5 + 2) * effectivePower(move, rules.typeAware) * attack / defense;
-	let damage = Math.floor(Math.floor(base) / 50) + 2;
-	if (attacker.types.includes(move.type)) damage *= 1.5;
-	if (physical && attacker.status === 'brn') damage *= 0.5;
-	damage *= typeFactor(move.type, defender, rules.typeAware);
-	return damage * 0.925 * accuracy / defender.stats.hp * 100;
-}
-
-/** Golpes "virtuais" de mesmo tipo do adversário (80 de poder), quando não se sabe os golpes dele. */
-function stabMoves(fighter: Fighter): Move[] {
-	const physical = fighter.stats.atk >= fighter.stats.spa;
-	return fighter.types.map(type => ({
-		...Dex.moves.get(physical ? 'tackle' : 'swift'), type, basePower: 80, accuracy: true, flags: {}, multihit: undefined,
-	} as unknown as Move));
+/** Busca da Mestre: o modelo de avaliação e o olhar à frente (simplificado ou no simulador). */
+export interface MasterSearch {
+	model: ValueModel;
+	sim: SimSearchOptions;
+	/** No servidor: a busca no simulador roda noutro processo (master-search-process.ts). */
+	remote?: (query: MasterSearchQuery) => Promise<string | null>;
 }
 
 export class HeuristicAI implements NpcAI {
 	readonly level: HeuristicLevel;
 	private readonly rules: LevelRules;
 	private readonly w: Readonly<HeuristicWeights>;
+	/** Mestre: busca no simulador do PS com o modelo de avaliação (batalhas individuais; sim-search.ts). */
+	private readonly search: MasterSearch | null;
 	private readonly random: () => number;
 	private lastRequest = '';
 	private lastAction: 'move' | 'switch' | '' = '';
@@ -323,15 +226,17 @@ export class HeuristicAI implements NpcAI {
 	/** `overrides` liga ou desliga regras do nível (para calibrar no banco de testes). */
 	constructor(
 		level: HeuristicLevel, random: () => number = Math.random, overrides: Partial<LevelRules> = {},
-		weights: Readonly<HeuristicWeights> = DEFAULT_WEIGHTS
+		weights: Readonly<HeuristicWeights> = DEFAULT_WEIGHTS,
+		search: MasterSearch | null = null
 	) {
 		this.level = level;
 		this.rules = { ...RULES[level], ...overrides };
 		this.w = weights;
+		this.search = search;
 		this.random = random;
 	}
 
-	choose(request: ChoiceRequest, view: BattleView): string | null {
+	choose(request: ChoiceRequest, view: BattleView): string | null | Promise<string | null> {
 		if (request.wait) return null;
 		// O mesmo pedido de novo = a escolha anterior foi recusada: escolhe sem trocar
 		const key = JSON.stringify(request);
@@ -348,14 +253,45 @@ export class HeuristicAI implements NpcAI {
 				return this.doublesForceSwitch(request.forceSwitch, request.side.pokemon, state, ourSide, theirSide);
 			}
 			// Revival Blessing: o simulador pede um Pokémon desmaiado para reviver
-			const slot = request.side.pokemon.some(mon => mon.reviving) ? revivalSlot(request.side.pokemon) :
+			const reviving = request.side.pokemon.some(mon => mon.reviving);
+			if (this.search?.remote && !reviving && !retry) {
+				const fallback = this.bestSwitch(request.side.pokemon, state, ourSide, theirSide, null);
+				const ruleChoice = fallback ? `switch ${fallback}` : 'default';
+				this.lastAction = 'switch';
+				return this.search.remote({ kind: 'switch', request, log: view.log, ruleChoice, options: this.search.sim })
+					.then(choice => choice || ruleChoice);
+			}
+			const searched = this.search && !reviving && !retry ?
+				simSearchForcedSwitch(request, state, this.search.model, this.search.sim) : null;
+			if (searched) {
+				this.lastAction = 'switch';
+				return searched;
+			}
+			const slot = reviving ? revivalSlot(request.side.pokemon) :
 				this.bestSwitch(request.side.pokemon, state, ourSide, theirSide, null);
 			this.lastAction = 'switch';
 			return slot ? `switch ${slot}` : 'default';
 		}
 		// Em dupla, uma escolha recusada não se repete: o simulador escolhe
 		if (request.active.length > 1) return retry ? 'default' : this.chooseDoubles(request, state, ourSide, theirSide);
-		return this.chooseMove(request, state, ourSide, theirSide, retry);
+		const ruleChoice = this.chooseMove(request, state, ourSide, theirSide, retry);
+		// Mestre: a busca pode trocar a jogada das regras; numa escolha recusada, as regras decidem
+		if (this.search?.remote && !retry) {
+			return this.search.remote({ kind: 'move', request, log: view.log, ruleChoice, options: this.search.sim })
+				.then(choice => {
+					const final = choice || ruleChoice;
+					if (final !== ruleChoice) this.lastAction = final?.startsWith('switch') ? 'switch' : 'move';
+					return final;
+				});
+		}
+		if (this.search && !retry) {
+			const choice = simSearchMove(request, state, this.search.model, this.search.sim, ruleChoice);
+			if (choice && choice !== ruleChoice) {
+				this.lastAction = choice.startsWith('switch') ? 'switch' : 'move';
+				return choice;
+			}
+		}
+		return ruleChoice;
 	}
 
 	// --- Quem somos e quem enfrentamos --------------------------------------

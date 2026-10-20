@@ -8,7 +8,8 @@
  * Níveis: `random`, o bot aleatório padrão do PS (sim/tools/random-player-ai.ts),
  * que não avalia a batalha; `easy`, `medium` e `hard`, as IAs heurísticas
  * (heuristic-ai.ts), que usam o `BattleView` (o que o NPC já viu da batalha); e
- * `master`, as regras do `hard` com pesos aprendidos (master-weights.ts).
+ * `master`, as regras do `hard` com pesos aprendidos (master-weights.ts) e, nas batalhas
+ * individuais, busca no simulador do PS com um modelo de avaliação (master-model.ts, sim-search.ts).
  *
  * @license MIT
  */
@@ -18,6 +19,8 @@ import type { ObjectReadWriteStream } from '../../../lib/streams';
 import type { AILevel } from './levels';
 import { HeuristicAI } from './heuristic-ai';
 import { masterWeights } from './master-weights';
+import { masterSearch } from './master-model';
+import { queryMasterSearch } from './master-search-process';
 
 /** Informação pública da batalha vista pelo NPC (linhas do protocolo, sem dados ocultos). */
 export interface BattleView {
@@ -26,8 +29,11 @@ export interface BattleView {
 
 export interface NpcAI {
 	readonly level: AILevel;
-	/** Devolve a escolha para o pedido, ou null se não houver nada a escolher. */
-	choose(request: ChoiceRequest, view: BattleView): string | null;
+	/**
+	 * Devolve a escolha para o pedido, ou null se não houver nada a escolher. A Mestre
+	 * pode responder com uma Promise (busca no simulador num processo separado).
+	 */
+	choose(request: ChoiceRequest, view: BattleView): string | null | Promise<string | null>;
 }
 
 /**
@@ -63,8 +69,11 @@ export function createAI(level: AILevel): NpcAI {
 	case 'medium':
 	case 'hard':
 		return new HeuristicAI(level);
-	case 'master':
-		return new HeuristicAI('master', Math.random, {}, masterWeights());
+	case 'master': {
+		// No servidor, a busca no simulador roda num processo separado (master-search-process.ts)
+		const search = masterSearch();
+		return new HeuristicAI('master', Math.random, {}, masterWeights(), search && { ...search, remote: queryMasterSearch });
+	}
 	case 'random':
 	default:
 		return new RandomAI();

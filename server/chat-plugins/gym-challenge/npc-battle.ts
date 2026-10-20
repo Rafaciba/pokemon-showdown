@@ -280,7 +280,7 @@ export class NpcBattle extends RoomBattle {
 			const pending = player.request;
 			if (!pending.request || pending.isWait) return;
 
-			let choice: string | null = forced ?? null;
+			let choice: string | null | Promise<string | null> = forced ?? null;
 			if (!choice) {
 				try {
 					const request = JSON.parse(pending.request) as ChoiceRequest;
@@ -291,12 +291,28 @@ export class NpcBattle extends RoomBattle {
 					choice = 'default';
 				}
 			}
-			if (!choice) return;
-			// Mesmo efeito do RoomBattle.choose(), que exige um usuário
-			pending.isWait = true;
-			pending.choice = choice;
-			void this.stream.write(`>${NPC_SLOT} ${choice}`);
+			if (choice instanceof Promise) {
+				// Mestre: a busca roda noutro processo; a resposta só vale se o pedido ainda é o mesmo
+				const asked = pending.request;
+				choice.then(result => this.submitNpcChoice(asked, result), (err: any) => {
+					Monitor.crashlog(err, 'A gym challenge NPC AI', { roomid: this.roomid });
+					this.submitNpcChoice(asked, 'default');
+				});
+				return;
+			}
+			this.submitNpcChoice(pending.request, choice);
 		});
+	}
+
+	/** Envia a escolha do NPC, se o pedido `asked` ainda está pendente. */
+	private submitNpcChoice(asked: string, choice: string | null) {
+		if (!choice || this.ended || !this.room || this.replaying) return;
+		const pending = this[NPC_SLOT].request;
+		if (pending.request !== asked || pending.isWait) return;
+		// Mesmo efeito do RoomBattle.choose(), que exige um usuário
+		pending.isWait = true;
+		pending.choice = choice;
+		void this.stream.write(`>${NPC_SLOT} ${choice}`);
 	}
 }
 

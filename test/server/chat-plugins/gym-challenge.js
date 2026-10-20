@@ -927,6 +927,42 @@ describe('Gym Challenge', () => {
 			assert(weights.outspedFactor <= 1 && weights.doomedStatusFactor <= 1);
 		});
 
+		describe('master simulator search', () => {
+			const { FEATURES } = require('../../../dist/server/chat-plugins/gym-challenge/position');
+			const { simSearchMove, simSearchForcedSwitch } = require('../../../dist/server/chat-plugins/gym-challenge/sim-search');
+			/** Modelo sintético: vale mais ter HP e Pokémon vivos, e o adversário menos. */
+			const model = {
+				version: 'test', samples: 0, battles: 0, features: FEATURES, bias: 0,
+				mean: FEATURES.map(() => 0), scale: FEATURES.map(() => 1),
+				weights: FEATURES.map(name => ({ ourHp: 1, theirHp: -1, ourAlive: 1, theirAlive: -1 })[name] || 0),
+			};
+			const options = { pessimism: 0.5, margin: 0, budgetMs: 5000, samples: 6, seed: 12345 };
+
+			it('takes the knockout and switches out of a losing matchup', () => {
+				const team = [mon('Garchomp', ['dragonclaw', 'earthquake'], { active: true }), mon('Blissey', ['softboiled'])];
+				const log = logWith('Heatran', '30/100');
+				assert.equal(simSearchMove(moveRequest(team), readBattleState(log), model, options, null), 'move 2',
+					'Earthquake no Heatran');
+				// O Tyranitar já mostrou Stone Edge; contra a pior resposta, o Charizard sai para o Blastoise
+				const zard = [mon('Charizard', ['flamethrower'], { active: true }), mon('Blastoise', ['surf'])];
+				const master = new HeuristicAI('master', () => 0.99, {}, DEFAULT_WEIGHTS, { model, sim: { ...options, pessimism: 1 } });
+				const revealed = logWith('Tyranitar', '100/100', ['|move|p1a: Tyranitar|Stone Edge|p2a: Charizard', '|turn|2']);
+				assert.equal(master.choose(moveRequest(zard), { log: revealed }), 'switch 2');
+			});
+
+			it('keeps the rule choice without a clear advantage, and picks forced switches', () => {
+				const team = [mon('Garchomp', ['dragonclaw', 'earthquake'], { active: true }), mon('Blissey', ['softboiled'])];
+				const strict = { ...options, margin: 1 };
+				assert.equal(simSearchMove(moveRequest(team), readBattleState(logWith('Heatran')), model, strict, 'move 1'),
+					'move 1', 'margem máxima: fica a jogada das regras');
+				const fainted = [
+					mon('Charizard', ['flamethrower'], { active: true, hp: 0 }), mon('Venusaur', ['gigadrain']), mon('Blastoise', ['surf']),
+				];
+				assert.equal(simSearchForcedSwitch({ side: { name: 'NPC', id: 'p2', pokemon: fainted } },
+					readBattleState(logWith('Arcanine')), model, options), 'switch 3', 'o Blastoise entra contra o Arcanine');
+			});
+		});
+
 		it('hard respects the Sleep Clause and Ground immunity to Thunder Wave', () => {
 			const team = [mon('Breloom', ['spore', 'machpunch'], { active: true }), mon('Jolteon', ['thunderwave', 'thunderbolt'])];
 			const asleep = ['|teamsize|p1|6', '|switch|p1a: Lapras|Lapras, L100|100/100', '|-status|p1a: Lapras|slp',
@@ -1071,6 +1107,28 @@ describe('Gym Challenge', () => {
 			}
 			assert(check(), 'tempo esgotado');
 		};
+
+		it('waits for the master AI, which answers asynchronously (simulator search)', async function () {
+			this.timeout(30000);
+			user = makeUser('Master Tester');
+			const ai = createAI('master');
+			let asked = 0;
+			const choose = ai.choose.bind(ai);
+			ai.choose = (request, view) => {
+				asked++;
+				return choose(request, view);
+			};
+			room = createNpcBattle(user, { format: 'gen9customgame', team: TEAM, npc: { name: 'Gym Bot', team: TEAM, ai } });
+			assert(room);
+			// Prévia de times e um turno; o NPC responde de forma assíncrona em cada pedido
+			for (let step = 0; step < 2 && !room.battle.ended; step++) {
+				await waitFor(() => room.battle.p1.request.request && !room.battle.p1.request.isWait);
+				const turn = room.battle.turn;
+				room.battle.choose(user, 'default');
+				await waitFor(() => room.battle.turn > turn || room.battle.ended);
+			}
+			assert(asked >= 2, 'a Mestre respondeu aos pedidos');
+		});
 
 		it('removes chat lines from the input log', () => {
 			assert.equal(battleStateFromInputLog(['>start {}', '>chat Ash|oi', '>p1 move 1']), '>start {}\n>p1 move 1');

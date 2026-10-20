@@ -17,7 +17,7 @@ import { ProcessManager } from '../../../lib';
 import type { ChoiceRequest, MoveRequest } from '../../../sim/side';
 import { readBattleState } from './battle-view';
 import { simSearchForcedSwitch, simSearchMove, type SimSearchOptions } from './sim-search';
-import { MASTER_MODEL } from './master-model';
+import type { ValueModel } from './value-model';
 
 export interface MasterSearchQuery {
 	kind: 'move' | 'switch';
@@ -25,6 +25,8 @@ export interface MasterSearchQuery {
 	log: readonly string[];
 	ruleChoice: string | null;
 	options: SimSearchOptions;
+	/** Modelo de avaliação em uso (vai em cada consulta: o processo não lê o banco). */
+	model: ValueModel;
 }
 
 /** Folga além do tempo da busca antes de desistir e usar a jogada das regras. */
@@ -33,11 +35,10 @@ const GRACE_MS = 1500;
 export const PM = new ProcessManager.QueryProcessManager<MasterSearchQuery, { choice: string | null }>(
 	'gymmastersearch', module, query => {
 		try {
-			if (!MASTER_MODEL) return { choice: query.ruleChoice };
 			const state = readBattleState(query.log);
 			const choice = query.kind === 'switch' ?
-				simSearchForcedSwitch(query.request as MoveRequest, state, MASTER_MODEL, query.options) :
-				simSearchMove(query.request as MoveRequest, state, MASTER_MODEL, query.options, query.ruleChoice);
+				simSearchForcedSwitch(query.request as MoveRequest, state, query.model, query.options) :
+				simSearchMove(query.request as MoveRequest, state, query.model, query.options, query.ruleChoice);
 			return { choice };
 		} catch (err: any) {
 			Monitor.crashlog(err, 'A gym challenge master search', { kind: query.kind });

@@ -2,7 +2,9 @@
  * pokemon-showdown-custom: persistência do Desafio de Ginásios.
  *
  * SQLite próprio (node:sqlite, nativo do Node 24) em databases/gym-challenge.db.
- * LGPD: só guarda IDs de usuário (das jornadas) e resultados; nenhum IP.
+ * LGPD: só guarda IDs de usuário (das jornadas) e resultados; nenhum IP. As posições
+ * de aprendizado da IA Mestre (ai_positions) são anônimas: sem jogador, desafio,
+ * horário nem ordem de gravação.
  *
  * Esta camada só lê e grava; as regras ficam em rules.ts.
  *
@@ -79,6 +81,38 @@ export interface PoolEntry {
 	trainerId: number;
 	aiLevel: string | null;
 	badgeId: string | null;
+}
+
+/** Posição de aprendizado da IA Mestre (anônima). */
+export interface LearningPosition {
+	battle: string;
+	perspective: 'npc' | 'player';
+	features: number[];
+	won: boolean;
+	used: boolean;
+}
+
+export interface StoredModel {
+	id: number;
+	version: string;
+	source: 'sim' | 'retrain';
+	status: 'active' | 'retired' | 'rejected';
+	/** JSON do ValueModel (value-model.ts). */
+	model: string;
+	trainedAt: number;
+	report: AnyObject | null;
+}
+
+export type TrainingOutcome = 'accepted' | 'rejected' | 'skipped' | 'failed';
+
+export interface TrainingRecord {
+	id: number;
+	startedAt: number;
+	finishedAt: number | null;
+	trigger: 'schedule' | 'manual';
+	outcome: TrainingOutcome | null;
+	version: string | null;
+	report: AnyObject | null;
 }
 
 export type RunStatus = 'active' | 'won' | 'abandoned' | 'eliminated' | 'closed';
@@ -269,6 +303,40 @@ const MIGRATIONS: string[] = [
 	`
 	ALTER TABLE trainers ADD COLUMN doubles INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE run_stages ADD COLUMN doubles INTEGER NOT NULL DEFAULT 0;
+	`,
+	// 8: aprendizado da IA Mestre (etapa 4). As posições são anônimas: a chave é um
+	// código aleatório da batalha e a ordem do turno (sem rowid, para que a ordem de
+	// gravação não permita cruzar com as jornadas), sem jogador, desafio nem horário.
+	`
+	CREATE TABLE ai_positions (
+		battle       TEXT NOT NULL,
+		seq          INTEGER NOT NULL,
+		perspective  TEXT NOT NULL CHECK (perspective IN ('npc', 'player')),
+		features     TEXT NOT NULL,
+		won          INTEGER NOT NULL CHECK (won IN (0, 1)),
+		used         INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (battle, seq)
+	) STRICT, WITHOUT ROWID;
+
+	CREATE TABLE ai_models (
+		id           INTEGER PRIMARY KEY,
+		version      TEXT NOT NULL UNIQUE,
+		source       TEXT NOT NULL CHECK (source IN ('sim', 'retrain')),
+		status       TEXT NOT NULL CHECK (status IN ('active', 'retired', 'rejected')),
+		model        TEXT NOT NULL,
+		trained_at   INTEGER NOT NULL,
+		report       TEXT
+	) STRICT;
+
+	CREATE TABLE ai_trainings (
+		id           INTEGER PRIMARY KEY,
+		started_at   INTEGER NOT NULL,
+		finished_at  INTEGER,
+		trigger      TEXT NOT NULL CHECK (trigger IN ('schedule', 'manual')),
+		outcome      TEXT CHECK (outcome IN ('accepted', 'rejected', 'skipped', 'failed')),
+		version      TEXT,
+		report       TEXT
+	) STRICT;
 	`,
 ];
 
@@ -705,4 +773,114 @@ export class GymStore {
 			Row | undefined;
 		return row?.input_log ?? null;
 	}
+
+	// --- Aprendizado da IA Mestre ----------------------------------------------------
+
+	/** Grava as posições de uma batalha (código aleatório, sem ligação com a jornada). */
+	addPositions(battle: string, positions: { perspective: 'npc' | 'player', features: number[], won: boolean }[]) {
+		if (!positions.length) return;
+		this.transaction(() => {
+			const insert = this.db.prepare(`
+				INSERT INTO ai_positions (battle, seq, perspective, features, won) VALUES (?, ?, ?, ?, ?)
+			`);
+			positions.forEach((position, seq) => {
+				insert.run(battle, seq, position.perspective, JSON.stringify(position.features), position.won ? 1 : 0);
+			});
+		});
+	}
+
+	listPositions(): LearningPosition[] {
+		return (this.db.prepare('SELECT * FROM ai_positions').all() as Row[]).map(row => ({
+			battle: row.battle, perspective: row.perspective, features: JSON.parse(row.features),
+			won: row.won === 1, used: row.used === 1,
+		}));
+	}
+
+	/** Batalhas e posições gravadas, e batalhas ainda não usadas num retreino. */
+	positionStats() {
+		const row = this.db.prepare(`
+			SELECT COUNT(DISTINCT battle) AS battles, COUNT(*) AS positions,
+				COUNT(DISTINCT CASE WHEN used = 0 THEN battle END) AS fresh
+			FROM ai_positions
+		`).get() as Row;
+		return { battles: row.battles as number, positions: row.positions as number, freshBattles: row.fresh as number };
+	}
+
+	/** Marca todas as posições como usadas (depois de uma tentativa de retreino). */
+	markPositionsUsed() {
+		this.db.prepare('UPDATE ai_positions SET used = 1 WHERE used = 0').run();
+	}
+
+	listModels(): StoredModel[] {
+		return (this.db.prepare('SELECT * FROM ai_models ORDER BY id DESC').all() as Row[]).map(toStoredModel);
+	}
+
+	getModel(version: string): StoredModel | null {
+		const row = this.db.prepare('SELECT * FROM ai_models WHERE version = ?').get(version) as Row | undefined;
+		return row ? toStoredModel(row) : null;
+	}
+
+	getActiveModel(): StoredModel | null {
+		const row = this.db.prepare(`SELECT * FROM ai_models WHERE status = 'active' ORDER BY id DESC LIMIT 1`).get() as
+			Row | undefined;
+		return row ? toStoredModel(row) : null;
+	}
+
+	/** Grava um modelo; com status 'active', o que estava em uso vira 'retired'. */
+	addModel(input: Omit<StoredModel, 'id'>): StoredModel {
+		return this.transaction(() => {
+			if (input.status === 'active') this.db.prepare(`UPDATE ai_models SET status = 'retired' WHERE status = 'active'`).run();
+			this.db.prepare(`
+				INSERT INTO ai_models (version, source, status, model, trained_at, report) VALUES (?, ?, ?, ?, ?, ?)
+			`).run(input.version, input.source, input.status, input.model, input.trainedAt,
+				input.report ? JSON.stringify(input.report) : null);
+			return this.getModel(input.version)!;
+		});
+	}
+
+	/** Põe em uso um modelo já gravado (reversão pelo painel). */
+	activateModel(version: string): boolean {
+		return this.transaction(() => {
+			if (!this.getModel(version)) return false;
+			this.db.prepare(`UPDATE ai_models SET status = 'retired' WHERE status = 'active'`).run();
+			this.db.prepare(`UPDATE ai_models SET status = 'active' WHERE version = ?`).run(version);
+			return true;
+		});
+	}
+
+	startTraining(trigger: 'schedule' | 'manual'): number {
+		const result = this.db.prepare('INSERT INTO ai_trainings (started_at, trigger) VALUES (?, ?)').run(now(), trigger);
+		return Number(result.lastInsertRowid);
+	}
+
+	finishTraining(id: number, outcome: TrainingOutcome, version: string | null, report: AnyObject | null) {
+		this.db.prepare(`
+			UPDATE ai_trainings SET finished_at = ?, outcome = ?, version = ?, report = ? WHERE id = ?
+		`).run(now(), outcome, version, report ? JSON.stringify(report) : null, id);
+	}
+
+	listTrainings(limit = 20): TrainingRecord[] {
+		return (this.db.prepare('SELECT * FROM ai_trainings ORDER BY id DESC LIMIT ?').all(limit) as Row[]).map(row => ({
+			id: row.id, startedAt: row.started_at, finishedAt: row.finished_at, trigger: row.trigger,
+			outcome: row.outcome, version: row.version, report: row.report ? JSON.parse(row.report) : null,
+		}));
+	}
+
+	/** Vitórias e derrotas da Mestre nas batalhas reais (só a contagem). */
+	masterResults(): { wins: number, losses: number } {
+		const row = this.db.prepare(`
+			SELECT SUM(CASE WHEN b.result = 'loss' THEN 1 ELSE 0 END) AS wins,
+				SUM(CASE WHEN b.result = 'win' THEN 1 ELSE 0 END) AS losses
+			FROM run_battles b JOIN run_stages s ON s.run_id = b.run_id AND s.kind = b.kind AND s.position = b.position
+			WHERE s.ai_level = 'master'
+		`).get() as Row;
+		return { wins: row.wins || 0, losses: row.losses || 0 };
+	}
+}
+
+function toStoredModel(row: Row): StoredModel {
+	return {
+		id: row.id, version: row.version, source: row.source, status: row.status, model: row.model,
+		trainedAt: row.trained_at, report: row.report ? JSON.parse(row.report) : null,
+	};
 }

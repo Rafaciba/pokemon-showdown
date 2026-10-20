@@ -1130,6 +1130,25 @@ describe('Gym Challenge', () => {
 			assert(asked >= 2, 'a Mestre respondeu aos pedidos');
 		});
 
+		it('hands the positions of a finished battle to the learning hook', async () => {
+			user = makeUser('Learning Tester');
+			const recorded = [];
+			room = createNpcBattle(user, {
+				format: 'gen9customgame', team: TEAM, npc: { name: 'Gym Bot', team: TEAM, ai: createAI('random') },
+				hooks: { onPositions: (positions, npcWon) => recorded.push({ positions, npcWon }) },
+			});
+			assert(room);
+			await waitFor(() => room.battle.p1.request.request && !room.battle.p1.request.isWait);
+			room.battle.choose(user, 'default');
+			await waitFor(() => room.battle.turn >= 1 && room.battle.p1.request.request && !room.battle.p1.request.isWait);
+			room.battle.forfeit(user);
+			await waitFor(() => recorded.length > 0);
+			const [{ positions, npcWon }] = recorded;
+			assert.equal(npcWon, true, 'o jogador desistiu');
+			assert(positions.some(p => p.perspective === 'npc') && positions.some(p => p.perspective === 'player'));
+			assert(positions.every(p => Array.isArray(p.features) && p.features.every(Number.isFinite)));
+		});
+
 		it('removes chat lines from the input log', () => {
 			assert.equal(battleStateFromInputLog(['>start {}', '>chat Ash|oi', '>p1 move 1']), '>start {}\n>p1 move 1');
 		});
@@ -1356,6 +1375,82 @@ describe('Gym Challenge', () => {
 			const a = store.createTrainer(trainerInput('Brock', 'Rock'));
 			const b = store.createTrainer(trainerInput('brock', 'Rock'));
 			assert('error' in transfer.exportPack(store, [], [a.id, b.id]));
+		});
+
+		describe('master learning', () => {
+		// master-learning usa a Mestre e o simulador, que precisam dos globais de test/main.js
+			let learning, positionModule;
+			before(() => {
+				learning = require('../../../dist/server/chat-plugins/gym-challenge/master-learning');
+				positionModule = require('../../../dist/server/chat-plugins/gym-challenge/position');
+			});
+			let store;
+			beforeEach(() => {
+				store = new GymStore(':memory:');
+			});
+			afterEach(() => store.close());
+
+			/** Posições sintéticas: quem tem mais HP vence (como numa batalha de verdade). */
+			const fakeBattle = npcWon => {
+				const width = positionModule.FEATURES.length;
+				const features = (ahead, sign) => Array.from({ length: width }, (_, i) => (i === 0 ? 3 + sign * ahead : i === 1 ? 3 - sign * ahead : 0));
+				const positions = [];
+				for (let turn = 0; turn < 5; turn++) {
+					positions.push({ perspective: 'npc', features: features(turn * 0.3, npcWon ? 1 : -1) });
+					positions.push({ perspective: 'player', features: features(turn * 0.3, npcWon ? -1 : 1) });
+				}
+				return positions;
+			};
+
+			it('stores anonymous positions and counts new battles', () => {
+				learning.recordBattlePositions(store, fakeBattle(true), true);
+				learning.recordBattlePositions(store, fakeBattle(false), false);
+				const positions = store.listPositions();
+				assert.equal(positions.length, 20);
+				assert.deepEqual(Object.keys(positions[0]).sort(), ['battle', 'features', 'perspective', 'used', 'won']);
+				assert.match(positions[0].battle, /^[0-9a-f]{24}$/, 'só um código aleatório identifica a batalha');
+				const npc = positions.filter(p => p.perspective === 'npc');
+				assert.equal(npc.filter(p => p.won).length, 5, 'o NPC venceu uma das duas batalhas');
+				assert.deepEqual(store.positionStats(), { battles: 2, positions: 20, freshBattles: 2 });
+				store.markPositionsUsed();
+				assert.equal(store.positionStats().freshBattles, 0);
+			});
+
+			it('seeds the simulation model, and switches the model in use', () => {
+				const { MASTER_MODEL } = require('../../../dist/server/chat-plugins/gym-challenge/master-model');
+				assert.equal(learning.activeMasterModel(store).version, MASTER_MODEL.version);
+				assert.equal(store.getActiveModel().source, 'sim');
+				store.addModel({ version: 'real-1', source: 'retrain', status: 'active', model: JSON.stringify(MASTER_MODEL),
+					trainedAt: 1, report: null });
+				assert.equal(store.getActiveModel().version, 'real-1');
+				assert.equal(store.getModel(MASTER_MODEL.version).status, 'retired');
+				assert(store.activateModel(MASTER_MODEL.version), 'reversão');
+				assert.equal(store.getActiveModel().version, MASTER_MODEL.version);
+				assert(!store.activateModel('nope'));
+			});
+
+			it('skips the retraining with few new battles', async () => {
+				learning.recordBattlePositions(store, fakeBattle(true), true);
+				const summary = await learning.runTraining(store, { trigger: 'manual' });
+				assert.equal(summary.outcome, 'skipped');
+				assert.equal(summary.report.reason, 'fewbattles');
+				assert.equal(store.listTrainings()[0].outcome, 'skipped');
+			});
+
+			it('retrains from the simulation model and verifies the new one', async function () {
+				this.timeout(120000);
+				for (let i = 0; i < 40; i++) learning.recordBattlePositions(store, fakeBattle(i % 2 === 0), i % 2 === 0);
+				const summary = await learning.runTraining(store, { trigger: 'manual', minNewBattles: 10, verificationBattles: 2 });
+				assert(['accepted', 'rejected'].includes(summary.outcome), JSON.stringify(summary));
+				assert(summary.report.trainBattles > 0 && summary.report.holdoutBattles > 0);
+				assert(typeof summary.report.newLoss === 'number' && typeof summary.report.currentLoss === 'number');
+				assert.equal(store.positionStats().freshBattles, 0, 'as batalhas entram no retreino');
+				const saved = store.getModel(summary.version);
+				assert(saved, 'o modelo novo fica registrado, aceito ou não');
+				assert.equal(saved.status, summary.outcome === 'accepted' ? 'active' : 'rejected');
+				assert(learning.isTrainingWindow(new Date('2026-10-19T07:30:00Z')), 'segunda, 4h30 em Brasília');
+				assert(!learning.isTrainingWindow(new Date('2026-10-20T07:30:00Z')), 'terça');
+			});
 		});
 	});
 });

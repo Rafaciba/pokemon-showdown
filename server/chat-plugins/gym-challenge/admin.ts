@@ -13,6 +13,7 @@
  *   view-ginasiosadmin-pacotes            importar e exportar pacotes de treinadores e desafios (transfer.ts)
  *   view-ginasiosadmin-importar           prévia e resultado da importação
  *   view-ginasiosadmin-exportar-<desafios>-<treinadores>  pacote gerado (ids separados por "x"; 0 = nenhum)
+ *   view-ginasiosadmin-mestre             IA Mestre: modelo em uso, dados, retreinos e reversão (master-learning.ts)
  *
  * Visual: apenas elementos que o cliente oficial já estiliza (pad, ladder,
  * button, textbox, psicon, formatselect), como nas páginas oficiais do PS.
@@ -35,6 +36,8 @@ import { isTrainerSprite, searchTrainerSprites, spriteQuery, trainerSpriteImg } 
 import { closeRun, runState } from './runs';
 import { formatDate, profileButton, runStatusLabel } from './player';
 import { callLoginServer, formatExpiry, inviteBox, loginLang, resetBox } from '../custom-accounts';
+import { activeMasterModel, MIN_NEW_BATTLES, VERIFICATION_MIN_SCORE } from './master-learning';
+import { isTrainingRunning, requestTraining } from './master-training-process';
 import type {
 	Challenge, ChallengeInput, ChallengeStatus, GymStore, StageKind, Trainer, TrainerInput,
 } from './store';
@@ -209,7 +212,8 @@ function navButtons(TL: Translator) {
 		`<button class="button" name="gymGo" value="${PAGE}-treinadores">${TL`Trainers`}</button> ` +
 		`<button class="button" name="gymGo" value="${PAGE}-convites">${TL`Invites`}</button> ` +
 		`<button class="button" name="gymGo" value="${PAGE}-seguranca">${TL`Security`}</button> ` +
-		`<button class="button" name="gymGo" value="${PAGE}-pacotes">${TL`Import and export`}</button>` +
+		`<button class="button" name="gymGo" value="${PAGE}-pacotes">${TL`Import and export`}</button> ` +
+		`<button class="button" name="gymGo" value="${PAGE}-mestre">${TL`Master AI`}</button>` +
 		`</p>`;
 }
 
@@ -306,6 +310,44 @@ function importPreview(TL: Translator, plan: ImportPlan) {
 		buf += `</table></div>`;
 	}
 	return buf;
+}
+
+/** Resultado de um retreino da IA Mestre. */
+function trainingOutcome(TL: Translator, outcome: string | null) {
+	if (outcome === 'accepted') return TL`New model in use`;
+	if (outcome === 'rejected') return TL`Rejected`;
+	if (outcome === 'skipped') return TL`Skipped`;
+	if (outcome === 'failed') return TL`Failed`;
+	return TL`In progress`;
+}
+
+/** Detalhes de um retreino: motivo e números da verificação. */
+function trainingDetails(TL: Translator, report: AnyObject | null) {
+	if (!report) return '';
+	const parts: string[] = [];
+	if (report.reason === 'fewbattles') {
+		const fresh = Number(report.fresh) || 0;
+		const minimum = Number(report.minimum) || 0;
+		parts.push(TL`only ${fresh} new battles (minimum ${minimum})`);
+	} else if (report.reason === 'noholdout') {
+		parts.push(TL`not enough battles to test the model`);
+	} else if (report.reason === 'error' || report.reason === 'nomodel') {
+		parts.push(TL`error during the retraining (see the crash log)`);
+	}
+	if (typeof report.newLoss === 'number' && typeof report.currentLoss === 'number') {
+		const trainBattles = Number(report.trainBattles) || 0;
+		const holdoutBattles = Number(report.holdoutBattles) || 0;
+		const newLoss = report.newLoss.toFixed(4);
+		const currentLoss = report.currentLoss.toFixed(4);
+		parts.push(TL`${trainBattles} battles for training, ${holdoutBattles} for testing`);
+		parts.push(TL`prediction error: new ${newLoss}, current ${currentLoss} (lower is better)`);
+	}
+	if (typeof report.verificationScore === 'number') {
+		const score = Math.round(report.verificationScore * 100);
+		const battles = Number(report.verificationBattles) || 0;
+		parts.push(TL`${score}% against the current model in ${battles} simulated battles`);
+	}
+	return parts.map(part => Utils.escapeHTML(part)).join('<br />');
 }
 
 function trainerMap(store: GymStore) {
@@ -1065,6 +1107,89 @@ export const pages: Chat.PageTable = {
 				`<strong>${this.TL`Confirm import`}</strong></button> ${cancel}</p></div>`;
 		},
 
+		mestre(query, user) {
+			// Página aberta antes do login terminar (link direto, recarga): o cliente pede de novo após logar
+			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
+			if (!isAdmin(user)) this.pageDoesNotExist();
+			this.title = this.TL`Master AI`;
+			const store = getStore();
+			activeMasterModel(store);
+			const minimum = MIN_NEW_BATTLES;
+			const minScore = Math.round(VERIFICATION_MIN_SCORE * 100);
+			let buf = `<div class="pad"><h2>${this.TL`Master AI`}</h2>` + navButtons(this.TL) +
+				`<p>${this.TL`The Master AI learns from the Gym Challenge battles: it keeps anonymous positions (no player, challenge or time) and who won.`} ` +
+				`${this.TL`Every Monday at 4:00 (Brasília time), with at least ${minimum} new battles, it retrains. The new model is only used if it predicts the real results better and scores at least ${minScore}% against the current model in simulated battles.`}</p>`;
+
+			const active = store.getActiveModel();
+			buf += `<h3>${this.TL`Model in use`}</h3>`;
+			if (!active) {
+				buf += `<p><em>${this.TL`No model: the Master AI plays with its rules only.`}</em></p>`;
+			} else {
+				const source = active.source === 'sim' ? this.TL`Simulated battles` : this.TL`Real battles`;
+				buf += `<div class="ladder"><table>` +
+					`<tr><th>${this.TL`Version`}</th><td>${Utils.escapeHTML(active.version)}</td></tr>` +
+					`<tr><th>${this.TL`Source`}</th><td>${source}</td></tr>` +
+					`<tr><th>${this.TL`Trained`}</th><td>${formatExpiry(active.trainedAt)}</td></tr>` +
+					`</table></div>`;
+			}
+
+			const stats = store.positionStats();
+			const results = store.masterResults();
+			const battles = stats.battles;
+			const positions = stats.positions;
+			const fresh = stats.freshBattles;
+			const wins = results.wins;
+			const losses = results.losses;
+			buf += `<h3>${this.TL`Collected data`}</h3>` +
+				`<p>${this.TL`${battles} battles and ${positions} positions; ${fresh} new battles since the last retraining (minimum ${minimum}).`}</p>`;
+			if (wins + losses) {
+				const rate = Math.round(wins / (wins + losses) * 100);
+				buf += `<p>${this.TL`Master AI in the journeys: ${wins} wins and ${losses} losses (${rate}%).`}</p>`;
+			}
+			if (isTrainingRunning()) {
+				buf += `<p><strong>${this.TL`Retraining in progress. It can take up to an hour; meanwhile the Master AI may play with its rules only.`}</strong></p>`;
+			} else {
+				buf += `<details><summary>${this.TL`Retrain now`}</summary>` +
+					`<p>${this.TL`Same steps as the automatic retraining, including the minimum of new battles and the verification. It can take up to an hour.`}</p>` +
+					`<p><button class="button" name="send" value="/ginasioadmin retreinarmestre">` +
+					`${this.TL`Start retraining`}</button></p></details>`;
+			}
+
+			const trainings = store.listTrainings(20);
+			buf += `<h3>${this.TL`Retraining history`}</h3>`;
+			if (!trainings.length) {
+				buf += `<p><em>${this.TL`No retraining yet.`}</em></p>`;
+			} else {
+				buf += `<div class="ladder"><table><tr><th>${this.TL`Started`}</th><th>${this.TL`Trigger`}</th>` +
+					`<th>${this.TL`Result`}</th><th>${this.TL`Details`}</th></tr>`;
+				for (const training of trainings) {
+					const trigger = training.trigger === 'manual' ? this.TL`Admin panel` : this.TL`Schedule`;
+					buf += `<tr><td>${formatExpiry(training.startedAt)}</td><td>${trigger}</td>` +
+						`<td>${trainingOutcome(this.TL, training.outcome)}</td><td>${trainingDetails(this.TL, training.report)}</td></tr>`;
+				}
+				buf += `</table></div>`;
+			}
+
+			const models = store.listModels();
+			if (models.length) {
+				buf += `<h3>${this.TL`Models`}</h3><div class="ladder"><table><tr><th>${this.TL`Version`}</th>` +
+					`<th>${this.TL`Source`}</th><th>${this.TL`Status`}</th><th>${this.TL`Trained`}</th><th></th></tr>`;
+				for (const model of models) {
+					const source = model.source === 'sim' ? this.TL`Simulated battles` : this.TL`Real battles`;
+					const status = model.status === 'active' ? this.TL`In use` :
+						model.status === 'rejected' ? this.TL`Rejected` : this.TL`Previous`;
+					const action = model.status === 'active' ? '' :
+						`<details><summary>${this.TL`Use this version`}</summary>` +
+						`<button class="button" name="send" value="/ginasioadmin usarmodelomestre ${Utils.escapeHTML(model.version)}">` +
+						`${this.TL`Confirm`}</button></details>`;
+					buf += `<tr><td>${Utils.escapeHTML(model.version)}</td><td>${source}</td><td>${status}</td>` +
+						`<td>${formatExpiry(model.trainedAt)}</td><td>${action}</td></tr>`;
+				}
+				buf += `</table></div>`;
+			}
+			return buf + `</div>`;
+		},
+
 		jornadas(query, user) {
 			// Página aberta antes do login terminar (link direto, recarga): o cliente pede de novo após logar
 			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
@@ -1541,6 +1666,28 @@ export const commands: Chat.ChatCommands = {
 			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
 			pendingImports.take(user);
 			return reopenPage(this, user, `${PAGE.slice('view-'.length)}-pacotes`);
+		},
+
+		retreinarmestre(target, room, user, connection) {
+			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
+			if (!requestTraining('manual')) {
+				connection.popup(this.TL`The retraining could not start: another one is running, or subprocesses are disabled on this server.`);
+			} else {
+				this.globalModlog('GYMMASTER', null, 'retraining started');
+				this.sendReply(this.TL`Retraining started.`);
+			}
+			return this.parse(`/join ${PAGE}-mestre`);
+		},
+
+		usarmodelomestre(target, room, user, connection) {
+			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
+			const version = target.trim();
+			if (!/^[a-z0-9-]{1,40}$/.test(version) || !getStore().activateModel(version)) {
+				throw new Chat.ErrorMessage(this.TL`Model not found.`);
+			}
+			this.globalModlog('GYMMASTER', null, `model in use: ${version}`);
+			this.sendReply(this.TL`Model in use changed. New battles against the Master AI use it.`);
+			return this.parse(`/join ${PAGE}-mestre`);
 		},
 
 		apagardesafio(target, room, user, connection) {

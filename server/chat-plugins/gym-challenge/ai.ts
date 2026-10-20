@@ -19,8 +19,10 @@ import type { ObjectReadWriteStream } from '../../../lib/streams';
 import type { AILevel } from './levels';
 import { HeuristicAI } from './heuristic-ai';
 import { masterWeights } from './master-weights';
-import { masterSearch } from './master-model';
+import { MASTER_SIM } from './master-model';
 import { queryMasterSearch } from './master-search-process';
+import { activeMasterModel } from './master-learning';
+import { getStore } from './state';
 
 /** Informação pública da batalha vista pelo NPC (linhas do protocolo, sem dados ocultos). */
 export interface BattleView {
@@ -70,9 +72,11 @@ export function createAI(level: AILevel): NpcAI {
 	case 'hard':
 		return new HeuristicAI(level);
 	case 'master': {
-		// No servidor, a busca no simulador roda num processo separado (master-search-process.ts)
-		const search = masterSearch();
-		return new HeuristicAI('master', Math.random, {}, masterWeights(), search && { ...search, remote: queryMasterSearch });
+		// No servidor, a busca no simulador roda num processo separado (master-search-process.ts),
+		// com o modelo de avaliação em uso (o das simulações ou um retreinado; master-learning.ts)
+		const model = activeMasterModel(getStore());
+		return new HeuristicAI('master', Math.random, {}, masterWeights(),
+			model && { model, sim: MASTER_SIM, remote: queryMasterSearch });
 	}
 	case 'random':
 	default:

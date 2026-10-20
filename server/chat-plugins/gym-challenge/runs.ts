@@ -14,6 +14,7 @@ import { TLkey } from '../../../sim/dex-text';
 import { getStore } from './state';
 import { computeProgress, drawRunStages, statusAfterBattle, teamHash, type Progress } from './journey';
 import { createNpcBattle, NpcBattle, type NpcBattleHooks, type NpcBattleResult } from './npc-battle';
+import { recordBattlePositions } from './master-learning';
 import { createAI } from './ai';
 import { isAILevel } from './levels';
 import { badgeIcon } from './badges';
@@ -202,6 +203,8 @@ function battleHooks(ref: { id: number }): NpcBattleHooks {
 		onSave: inputLog => {
 			if (ref.id) store.saveBattleState(ref.id, inputLog);
 		},
+		// Aprendizado da Mestre: posições anônimas de todas as batalhas da jornada
+		onPositions: (positions, npcWon) => recordBattlePositions(store, positions, npcWon),
 	};
 }
 

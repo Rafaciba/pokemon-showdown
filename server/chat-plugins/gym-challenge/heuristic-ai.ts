@@ -258,7 +258,9 @@ export class HeuristicAI implements NpcAI {
 				const fallback = this.bestSwitch(request.side.pokemon, state, ourSide, theirSide, null);
 				const ruleChoice = fallback ? `switch ${fallback}` : 'default';
 				this.lastAction = 'switch';
-				return this.search.remote({ kind: 'switch', request, log: view.log, ruleChoice, options: this.search.sim })
+				return this.search.remote({
+					kind: 'switch', request, log: view.log, ruleChoice, options: this.search.sim, model: this.search.model,
+				})
 					.then(choice => choice || ruleChoice);
 			}
 			const searched = this.search && !reviving && !retry ?
@@ -277,7 +279,9 @@ export class HeuristicAI implements NpcAI {
 		const ruleChoice = this.chooseMove(request, state, ourSide, theirSide, retry);
 		// Mestre: a busca pode trocar a jogada das regras; numa escolha recusada, as regras decidem
 		if (this.search?.remote && !retry) {
-			return this.search.remote({ kind: 'move', request, log: view.log, ruleChoice, options: this.search.sim })
+			return this.search.remote({
+				kind: 'move', request, log: view.log, ruleChoice, options: this.search.sim, model: this.search.model,
+			})
 				.then(choice => {
 					const final = choice || ruleChoice;
 					if (final !== ruleChoice) this.lastAction = final?.startsWith('switch') ? 'switch' : 'move';

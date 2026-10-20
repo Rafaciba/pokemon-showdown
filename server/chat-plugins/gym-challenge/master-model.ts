@@ -3,8 +3,8 @@
  *
  * Regressão logística (value-model.ts) sobre as características da posição
  * (position.ts), treinada em batalhas simuladas (tools/gym-challenge/train-value.js;
- * etapa 3). Com o modelo, a Mestre simula as jogadas no simulador do PS nas batalhas
- * individuais (sim-search.ts); sem ele, joga só com as regras e os pesos (master-weights.ts).
+ * etapa 3). É o modelo de partida: o servidor guarda os modelos no banco e pode pôr em
+ * uso um modelo retreinado com as batalhas reais (master-learning.ts, etapa 4).
  *
  * @license MIT
  */
@@ -34,7 +34,3 @@ export const MASTER_MODEL: ValueModel | null = {
  * até 1 s por jogada. Com mais palpites não houve ganho mensurável (etapa 3).
  */
 export const MASTER_SIM: SimSearchOptions = { ...DEFAULT_SIM_SEARCH, samples: 2 };
-
-export function masterSearch(): { model: ValueModel, sim: SimSearchOptions } | null {
-	return MASTER_MODEL ? { model: MASTER_MODEL, sim: MASTER_SIM } : null;
-}

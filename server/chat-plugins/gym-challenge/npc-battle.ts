@@ -14,6 +14,8 @@
 import { RoomBattle, type RoomBattleOptions, type RoomBattlePlayerOptions } from '../../room-battle';
 import type { ChoiceRequest } from '../../../sim/side';
 import type { BattleView, NpcAI } from './ai';
+import { readBattleState } from './battle-view';
+import { buildPosition, positionFeatures } from './position';
 
 /** Resultado do ponto de vista do desafiante (o jogador 1). */
 export type NpcBattleResult = 'win' | 'loss' | 'tie';
@@ -43,6 +45,12 @@ export interface NpcBattleHooks {
 	 * remonta a batalha no mesmo ponto, inclusive a sorte (a semente está no log).
 	 */
 	onSave?: (inputLog: string) => void;
+	/**
+	 * Aprendizado da IA Mestre: as características das posições das batalhas
+	 * individuais, vistas pelo NPC e pelo desafiante, e se o NPC venceu. Chamado no fim
+	 * de uma batalha que vale e terminou com vencedor (não em empates).
+	 */
+	onPositions?: (positions: { perspective: 'npc' | 'player', features: number[] }[], npcWon: boolean) => void;
 }
 
 interface NpcBattleOptions extends RoomBattleOptions {
@@ -79,6 +87,8 @@ export class NpcBattle extends RoomBattle {
 	 * de cada ponto antigo. O NPC só responde depois da reprodução (ver finishReplay).
 	 */
 	private replaying = !!this.options.inputLog;
+	/** Posições para o aprendizado da Mestre (só em memória até o fim da batalha). */
+	private positions: { perspective: 'npc' | 'player', features: number[] }[] = [];
 
 	get npc(): NpcSpec {
 		return this.options.npc;
@@ -181,6 +191,14 @@ export class NpcBattle extends RoomBattle {
 				this.options.hooks.onVoid?.();
 				return;
 			}
+			if (result !== 'tie' && this.positions.length) {
+				try {
+					this.options.hooks.onPositions?.(this.positions, result === 'loss');
+				} catch (err: any) {
+					Monitor.crashlog(err, 'A gym challenge battle positions', { roomid: this.roomid });
+				}
+			}
+			this.positions = [];
 			this.options.hooks.onEnd?.(result);
 		} catch (err: any) {
 			Monitor.crashlog(err, 'A gym challenge battle end', { roomid: this.roomid });
@@ -218,15 +236,34 @@ export class NpcBattle extends RoomBattle {
 			}
 		} else if (lines[0] === 'sideupdate' && lines[1] === 'p1') {
 			// Novo ponto de decisão do desafiante: tudo o que já foi jogado está no log
-			if (lines[2].startsWith('|request|')) void this.saveState();
+			if (lines[2].startsWith('|request|')) {
+				void this.saveState();
+				this.recordPosition('player', lines[2].slice(9));
+			}
 		} else if (lines[0] === 'sideupdate' && lines[1] === NPC_SLOT) {
 			if (lines[2].startsWith('|request|')) {
 				this.invalidChoices = 0;
+				this.recordPosition('npc', lines[2].slice(9));
 				this.scheduleNpcChoice();
 			} else if (lines[2].startsWith('|error|[Invalid choice]')) {
 				this.invalidChoices++;
 				this.scheduleNpcChoice(this.invalidChoices >= MAX_INVALID_CHOICES ? 'default' : undefined);
 			}
+		}
+	}
+
+	/**
+	 * Grava as características da posição vista por um lado (pedido de jogada numa
+	 * batalha individual), para o aprendizado da Mestre. Nunca atrapalha a batalha.
+	 */
+	private recordPosition(perspective: 'npc' | 'player', requestJSON: string) {
+		if (this.replaying || !this.options.hooks.onPositions) return;
+		try {
+			const request = JSON.parse(requestJSON) as ChoiceRequest;
+			if (request.wait || request.teamPreview || request.forceSwitch || request.active?.length !== 1) return;
+			this.positions.push({ perspective, features: positionFeatures(buildPosition(request, readBattleState(this.npcLog))) });
+		} catch (err: any) {
+			Monitor.crashlog(err, 'A gym challenge battle position', { roomid: this.roomid });
 		}
 	}
 

@@ -228,6 +228,7 @@ function aiLevelLabel(TL: Translator, level: string) {
 	if (level === 'easy') return TL`Easy`;
 	if (level === 'medium') return TL`Medium`;
 	if (level === 'hard') return TL`Hard`;
+	if (level === 'master') return TL`Master`;
 	return Utils.escapeHTML(level);
 }
 

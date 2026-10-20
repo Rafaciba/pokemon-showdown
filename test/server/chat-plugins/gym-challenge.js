@@ -219,7 +219,10 @@ describe('Gym Challenge', () => {
 			assert.equal(effectiveAILevel('random', null), 'random');
 			assert.equal(effectiveAILevel('random', 'random'), 'random');
 			assert(isAILevel('random'));
+			assert(isAILevel('master'));
 			assert(!isAILevel('genius'));
+			assert.equal(effectiveAILevel('hard', 'master'), 'master', 'Mestre acima do Difícil');
+			assert.equal(effectiveAILevel('master', 'hard'), 'master');
 		});
 	});
 
@@ -746,7 +749,7 @@ describe('Gym Challenge', () => {
 
 	describe('AI', () => {
 		const { readBattleState, remainingCount } = require('../../../dist/server/chat-plugins/gym-challenge/battle-view');
-		const { HeuristicAI } = require('../../../dist/server/chat-plugins/gym-challenge/heuristic-ai');
+		const { HeuristicAI, DEFAULT_WEIGHTS } = require('../../../dist/server/chat-plugins/gym-challenge/heuristic-ai');
 		const { createAI } = require('../../../dist/server/chat-plugins/gym-challenge/ai');
 
 		/** Pokémon do nosso lado (p2) num pedido do simulador. */
@@ -902,6 +905,17 @@ describe('Gym Challenge', () => {
 				'Muk (Veneno) é imune a Toxic');
 		});
 
+		it('master plays like hard with the default weights, and follows its weights', () => {
+			const team = [mon('Skarmory', ['stealthrock', 'toxic', 'bravebird'], { active: true }), mon('Starmie', ['surf'])];
+			const rocksUp = logWith('Snorlax', '100/100', ['|-sidestart|p1: Ash|move: Stealth Rock']);
+			for (const log of [logWith('Snorlax'), rocksUp]) {
+				assert.equal(createAI('master').choose(moveRequest(team), { log }), choose('hard', moveRequest(team), log));
+			}
+			const noRocks = new HeuristicAI('master', () => 0.99, {}, { ...DEFAULT_WEIGHTS, stealthRock: 0 });
+			assert.equal(noRocks.choose(moveRequest(team), { log: logWith('Snorlax') }), 'move 2',
+				'sem valor para Stealth Rock, vai de Toxic');
+		});
+
 		it('hard respects the Sleep Clause and Ground immunity to Thunder Wave', () => {
 			const team = [mon('Breloom', ['spore', 'machpunch'], { active: true }), mon('Jolteon', ['thunderwave', 'thunderbolt'])];
 			const asleep = ['|teamsize|p1|6', '|switch|p1a: Lapras|Lapras, L100|100/100', '|-status|p1a: Lapras|slp',
@@ -952,7 +966,7 @@ describe('Gym Challenge', () => {
 
 		it('creates the AI for each level', () => {
 			assert.equal(createAI('random').level, 'random');
-			for (const level of ['easy', 'medium', 'hard']) assert.equal(createAI(level).level, level);
+			for (const level of ['easy', 'medium', 'hard', 'master']) assert.equal(createAI(level).level, level);
 		});
 	});
 

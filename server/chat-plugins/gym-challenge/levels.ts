@@ -2,13 +2,13 @@
  * pokemon-showdown-custom: níveis de dificuldade da IA dos treinadores NPC.
  *
  * A dificuldade é a qualidade das escolhas da IA. Em ordem crescente: o bot
- * aleatório padrão do PS e as IAs heurísticas Fácil, Médio e Difícil
- * (heuristic-ai.ts). Um nível acima, que aprende com as batalhas, fica para depois.
+ * aleatório padrão do PS, as IAs heurísticas Fácil, Médio e Difícil
+ * (heuristic-ai.ts) e a Mestre, que parte do Difícil e aprende (master-weights.ts).
  *
  * @license MIT
  */
 
-export const AI_LEVELS = ['random', 'easy', 'medium', 'hard'] as const;
+export const AI_LEVELS = ['random', 'easy', 'medium', 'hard', 'master'] as const;
 export type AILevel = typeof AI_LEVELS[number];
 
 export function isAILevel(level: unknown): level is AILevel {

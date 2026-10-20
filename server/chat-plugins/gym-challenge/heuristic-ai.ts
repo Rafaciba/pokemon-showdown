@@ -34,7 +34,7 @@ import { toID } from '../../../sim/dex-data';
 import { readBattleState, remainingCount, type BattleState, type SeenPokemon } from './battle-view';
 import type { BattleView, NpcAI } from './ai';
 
-export type HeuristicLevel = 'easy' | 'medium' | 'hard';
+export type HeuristicLevel = 'easy' | 'medium' | 'hard' | 'master';
 
 export interface LevelRules {
 	/** Considera efetividade e imunidade de tipo no dano. */
@@ -70,12 +70,104 @@ const RULES: { [level in HeuristicLevel]: LevelRules } = {
 		typeAware: true, defensiveMoves: true, statusMoves: true, hazards: true,
 		typeSwitching: true, carefulSwitching: true, speedAware: true, statBoosts: true, chooseLead: true,
 	},
+	// Mestre: as regras do Difícil, com pesos próprios (master-weights.ts)
+	master: {
+		typeAware: true, defensiveMoves: true, statusMoves: true, hazards: true,
+		typeSwitching: true, carefulSwitching: true, speedAware: true, statBoosts: true, chooseLead: true,
+	},
 };
+
+/**
+ * Pesos das decisões: os pontos de cada tipo de jogada e os limites (HP em %) que as
+ * regras usam. Os valores padrão foram escolhidos à mão e valem para Fácil, Médio e
+ * Difícil; a Mestre usa os seus (master-weights.ts), ajustados por treino.
+ */
+export interface HeuristicWeights {
+	/** Golpe que nocauteia (com prioridade, mais `priorityKoBonus`). */
+	koBonus: number;
+	priorityKoBonus: number;
+	/** Fator de golpe sem prioridade quando o adversário, mais rápido, nos nocauteia. */
+	outspedFactor: number;
+	/** Golpe de dano que força a troca ou zera os buffs, contra adversário com buffs. */
+	phazeVsBoosts: number;
+	/** Fator de golpes de status, hazards e telas quando vamos ser nocauteados neste turno. */
+	doomedStatusFactor: number;
+	/** Cura com HP até `healLowHp` (e até `healMidHp`). */
+	healLowHp: number;
+	healLow: number;
+	healMidHp: number;
+	healMid: number;
+	/** Protect e afins com o adversário envenenado/queimado ou com HP até `stallHp`. */
+	stall: number;
+	stallHp: number;
+	/** Telas, com HP a partir de `screensHp`. */
+	screens: number;
+	screensHp: number;
+	/** Haze ou golpe que força a troca contra adversário com buffs. */
+	hazeVsBoosts: number;
+	/** Hazards, com HP a partir de `hazardHp` (metade com 2 Pokémon restantes no adversário). */
+	hazardHp: number;
+	stealthRock: number;
+	stickyWeb: number;
+	spikes: number;
+	toxicSpikes: number;
+	/** Status no adversário, com o HP dele a partir de `statusHp`. */
+	statusHp: number;
+	sleep: number;
+	toxic: number;
+	paralysis: number;
+	burnPhysical: number;
+	burnSpecial: number;
+	otherStatus: number;
+	/** Buff próprio: HP mínimo, dano máximo sofrido por turno e pontos por estágio. */
+	boostHp: number;
+	boostDamageTaken: number;
+	boostOffense: number;
+	boostSpeed: number;
+	boostDefense: number;
+	/** Penalidade por estágio perdido (ex.: as defesas do Shell Smash). */
+	boostDrop: number;
+	boostMax: number;
+	/** Debuff no adversário: HP mínimo e pontos por estágio. */
+	debuffHp: number;
+	debuffOffense: number;
+	debuffDefense: number;
+	debuffSpeed: number;
+	debuffMax: number;
+	/** Confronto: agir primeiro e nocautear (ou ser nocauteado antes). */
+	speedKo: number;
+	/** Entrar para ser nocauteado. */
+	enterKo: number;
+	/** Quanto o confronto de quem entra precisa superar o atual (Difícil e Mestre). */
+	switchMargin: number;
+	/** Não troca se o melhor golpe passa do HP do adversário mais isto. */
+	stayIfKo: number;
+	/** Golpe em área que atinge o aliado: fator do dano no aliado e o nocaute dele. */
+	allyHitFactor: number;
+	allyKo: number;
+	/** Golpes no aliado (Helping Hand). */
+	allySupport: number;
+}
+
+export const DEFAULT_WEIGHTS: Readonly<HeuristicWeights> = Object.freeze({
+	koBonus: 25, priorityKoBonus: 10, outspedFactor: 0.5, phazeVsBoosts: 30, doomedStatusFactor: 0.3,
+	healLowHp: 45, healLow: 55, healMidHp: 65, healMid: 25, stall: 30, stallHp: 30, screens: 40, screensHp: 60,
+	hazeVsBoosts: 65, hazardHp: 40, stealthRock: 70, stickyWeb: 60, spikes: 55, toxicSpikes: 45,
+	statusHp: 40, sleep: 65, toxic: 60, paralysis: 55, burnPhysical: 60, burnSpecial: 35, otherStatus: 45,
+	boostHp: 60, boostDamageTaken: 40, boostOffense: 25, boostSpeed: 15, boostDefense: 12, boostDrop: 5, boostMax: 70,
+	debuffHp: 50, debuffOffense: 15, debuffDefense: 12, debuffSpeed: 12, debuffMax: 45,
+	speedKo: 40, enterKo: 100, switchMargin: 15, stayIfKo: 25, allyHitFactor: 1.5, allyKo: 60, allySupport: 8,
+});
+
+/** Margem de troca do Médio (fixa: os pesos treinados são só da Mestre). */
+const MEDIUM_SWITCH_MARGIN = 20;
 
 /** Hazards: id → camadas máximas. */
 const HAZARDS: { [id: string]: number } = { stealthrock: 1, spikes: 3, toxicspikes: 2, stickyweb: 1 };
-/** Valor de colocar cada hazard (contra um adversário com 3 ou mais Pokémon). */
-const HAZARD_VALUES: { [id: string]: number } = { stealthrock: 70, stickyweb: 60, spikes: 55, toxicspikes: 45 };
+/** Peso de colocar cada hazard (contra um adversário com 3 ou mais Pokémon). */
+const HAZARD_WEIGHTS: { [id: string]: keyof HeuristicWeights } = {
+	stealthrock: 'stealthRock', stickyweb: 'stickyWeb', spikes: 'spikes', toxicspikes: 'toxicSpikes',
+};
 const SCREENS = new Set(['reflect', 'lightscreen', 'auroraveil']);
 /** Habilidades que anulam um tipo de golpe (para estimar o risco de imunidade). */
 const IMMUNITY_ABILITIES: { [ability: string]: string } = {
@@ -220,6 +312,7 @@ function stabMoves(fighter: Fighter): Move[] {
 export class HeuristicAI implements NpcAI {
 	readonly level: HeuristicLevel;
 	private readonly rules: LevelRules;
+	private readonly w: Readonly<HeuristicWeights>;
 	private readonly random: () => number;
 	private lastRequest = '';
 	private lastAction: 'move' | 'switch' | '' = '';
@@ -228,9 +321,13 @@ export class HeuristicAI implements NpcAI {
 	private lastMoveIds: string[] = [];
 
 	/** `overrides` liga ou desliga regras do nível (para calibrar no banco de testes). */
-	constructor(level: HeuristicLevel, random: () => number = Math.random, overrides: Partial<LevelRules> = {}) {
+	constructor(
+		level: HeuristicLevel, random: () => number = Math.random, overrides: Partial<LevelRules> = {},
+		weights: Readonly<HeuristicWeights> = DEFAULT_WEIGHTS
+	) {
 		this.level = level;
 		this.rules = { ...RULES[level], ...overrides };
+		this.w = weights;
 		this.random = random;
 	}
 
@@ -342,12 +439,12 @@ export class HeuristicAI implements NpcAI {
 		if (this.rules.speedAware) {
 			// Quem age primeiro e nocauteia leva o confronto
 			const faster = speedOf(ours) > speedOf(theirs);
-			if (faster && dealt >= theirs.hp) score += 40;
-			if (!faster && taken >= ours.hp) score -= 40;
+			if (faster && dealt >= theirs.hp) score += this.w.speedKo;
+			if (!faster && taken >= ours.hp) score -= this.w.speedKo;
 		}
 		if (entering && this.rules.carefulSwitching) {
 			const left = ours.hp - this.hazardCost(ours, state, ourSide) - taken;
-			if (left <= 0) score -= 100; // entraria para ser nocauteado
+			if (left <= 0) score -= this.w.enterKo; // entraria para ser nocauteado
 			score -= this.hazardCost(ours, state, ourSide);
 		}
 		return score;
@@ -456,18 +553,20 @@ export class HeuristicAI implements NpcAI {
 			if (!opponent) return effectivePower(move, false) / 10;
 			const damage = estimateDamage(me, move, opponent, this.rules);
 			let score = Math.min(damage, opponent.hp);
-			if (this.rules.typeAware && damage >= opponent.hp) score += 25 + (move.priority > 0 ? 10 : 0);
+			if (this.rules.typeAware && damage >= opponent.hp) {
+				score += this.w.koBonus + (move.priority > 0 ? this.w.priorityKoBonus : 0);
+			}
 			// Difícil: se o adversário é mais rápido e nos nocauteia, só um golpe de prioridade chega antes
-			if (danger.koThisTurn && danger.outsped && move.priority <= 0) score *= 0.5;
+			if (danger.koThisTurn && danger.outsped && move.priority <= 0) score *= this.w.outspedFactor;
 			// Difícil: adversário com buffs acumulados → golpes que forçam a troca ou zeram os buffs
 			if (this.rules.statBoosts && offensiveBoosts(opponent) >= 2 && (move.forceSwitch || move.id === 'clearsmog')) {
-				score += 30;
+				score += this.w.phazeVsBoosts;
 			}
 			return score;
 		}
 		const statusScore = this.scoreStatusMove(move, me, opponent, opponentSeen, state, ourSide, theirSide);
 		// Difícil: status, hazards e telas não valem a pena se vamos ser nocauteados neste turno
-		return danger.koThisTurn ? statusScore * 0.3 : statusScore;
+		return danger.koThisTurn ? statusScore * this.w.doomedStatusFactor : statusScore;
 	}
 
 	private scoreStatusMove(
@@ -478,34 +577,37 @@ export class HeuristicAI implements NpcAI {
 		let score = 0;
 		if (this.rules.defensiveMoves) {
 			if (move.heal || move.flags.heal || move.id === 'wish') {
-				if (me.hp <= 45) score = Math.max(score, 55);
-				else if (me.hp <= 65) score = Math.max(score, 25);
+				if (me.hp <= this.w.healLowHp) score = Math.max(score, this.w.healLow);
+				else if (me.hp <= this.w.healMidHp) score = Math.max(score, this.w.healMid);
 			}
 			if (move.stallingMove && this.lastMoveId !== move.id && opponent &&
-				(['psn', 'tox', 'brn'].includes(opponent.status) || me.hp <= 30)) {
-				score = Math.max(score, 30);
+				(['psn', 'tox', 'brn'].includes(opponent.status) || me.hp <= this.w.stallHp)) {
+				score = Math.max(score, this.w.stall);
 			}
 			if (move.sideCondition && SCREENS.has(toID(move.sideCondition)) && !ours?.conditions.has(toID(move.sideCondition)) &&
-				me.hp >= 60 && (move.id !== 'auroraveil' || ['snow', 'snowscape', 'hail'].includes(state.weather))) {
-				score = Math.max(score, 40);
+				me.hp >= this.w.screensHp && (move.id !== 'auroraveil' || ['snow', 'snowscape', 'hail'].includes(state.weather))) {
+				score = Math.max(score, this.w.screens);
 			}
 		}
 		if (this.rules.statBoosts && opponentSeen && opponent) {
 			if (move.boosts) score = Math.max(score, this.boostValue(move, me, opponent, opponentSeen));
-			if ((move.id === 'haze' || move.forceSwitch) && offensiveBoosts(opponent) >= 2) score = Math.max(score, 65);
+			if ((move.id === 'haze' || move.forceSwitch) && offensiveBoosts(opponent) >= 2) {
+				score = Math.max(score, this.w.hazeVsBoosts);
+			}
 		}
 		if ((this.rules.statusMoves || this.rules.hazards) && opponentSeen && opponent) {
 			const theirs = state.sides[theirSide];
 			const hazard = move.sideCondition ? toID(move.sideCondition) : '';
-			if (this.rules.hazards && hazard && HAZARDS[hazard] && me.hp >= 40) {
+			if (this.rules.hazards && hazard && HAZARDS[hazard] && me.hp >= this.w.hazardHp) {
 				const layers = theirs?.conditions.get(hazard) || 0;
 				const remaining = remainingCount(theirs);
 				if (layers < HAZARDS[hazard] && remaining >= 2) {
-					const value = HAZARD_VALUES[hazard] || 0;
+					const value = this.w[HAZARD_WEIGHTS[hazard]] || 0;
 					score = Math.max(score, remaining >= 3 ? value : value / 2);
 				}
 			}
-			if (this.rules.statusMoves && move.status && !opponent.status && !opponentSeen.substitute && opponent.hp >= 40) {
+			if (this.rules.statusMoves && move.status && !opponent.status && !opponentSeen.substitute &&
+				opponent.hp >= this.w.statusHp) {
 				score = Math.max(score, this.statusValue(move, opponent, theirs));
 			}
 		}
@@ -542,10 +644,10 @@ export class HeuristicAI implements NpcAI {
 		const slower = speedOf(opponent) >= speedOf(me);
 		let value = 0;
 		if (move.target === 'self') {
-			if (me.hp < 60 || this.bestDamage(opponent, me) >= 40) return 0;
+			if (me.hp < this.w.boostHp || this.bestDamage(opponent, me) >= this.w.boostDamageTaken) return 0;
 			for (const [stat, amount] of Object.entries(boosts)) {
 				if (amount < 0) {
-					value += 5 * amount; // ex.: as defesas que o Shell Smash reduz
+					value += this.w.boostDrop * amount; // ex.: as defesas que o Shell Smash reduz
 					continue;
 				}
 				const stage = me.boosts[stat] || 0;
@@ -553,22 +655,26 @@ export class HeuristicAI implements NpcAI {
 				const factor = stage >= 2 ? 0.5 : 1;
 				const offense = (stat === 'atk' && ours === 'Physical') || (stat === 'spa' && ours === 'Special');
 				const defense = (stat === 'def' && theirs === 'Physical') || (stat === 'spd' && theirs === 'Special');
-				if (offense) value += 25 * amount * factor;
-				else if (stat === 'spe' && slower) value += 15 * amount * factor;
-				else if (defense) value += 12 * amount * factor;
+				if (offense) value += this.w.boostOffense * amount * factor;
+				else if (stat === 'spe' && slower) value += this.w.boostSpeed * amount * factor;
+				else if (defense) value += this.w.boostDefense * amount * factor;
 			}
-			return Math.max(0, Math.min(value, 70));
+			return Math.max(0, Math.min(value, this.w.boostMax));
 		}
 		// Debuff no adversário
-		if (me.hp < 50 || opponentSeen.substitute) return 0;
+		if (me.hp < this.w.debuffHp || opponentSeen.substitute) return 0;
 		for (const [stat, amount] of Object.entries(boosts)) {
 			if (amount >= 0 || (opponent.boosts[stat] || 0) <= -2) continue;
 			const drop = -amount;
-			if ((stat === 'atk' && theirs === 'Physical') || (stat === 'spa' && theirs === 'Special')) value += 15 * drop;
-			else if ((stat === 'def' && ours === 'Physical') || (stat === 'spd' && ours === 'Special')) value += 12 * drop;
-			else if (stat === 'spe' && slower) value += 12 * drop;
+			if ((stat === 'atk' && theirs === 'Physical') || (stat === 'spa' && theirs === 'Special')) {
+				value += this.w.debuffOffense * drop;
+			} else if ((stat === 'def' && ours === 'Physical') || (stat === 'spd' && ours === 'Special')) {
+				value += this.w.debuffDefense * drop;
+			} else if (stat === 'spe' && slower) {
+				value += this.w.debuffSpeed * drop;
+			}
 		}
-		return Math.min(value, 45);
+		return Math.min(value, this.w.debuffMax);
 	}
 
 	/** Valor de um golpe de status no adversário (0 se ele for imune ou não valer a pena). */
@@ -580,12 +686,12 @@ export class HeuristicAI implements NpcAI {
 		if (status === 'slp') {
 			// Sleep Clause: só um Pokémon do adversário dormindo por vez
 			if ([...theirs.pokemon.values()].some(mon => mon.status === 'slp' && !mon.fainted)) return 0;
-			return 65;
+			return this.w.sleep;
 		}
-		if (status === 'tox') return 60;
-		if (status === 'par') return 55;
-		if (status === 'brn') return opponent.stats.atk > opponent.stats.spa ? 60 : 35;
-		return 45;
+		if (status === 'tox') return this.w.toxic;
+		if (status === 'par') return this.w.paralysis;
+		if (status === 'brn') return opponent.stats.atk > opponent.stats.spa ? this.w.burnPhysical : this.w.burnSpecial;
+		return this.w.otherStatus;
 	}
 
 	/** Troca voluntária, conforme o nível; devolve o slot ou null. */
@@ -613,9 +719,9 @@ export class HeuristicAI implements NpcAI {
 		if (!disadvantaged && !threatened) return null;
 		// Difícil: com buffs acumulados, trocar perde os aumentos; só sai se for nocauteado antes de agir
 		if (this.rules.statBoosts && offensiveBoosts(me) >= 2 && !(danger.koThisTurn && danger.outsped)) return null;
-		if (bestScore >= opponent.hp + 25) return null; // dá para nocautear: fica
+		if (bestScore >= opponent.hp + this.w.stayIfKo) return null; // dá para nocautear: fica
 		const current = this.matchup(me, opponent, state, ourSide, false);
-		const margin = this.rules.carefulSwitching ? 15 : 20;
+		const margin = this.rules.carefulSwitching ? this.w.switchMargin : MEDIUM_SWITCH_MARGIN;
 		const slot = this.bestSwitch(team, state, ourSide, theirSide, current + margin, exclude);
 		if (!slot) return null;
 		if (!this.rules.carefulSwitching) {
@@ -723,14 +829,16 @@ export class HeuristicAI implements NpcAI {
 				for (const foe of foes) {
 					const damage = estimateDamage(me, move, foe.fighter, this.rules) * SPREAD_FACTOR;
 					score += Math.min(damage, foe.fighter.hp);
-					if (this.rules.typeAware && damage >= foe.fighter.hp) score += 25;
+					if (this.rules.typeAware && damage >= foe.fighter.hp) score += this.w.koBonus;
 				}
 				// Earthquake, Surf e afins atingem o aliado também
 				if (move.target === 'allAdjacent' && ally) {
 					const hit = estimateDamage(me, move, ally, this.rules) * SPREAD_FACTOR;
-					score -= this.rules.typeAware ? Math.min(hit, ally.hp) * 1.5 + (hit >= ally.hp ? 60 : 0) : Math.min(hit, ally.hp);
+					score -= this.rules.typeAware ?
+						Math.min(hit, ally.hp) * this.w.allyHitFactor + (hit >= ally.hp ? this.w.allyKo : 0) :
+						Math.min(hit, ally.hp);
 				}
-				if (danger.koThisTurn && danger.outsped && move.priority <= 0) score *= 0.5;
+				if (danger.koThisTurn && danger.outsped && move.priority <= 0) score *= this.w.outspedFactor;
 				return { score, target: 0 };
 			}
 			let best = { score: -Infinity, target: foes[0].target };
@@ -742,9 +850,9 @@ export class HeuristicAI implements NpcAI {
 		}
 		// Golpes no aliado (Helping Hand e afins): pouco valor, só com aliado em campo
 		// Sem aliado o golpe falha, mas o simulador ainda exige o alvo
-		if (move.target === 'adjacentAlly') return { score: ally ? 8 : -5, target: allyTarget };
+		if (move.target === 'adjacentAlly') return { score: ally ? this.w.allySupport : -5, target: allyTarget };
 		if (move.target === 'adjacentAllyOrSelf') return { score: 5, target: -(index + 1) };
-		const factor = danger.koThisTurn ? 0.3 : 1;
+		const factor = danger.koThisTurn ? this.w.doomedStatusFactor : 1;
 		if (SINGLE_TARGETS.has(move.target) && foes.length) {
 			let best = { score: -Infinity, target: foes[0].target };
 			for (const foe of foes) {

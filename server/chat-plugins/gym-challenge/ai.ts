@@ -6,8 +6,9 @@
  * no formato do protocolo ("move 1", "switch 3", "team 123456"...).
  *
  * Níveis: `random`, o bot aleatório padrão do PS (sim/tools/random-player-ai.ts),
- * que não avalia a batalha, e `easy`, `medium` e `hard`, as IAs heurísticas
- * (heuristic-ai.ts), que usam o `BattleView` (o que o NPC já viu da batalha).
+ * que não avalia a batalha; `easy`, `medium` e `hard`, as IAs heurísticas
+ * (heuristic-ai.ts), que usam o `BattleView` (o que o NPC já viu da batalha); e
+ * `master`, as regras do `hard` com pesos aprendidos (master-weights.ts).
  *
  * @license MIT
  */
@@ -16,6 +17,7 @@ import type { ChoiceRequest } from '../../../sim/side';
 import type { ObjectReadWriteStream } from '../../../lib/streams';
 import type { AILevel } from './levels';
 import { HeuristicAI } from './heuristic-ai';
+import { masterWeights } from './master-weights';
 
 /** Informação pública da batalha vista pelo NPC (linhas do protocolo, sem dados ocultos). */
 export interface BattleView {
@@ -61,6 +63,8 @@ export function createAI(level: AILevel): NpcAI {
 	case 'medium':
 	case 'hard':
 		return new HeuristicAI(level);
+	case 'master':
+		return new HeuristicAI('master', Math.random, {}, masterWeights());
 	case 'random':
 	default:
 		return new RandomAI();

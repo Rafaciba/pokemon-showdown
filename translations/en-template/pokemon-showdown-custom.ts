@@ -400,4 +400,5 @@ export const translations: TranslationCatalog = {
 	"{0}: trainer {1} has errors in the pack.": null,
 	"{0}: more than one trainer in the bank is named {1}.": null,
 	"{0}: trainer {1} is not in the pack or in the bank.": null,
+	"Master": null,
 };

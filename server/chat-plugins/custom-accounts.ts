@@ -4,7 +4,8 @@
  * - /convite [nome]      (admin) gera um código de convite de uso único
  * - /redefinirsenha nome (admin) gera um código para o jogador redefinir a senha
  * - /conta               link para a página da conta (trocar senha, excluir conta)
- * - API usada também pela página de convites do painel admin (gym-challenge/admin.ts)
+ * - API usada também pelas páginas de convites e de segurança do painel admin
+ *   (gym-challenge/admin.ts)
  * - exclusão dos dados de jogo de contas excluídas no login (ladder, ranks, forfeit nas
  *   batalhas em andamento e o handler onAccountPurge para os outros plugins),
  *   consultada a cada minuto
@@ -22,6 +23,17 @@ import { FS, Utils } from '../../lib';
 import { LadderStore } from '../ladders-local';
 import { database as PrivateMessagesDatabase } from '../private-messages';
 import type { Translator } from '../../sim/dex-text';
+
+/** Evento da trilha de segurança do login (30 dias; ver login/src/security-events.ts). */
+export interface SecurityEvent {
+	id: number;
+	at: number;
+	type: string;
+	userid: string | null;
+	ip: string | null;
+	actor: string | null;
+	detail: string | null;
+}
 
 /** Convite pendente, como o login devolve (sem o código). */
 export interface PendingInvite {
@@ -43,6 +55,9 @@ export interface InternalReply {
 	userids?: string[];
 	/** /internal/invites: convites pendentes */
 	invites?: PendingInvite[];
+	/** /internal/security-events: eventos e contagem por tipo nas últimas 24 horas */
+	events?: SecurityEvent[];
+	summary?: { type: string, count: number }[];
 }
 
 function isAdmin(user: User) {
@@ -336,7 +351,9 @@ export const commands: Chat.ChatCommands = {
 	async convite(target, room, user) {
 		if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can create invites.`);
 		const username = target.trim();
-		const reply = await callLoginServer('/internal/invite', { lang: loginLang(user), ...(username ? { username } : {}) });
+		const reply = await callLoginServer('/internal/invite', {
+			lang: loginLang(user), actor: user.id, ...(username ? { username } : {}),
+		});
 		if (!reply.ok || !reply.code || !reply.url || !reply.expiresAt) {
 			throw new Chat.ErrorMessage(reply.error || this.TL`Could not create the invite.`);
 		}
@@ -354,7 +371,7 @@ export const commands: Chat.ChatCommands = {
 		if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can reset passwords.`);
 		const username = target.trim();
 		if (!toID(username)) return this.parse('/help redefinirsenha');
-		const reply = await callLoginServer('/internal/reset', { username, lang: loginLang(user) });
+		const reply = await callLoginServer('/internal/reset', { username, lang: loginLang(user), actor: user.id });
 		if (!reply.ok || !reply.code || !reply.url || !reply.expiresAt) {
 			throw new Chat.ErrorMessage(reply.error || this.TL`Could not create the reset code.`);
 		}

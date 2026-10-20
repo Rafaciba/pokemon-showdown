@@ -9,6 +9,7 @@
  *   view-ginasiosadmin-desafio-<id>       criar ("novo") / editar / abrir / encerrar desafio
  *   view-ginasiosadmin-jornadas-<id>      jornadas do desafio (encerrar a de um jogador)
  *   view-ginasiosadmin-convites           convites (gerar, listar, revogar) e redefinição de senha
+ *   view-ginasiosadmin-seguranca[-<tipo>-<conta>-<antes de>]  trilha de segurança do login (30 dias)
  *
  * Visual: apenas elementos que o cliente oficial já estiliza (pad, ladder,
  * button, textbox, psicon, formatselect), como nas páginas oficiais do PS.
@@ -90,6 +91,40 @@ function takeIssued(user: User) {
 	return entry && Date.now() - entry.at <= ISSUED_TTL ? entry.html : '';
 }
 
+// --- Trilha de segurança --------------------------------------------------
+
+/** Tipos de evento do login (login/src/security-events.ts), com o nome mostrado. */
+function securityEventTypes(TL: Translator): [string, string][] {
+	return [
+		['loginfailed', TL`Wrong password`],
+		['loginblocked', TL`Blocked: too many password attempts`],
+		['codefailed', TL`Invalid invite or reset code`],
+		['accountcreated', TL`Account created`],
+		['passwordchanged', TL`Password changed`],
+		['resetissued', TL`Reset code issued`],
+		['resetused', TL`Password reset with a code`],
+		['accountdeleted', TL`Account deleted`],
+		['inviteissued', TL`Invite issued`],
+		['inviterevoked', TL`Invite revoked`],
+		['csrfrejected', TL`Form from another site refused`],
+		['ratelimited', TL`Too many requests`],
+		['internalunauthorized', TL`Internal API without a valid token`],
+	];
+}
+
+/** Onde o evento aconteceu (gravado pelo login) ou o caminho pedido. */
+function securityDetail(TL: Translator, detail: string | null) {
+	switch (detail) {
+	case null: return '';
+	case 'login': return TL`login`;
+	case 'senha': return TL`password change`;
+	case 'excluir': return TL`account deletion`;
+	case 'convite': return TL`sign-up`;
+	case 'redefinicao': return TL`password reset`;
+	default: return Utils.escapeHTML(detail);
+	}
+}
+
 // --- Elementos de página --------------------------------------------------
 
 function teamIcons(team: string) {
@@ -116,7 +151,8 @@ function navButtons(TL: Translator) {
 	return `<p>` +
 		`<button class="button" name="gymGo" value="${PAGE}">${TL`Admin panel`}</button> ` +
 		`<button class="button" name="gymGo" value="${PAGE}-treinadores">${TL`Trainers`}</button> ` +
-		`<button class="button" name="gymGo" value="${PAGE}-convites">${TL`Invites`}</button>` +
+		`<button class="button" name="gymGo" value="${PAGE}-convites">${TL`Invites`}</button> ` +
+		`<button class="button" name="gymGo" value="${PAGE}-seguranca">${TL`Security`}</button>` +
 		`</p>`;
 }
 
@@ -754,6 +790,68 @@ export const pages: Chat.PageTable = {
 			return buf + `</div>`;
 		},
 
+		async seguranca(query, user) {
+			// Página aberta antes do login terminar (link direto, recarga): o cliente pede de novo após logar
+			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
+			if (!isAdmin(user)) this.pageDoesNotExist();
+			this.title = this.TL`Security`;
+			const types = securityEventTypes(this.TL);
+			const labels = new Map(types);
+			// Filtros na própria página: tipo, conta e "antes de" (paginação), "todos" = sem filtro
+			const type = labels.has(query[0]) ? query[0] : '';
+			const userid = query[1] && query[1] !== 'todos' ? toID(query[1]) : '';
+			const before = /^[1-9][0-9]*$/.test(query[2] || '') ? query[2] : '';
+			const reply = await callLoginServer('/internal/security-events', {
+				...(type ? { type } : {}), ...(userid ? { userid } : {}), ...(before ? { before } : {}),
+			});
+			const pageOf = (t: string, u: string, b = '0') => `${PAGE}-seguranca-${t || 'todos'}-${u || 'todos'}-${b}`;
+
+			let buf = `<div class="pad"><h2>${this.TL`Security`}</h2>` + navButtons(this.TL) +
+				`<p>${this.TL`Login security events: wrong passwords and blocks, account changes, invites and refused requests. Kept for 30 days, also after the account is deleted.`}</p>`;
+			if (!reply.ok || !reply.events) {
+				return buf + `<p><em>${this.TL`Could not load the security events.`}</em></p></div>`;
+			}
+
+			buf += `<h3>${this.TL`Last 24 hours`}</h3>`;
+			if (!reply.summary?.length) {
+				buf += `<p><em>${this.TL`No events.`}</em></p>`;
+			} else {
+				buf += `<div class="ladder"><table><tr><th>${this.TL`Event`}</th><th>${this.TL`Count`}</th></tr>` +
+					reply.summary.map(row => (
+						`<tr><td>${labels.get(row.type) || Utils.escapeHTML(row.type)}</td><td>${Number(row.count)}</td></tr>`
+					)).join('') + `</table></div>`;
+			}
+
+			const clearFilter = type || userid || before ?
+				` <button class="button" type="button" name="gymGo" value="${PAGE}-seguranca">${this.TL`Clear filter`}</button>` : '';
+			buf += `<h3>${this.TL`Events`}</h3>` +
+				`<form data-submitsend="/ginasioadmin filtrarseguranca {tipo},{conta}"><p>` +
+				selectBox('tipo', [['', this.TL`(all events)`], ...types], type) + ` ` +
+				`<input name="conta" class="textbox" maxlength="18" value="${Utils.escapeHTML(userid)}" ` +
+				`placeholder="${this.TL`Account (optional)`}" /> ` +
+				`<button class="button" type="submit">${this.TL`Filter`}</button>${clearFilter}</p></form>`;
+			const events = reply.events;
+			if (!events.length) return buf + `<p><em>${this.TL`No events.`}</em></p></div>`;
+			buf += `<div class="ladder"><table><tr><th>${this.TL`When`}</th><th>${this.TL`Event`}</th>` +
+				`<th>${this.TL`Account`}</th><th>IP</th><th>${this.TL`By`}</th><th>${this.TL`Where`}</th></tr>`;
+			for (const event of events) {
+				const account = event.userid ? toID(event.userid) : '';
+				buf += `<tr><td>${formatExpiry(event.at)}</td>` +
+					`<td>${labels.get(event.type) || Utils.escapeHTML(event.type)}</td>` +
+					`<td>${account ? `<button class="button" name="gymGo" value="${pageOf(type, account)}">${account}</button>` : ''}</td>` +
+					`<td>${Utils.escapeHTML(event.ip || '')}</td>` +
+					`<td>${Utils.escapeHTML(event.actor || '')}</td>` +
+					`<td>${securityDetail(this.TL, event.detail)}</td></tr>`;
+			}
+			buf += `</table></div>`;
+			// O login devolve até 100 por vez: "mais antigos" continua do último id
+			if (events.length >= 100) {
+				buf += `<p><button class="button" name="gymGo" value="${pageOf(type, userid, String(events[events.length - 1].id))}">` +
+					`${this.TL`Older events`}</button></p>`;
+			}
+			return buf + `</div>`;
+		},
+
 		jornadas(query, user) {
 			// Página aberta antes do login terminar (link direto, recarga): o cliente pede de novo após logar
 			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
@@ -1141,7 +1239,9 @@ export const commands: Chat.ChatCommands = {
 		async gerarconvite(target, room, user, connection) {
 			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can create invites.`);
 			const username = target.trim();
-			const reply = await callLoginServer('/internal/invite', { lang: loginLang(user), ...(username ? { username } : {}) });
+			const reply = await callLoginServer('/internal/invite', {
+				lang: loginLang(user), actor: user.id, ...(username ? { username } : {}),
+			});
 			if (!reply.ok || !reply.code || !reply.url || !reply.expiresAt) {
 				connection.popup(reply.error || this.TL`Could not create the invite.`);
 			} else {
@@ -1156,7 +1256,7 @@ export const commands: Chat.ChatCommands = {
 			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can create invites.`);
 			const id = target.trim();
 			if (!/^[1-9][0-9]*$/.test(id)) throw new Chat.ErrorMessage(this.TL`Invite not found.`);
-			const reply = await callLoginServer('/internal/invites/revoke', { id });
+			const reply = await callLoginServer('/internal/invites/revoke', { id, actor: user.id });
 			if (!reply.ok) {
 				connection.popup(this.TL`Invite not found: it was already used, expired or revoked.`);
 			} else {
@@ -1173,7 +1273,7 @@ export const commands: Chat.ChatCommands = {
 				connection.popup(this.TL`Enter the username.`);
 				return this.parse(`/join ${PAGE}-convites`);
 			}
-			const reply = await callLoginServer('/internal/reset', { username, lang: loginLang(user) });
+			const reply = await callLoginServer('/internal/reset', { username, lang: loginLang(user), actor: user.id });
 			if (!reply.ok || !reply.code || !reply.url || !reply.expiresAt) {
 				connection.popup(reply.error || this.TL`Could not create the reset code.`);
 			} else {
@@ -1181,6 +1281,14 @@ export const commands: Chat.ChatCommands = {
 				this.globalModlog('PASSWORDRESET', null, 'reset code issued');
 			}
 			return this.parse(`/join ${PAGE}-convites`);
+		},
+
+		filtrarseguranca(target, room, user) {
+			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
+			const [rawType, rawAccount] = Utils.splitFirst(target, ',');
+			const type = toID(rawType);
+			const account = toID(rawAccount);
+			return this.parse(`/join ${PAGE}-seguranca-${type || 'todos'}-${account || 'todos'}-0`);
 		},
 
 		apagardesafio(target, room, user, connection) {

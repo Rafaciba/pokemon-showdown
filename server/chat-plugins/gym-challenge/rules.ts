@@ -15,6 +15,8 @@ import { isAILevel } from './levels';
 export const ELITE4_SIZE = 4;
 export const MAX_GYMS = 18;
 export const NAME_MAX_LENGTH = 40;
+export const TITLE_MAX_LENGTH = 40;
+export const RULES_MAX_LENGTH = 500;
 export const TURN_SECONDS_MIN = 10;
 export const TURN_SECONDS_MAX = 600;
 export const LOSS_LIMIT_MAX = 999;

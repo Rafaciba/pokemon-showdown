@@ -10,6 +10,9 @@
  *   view-ginasiosadmin-jornadas-<id>      jornadas do desafio (encerrar a de um jogador)
  *   view-ginasiosadmin-convites           convites (gerar, listar, revogar) e redefinição de senha
  *   view-ginasiosadmin-seguranca[-<tipo>-<conta>-<antes de>]  trilha de segurança do login (30 dias)
+ *   view-ginasiosadmin-pacotes            importar e exportar pacotes de treinadores e desafios (transfer.ts)
+ *   view-ginasiosadmin-importar           prévia e resultado da importação
+ *   view-ginasiosadmin-exportar-<desafios>-<treinadores>  pacote gerado (ids separados por "x"; 0 = nenhum)
  *
  * Visual: apenas elementos que o cliente oficial já estiliza (pad, ladder,
  * button, textbox, psicon, formatselect), como nas páginas oficiais do PS.
@@ -19,13 +22,13 @@
 import { Utils } from '../../../lib';
 import { TLkey, type Translator } from '../../../sim/dex-text';
 import { getStore, isAdmin } from './state';
-import {
-	checkChallengeSettings, checkName, ELITE4_SIZE, hasForbiddenChars, NAME_MAX_LENGTH, type Problem,
-} from './rules';
-import { checkFormat, importTeam, checkTeamType, normalizeTeamText, trainerTypes } from './teams';
-import { activeStages, challengeProblems, DEFAULT_CHALLENGE, fieldKey } from './challenges';
+import { ELITE4_SIZE, NAME_MAX_LENGTH, RULES_MAX_LENGTH, TITLE_MAX_LENGTH, type Problem } from './rules';
+import { normalizeTeamText, trainerTypes } from './teams';
+import { activeStages, challengeProblems, checkChallengeInput, DEFAULT_CHALLENGE, fieldKey } from './challenges';
 import { AI_LEVELS, isAILevel } from './levels';
-import { challengeFormatName, doublesFormatId } from './formats';
+import {
+	applyImport, canImport, checkTrainer, exportPack, planHasProblems, planImport, type ImportPlan,
+} from './transfer';
 import { reloadFormats } from './reload';
 import { badgeIcon, badgeLabel, badgeOptions, getBadge } from './badges';
 import { isTrainerSprite, searchTrainerSprites, spriteQuery, trainerSpriteImg } from './trainer-sprites';
@@ -39,8 +42,11 @@ import type {
 const PAGE = 'view-ginasiosadmin';
 /** Sprites por página da galeria. */
 const SPRITES_PER_PAGE = 48;
-const TITLE_MAX_LENGTH = 40;
-const RULES_MAX_LENGTH = 500;
+/**
+ * Tamanho máximo de um pacote colado: o PS descarta mensagens acima de 100 KB
+ * (sockets.ts), e o comando também vai na mensagem.
+ */
+const PACK_MAX_LENGTH = 95 * 1024;
 
 /** Traduz uma mensagem marcada com TLkey e substitui {0}, {1}... */
 export function renderProblem(TL: Translator, problem: Problem) {
@@ -89,6 +95,51 @@ function takeIssued(user: User) {
 	const entry = issuedCodes.get(user.id);
 	issuedCodes.delete(user.id);
 	return entry && Date.now() - entry.at <= ISSUED_TTL ? entry.html : '';
+}
+
+// --- Importação de pacotes --------------------------------------------------
+// O pacote colado fica na memória (por usuário, 30 min) entre a prévia e a
+// confirmação, e é validado de novo ao confirmar. O resultado aparece uma vez.
+
+const IMPORT_TTL = 30 * 60 * 1000;
+
+class UserMemo<T> {
+	private readonly entries = new Map<ID, { value: T, at: number }>();
+
+	set(user: User, value: T) {
+		const now = Date.now();
+		for (const [id, entry] of this.entries) {
+			if (now - entry.at > IMPORT_TTL) this.entries.delete(id);
+		}
+		this.entries.set(user.id, { value, at: now });
+	}
+
+	get(user: User) {
+		const entry = this.entries.get(user.id);
+		return entry && Date.now() - entry.at <= IMPORT_TTL ? entry.value : undefined;
+	}
+
+	take(user: User) {
+		const value = this.get(user);
+		this.entries.delete(user.id);
+		return value;
+	}
+}
+
+const pendingImports = new UserMemo<string>();
+const importResults = new UserMemo<string>();
+
+/**
+ * Abre a página em foco: um /join numa aba já aberta só atualiza o conteúdo,
+ * então a aba é fechada antes (em todas as conexões do usuário).
+ */
+function reopenPage(context: Chat.CommandContext, user: User, page: string) {
+	for (const conn of user.connections) {
+		if (!conn.openPages?.has(page)) continue;
+		conn.send(`>view-${page}\n|deinit`);
+		conn.openPages.delete(page);
+	}
+	return context.parse(`/join view-${page}`);
 }
 
 // --- Trilha de segurança --------------------------------------------------
@@ -157,7 +208,8 @@ function navButtons(TL: Translator) {
 		`<button class="button" name="gymGo" value="${PAGE}">${TL`Admin panel`}</button> ` +
 		`<button class="button" name="gymGo" value="${PAGE}-treinadores">${TL`Trainers`}</button> ` +
 		`<button class="button" name="gymGo" value="${PAGE}-convites">${TL`Invites`}</button> ` +
-		`<button class="button" name="gymGo" value="${PAGE}-seguranca">${TL`Security`}</button>` +
+		`<button class="button" name="gymGo" value="${PAGE}-seguranca">${TL`Security`}</button> ` +
+		`<button class="button" name="gymGo" value="${PAGE}-pacotes">${TL`Import and export`}</button>` +
 		`</p>`;
 }
 
@@ -212,6 +264,47 @@ function chosenBadgeIcon(badgeId: string | null, type: string | null) {
 
 function trainerLabel(trainer: Trainer) {
 	return Utils.escapeHTML(trainer.name) + (trainer.type ? ` (${trainer.type})` : '');
+}
+
+/** Prévia da importação: o que entra, o que é pulado (nome já existe) e os erros. */
+function importPreview(TL: Translator, plan: ImportPlan) {
+	if (plan.problems.length) return problemList(TL, plan.problems);
+	let buf = '';
+	if (plan.trainers.length) {
+		buf += `<h3>${TL`Trainers`}</h3><div class="ladder"><table><tr><th>${TL`Name`}</th>` +
+			`<th>${TL`Trainer type`}</th><th>${TL`Team`}</th><th>${TL`Result`}</th></tr>`;
+		for (const trainer of plan.trainers) {
+			// Pulado: mostra o treinador do banco, que é o que os desafios vão usar
+			const input = trainer.input || (trainer.existing.length === 1 ? trainer.existing[0] : null);
+			let result = TL`New`;
+			if (trainer.action === 'skip') result = TL`Already in the bank: skipped`;
+			else if (trainer.problems.length) result = `<strong>${TL`Error`}</strong>` + problemList(TL, trainer.problems);
+			buf += `<tr><td>${input ? `${trainerSpriteImg(input.avatar, 40)} ` : ''}${Utils.escapeHTML(trainer.name)}` +
+				(input?.doubles ? `<br /><small>${TL`Doubles`}</small>` : '') + `</td>` +
+				`<td>${typeIcon(input?.type || null)}</td><td>${input ? teamIcons(input.team) : ''}</td><td>${result}</td></tr>`;
+		}
+		buf += `</table></div>`;
+	}
+	if (plan.challenges.length) {
+		buf += `<h3>${TL`Challenges`}</h3><div class="ladder"><table><tr><th>${TL`Name`}</th><th>${TL`Result`}</th></tr>`;
+		for (const challenge of plan.challenges) {
+			let result: string;
+			if (challenge.action === 'skip') {
+				result = TL`A challenge with this name already exists: skipped`;
+			} else if (challenge.problems.length) {
+				result = `<strong>${TL`Error`}</strong>` + problemList(TL, challenge.problems);
+			} else if (challenge.notReady.length) {
+				const count = challenge.notReady.length;
+				result = TL`New (draft)` + `<details><summary>${TL`Before opening (${count})`}</summary>` +
+					problemList(TL, challenge.notReady) + `</details>`;
+			} else {
+				result = TL`New (draft)` + `<br /><small>${TL`Ready to open.`}</small>`;
+			}
+			buf += `<tr><td>${Utils.escapeHTML(challenge.name)}</td><td>${result}</td></tr>`;
+		}
+		buf += `</table></div>`;
+	}
+	return buf;
 }
 
 function trainerMap(store: GymStore) {
@@ -864,6 +957,113 @@ export const pages: Chat.PageTable = {
 			return buf + `</div>`;
 		},
 
+		pacotes(query, user) {
+			// Página aberta antes do login terminar (link direto, recarga): o cliente pede de novo após logar
+			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
+			if (!isAdmin(user)) this.pageDoesNotExist();
+			this.title = this.TL`Import and export`;
+			const store = getStore();
+			const maxKB = Math.floor(PACK_MAX_LENGTH / 1024);
+			const buf = `<div class="pad"><h2>${this.TL`Import and export`}</h2>` + navButtons(this.TL) +
+				`<p>${this.TL`A pack is a JSON file with trainers and challenges, to take them from one server to another (for example, from the local environment to production). Players, journeys and achievements never go in a pack.`}</p>` +
+				`<hr /><h3>${this.TL`Import`}</h3>` +
+				`<ul><li>${this.TL`Nothing is saved before you confirm on the next screen.`}</li>` +
+				`<li>${this.TL`Trainers and challenges whose names already exist are skipped and stay as they are; the imported challenges use the trainer already in the bank.`}</li>` +
+				`<li>${this.TL`Challenges come in as drafts, to be reviewed and opened in the panel.`}</li>` +
+				`<li>${this.TL`Up to ${maxKB} KB at a time: split bigger packs.`}</li></ul>` +
+				`<form data-submitsend="/ginasioadmin previaimportacao {pacote}">` +
+				`<p><label class="label">${this.TL`Pack (JSON)`}:<br />` +
+				`<textarea name="pacote" class="textbox" style="width: 100%; height: 240px"></textarea></label></p>` +
+				`<p><button class="button" type="submit"><strong>${this.TL`Preview import`}</strong></button></p></form>` +
+				`<hr /><h3>${this.TL`Export`}</h3>`;
+			const challenges = store.listChallenges();
+			const trainers = store.listTrainers();
+			if (!challenges.length && !trainers.length) {
+				return buf + `<p><em>${this.TL`Nothing to export yet.`}</em></p></div>`;
+			}
+			const fields: string[] = [];
+			const checkbox = (key: string) => {
+				fields.push(`${key}={${key}}`);
+				return `<input type="checkbox" name="${key}" />`;
+			};
+			let tables = '';
+			if (challenges.length) {
+				tables += `<div class="ladder"><table><tr><th></th><th>${this.TL`Challenge`}</th><th>${this.TL`Status`}</th></tr>` +
+					challenges.map(challenge => (
+						`<tr><td>${checkbox(`c${fieldKey(challenge.id)}`)}</td>` +
+						`<td>${Utils.escapeHTML(challenge.name)}</td><td>${statusLabel(this.TL, challenge.status)}</td></tr>`
+					)).join('') + `</table></div>`;
+			}
+			if (trainers.length) {
+				tables += `<div class="ladder"><table><tr><th></th><th>${this.TL`Trainer`}</th><th>${this.TL`Team`}</th></tr>` +
+					trainers.map(trainer => (
+						`<tr><td>${checkbox(`t${fieldKey(trainer.id)}`)}</td>` +
+						`<td>${trainerSpriteImg(trainer.avatar, 40)} ${trainerLabel(trainer)}</td>` +
+						`<td>${teamIcons(trainer.team)}</td></tr>`
+					)).join('') + `</table></div>`;
+			}
+			return buf + `<form data-submitsend="/ginasioadmin exportarpacote ${fields.join(',')}">` +
+				`<p>${this.TL`Choose the challenges (the trainers they use go along) and other trainers to include.`}</p>` +
+				tables + `<p><button class="button" type="submit"><strong>${this.TL`Export`}</strong></button></p></form></div>`;
+		},
+
+		exportar(query, user) {
+			// Página aberta antes do login terminar (link direto, recarga): o cliente pede de novo após logar
+			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
+			if (!isAdmin(user)) this.pageDoesNotExist();
+			this.title = this.TL`Export`;
+			const ids = (part: string | undefined) => (part || '').split('x').map(Number).filter(n => Number.isInteger(n) && n > 0);
+			const result = exportPack(getStore(), ids(query[0]), ids(query[1]));
+			let buf = `<div class="pad"><h2>${this.TL`Export`}</h2>` + navButtons(this.TL) +
+				`<p><button class="button" name="gymGo" value="${PAGE}-pacotes">${this.TL`Back to import and export`}</button></p>`;
+			if ('error' in result) return buf + `<p>${Utils.escapeHTML(renderProblem(this.TL, result.error))}</p></div>`;
+			const { pack } = result;
+			if (!pack.trainers.length && !pack.challenges.length) {
+				return buf + `<p><em>${this.TL`Choose at least one challenge or trainer.`}</em></p></div>`;
+			}
+			const json = JSON.stringify(pack, null, '\t');
+			const challengeCount = pack.challenges.length;
+			const trainerCount = pack.trainers.length;
+			const sizeKB = Math.ceil(json.length / 1024);
+			const maxKB = Math.floor(PACK_MAX_LENGTH / 1024);
+			buf += `<p>${this.TL`Pack with ${challengeCount} challenge(s) and ${trainerCount} trainer(s), ${sizeKB} KB.`}</p>`;
+			if (json.length > PACK_MAX_LENGTH) {
+				buf += `<p><strong>${this.TL`The pack is larger than ${maxKB} KB and cannot be imported at once: export fewer challenges or trainers at a time.`}</strong></p>`;
+			}
+			// Linha por linha, como na textarea do time (o escapeHTML do PS troca "\n" por <br />)
+			const text = json.split('\n').map(line => Utils.escapeHTML(line)).join('&#13;');
+			const copyHint = this.TL`Copy the text below (Ctrl+A, Ctrl+C inside the box) and save it as a .json file, or paste it directly into the import of the other server.`;
+			return buf + `<p>${copyHint}</p>` +
+				`<textarea class="textbox" readonly style="width: 100%; height: 400px">${text}</textarea></div>`;
+		},
+
+		importar(query, user) {
+			// Página aberta antes do login terminar (link direto, recarga): o cliente pede de novo após logar
+			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
+			if (!isAdmin(user)) this.pageDoesNotExist();
+			this.title = this.TL`Import`;
+			let buf = `<div class="pad"><h2>${this.TL`Import`}</h2>` + navButtons(this.TL);
+			const done = importResults.take(user);
+			if (done) return buf + `<div class="infobox">${done}</div></div>`;
+			const text = pendingImports.get(user);
+			const back = `<p><button class="button" name="gymGo" value="${PAGE}-pacotes">${this.TL`Back to import and export`}</button></p>`;
+			if (!text) return buf + `<p><em>${this.TL`No import in progress.`}</em></p>${back}</div>`;
+			const plan = planImport(getStore(), text);
+			buf += importPreview(this.TL, plan);
+			const cancel = `<button class="button" name="send" value="/ginasioadmin cancelarimportacao">${this.TL`Cancel`}</button>`;
+			if (planHasProblems(plan)) {
+				const note = this.TL`The pack has errors and cannot be imported. Fix them and paste it again.`;
+				return buf + `<p><strong>${note}</strong></p>` +
+					`<p>${cancel}</p></div>`;
+			}
+			if (!canImport(plan)) {
+				return buf + `<p><strong>${this.TL`Everything in the pack already exists. Nothing to import.`}</strong></p>` +
+					`<p>${cancel}</p></div>`;
+			}
+			return buf + `<p><button class="button" name="send" value="/ginasioadmin confirmarimportacao">` +
+				`<strong>${this.TL`Confirm import`}</strong></button> ${cancel}</p></div>`;
+		},
+
 		jornadas(query, user) {
 			// Página aberta antes do login terminar (link direto, recarga): o cliente pede de novo após logar
 			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
@@ -915,36 +1115,23 @@ export const commands: Chat.ChatCommands = {
 			const store = getStore();
 			if (!isNew && !store.getTrainer(id)) throw new Chat.ErrorMessage(this.TL`Trainer not found.`);
 
-			const problems: string[] = [];
 			const name = (rawName || '').trim();
 			const title = (rawTitle || '').trim();
 			const type = (rawType || '').trim() || null;
 			const doubles = (rawDoubles || '').trim() === 'yes';
-			problems.push(...checkName(name).map(p => renderProblem(this.TL, p)));
-			if (title.length > TITLE_MAX_LENGTH || /[|,]/.test(title) || hasForbiddenChars(title)) {
-				problems.push(this.TL`The title can be at most ${TITLE_MAX_LENGTH} characters long and cannot contain | or ,.`);
-			}
-			if (type && !trainerTypes().includes(type)) problems.push(this.TL`Invalid type.`);
-			// Sprite: só na criação (treinadores salvos trocam pela galeria); só ids oficiais
+			// Sprite: só na criação (treinadores salvos trocam pela galeria)
 			const avatar = isNew ? (rawAvatar || '').trim() : '';
-			if (avatar && !isTrainerSprite(avatar)) problems.push(this.TL`Invalid sprite.`);
-
-			const imported = importTeam(rawTeam || '');
-			if ('error' in imported) {
-				problems.push(renderProblem(this.TL, imported.error));
-			} else {
-				// Sempre valida (Pokémon, itens, habilidades e golpes existentes); com tipo, também o tipo
-				problems.push(...checkTeamType(imported.team, type));
-				if (doubles && (Teams.unpack(imported.team) || []).length < 2) {
-					problems.push(this.TL`A doubles trainer needs at least 2 Pokémon in the team.`);
-				}
+			const checked = checkTrainer({ name, title, type, doubles, avatar }, rawTeam || '');
+			const problems = checked.problems.map(p => renderProblem(this.TL, p));
+			const team = checked.team;
+			if (team) {
 				// Desafios abertos precisam continuar válidos com o time novo
 				if (!isNew) {
 					for (const cid of store.challengesUsingTrainer(id)) {
 						const challenge = store.getChallenge(cid);
 						if (challenge?.status !== 'open') continue;
 						const trainers = trainerMap(store);
-						trainers.set(id, { ...trainers.get(id)!, type, team: imported.team });
+						trainers.set(id, { ...trainers.get(id)!, type, team });
 						const issues = challengeProblems(challenge, store.getStages(cid), store.getPool(cid), trainers);
 						for (const issue of issues) {
 							const challengeName = challenge.name;
@@ -955,7 +1142,7 @@ export const commands: Chat.ChatCommands = {
 				}
 			}
 			const page = `treinador-${isNew ? 'novo' : id}`;
-			if (problems.length || 'error' in imported) {
+			if (problems.length || !team) {
 				saveDraft(user, page, {
 					name, title, type: type || '', doubles: doubles ? 'yes' : 'no', avatar, team: normalizeTeamText(rawTeam || ''),
 				});
@@ -964,7 +1151,7 @@ export const commands: Chat.ChatCommands = {
 				return this.parse(`/join ${PAGE}-${page}`);
 			}
 
-			const input: TrainerInput = { name, title, type, team: imported.team, avatar, doubles };
+			const input: TrainerInput = { name, title, type, team, avatar, doubles };
 			let trainer: Trainer | null;
 			if (isNew) {
 				trainer = store.createTrainer(input);
@@ -1045,29 +1232,7 @@ export const commands: Chat.ChatCommands = {
 				values[field] = rest[index] || '';
 			});
 			const input = challengeInput(values);
-			const problems = [...checkChallengeSettings(input)];
-			if (input.baseFormat) {
-				const formatProblem = checkFormat(input);
-				if (formatProblem) problems.push(formatProblem);
-				else if (Dex.formats.get(input.baseFormat).gymChallenge) {
-					problems.push({ message: TLkey`A challenge format cannot be the base of another challenge.`, args: [] });
-				}
-			}
-			if (input.customRules.length > RULES_MAX_LENGTH) {
-				problems.push({ message: TLkey`The extra rules are too long.`, args: [] });
-			}
-			// O nome vira nome de formato na etapa 4: não pode repetir nem com outra grafia
-			if (store.listChallenges().some(c => c.id !== id && toID(c.name) === toID(input.name))) {
-				problems.push({ message: TLkey`There is already a challenge with this name.`, args: [] });
-			}
-			const formatName = challengeFormatName(input.name, Dex.formats.get(input.baseFormat).mod);
-			const existing = Dex.formats.get(formatName);
-			// A variante em dupla (treinadores em dupla) também não pode repetir
-			const existingDoubles = Dex.formats.get(doublesFormatId(formatName));
-			const taken = [existing, existingDoubles].some(format => format.exists && format.gymChallenge !== String(id));
-			if (input.name && taken) {
-				problems.push({ message: TLkey`This name conflicts with an existing format.`, args: [] });
-			}
+			const problems = checkChallengeInput(input, store.listChallenges(), isNew ? null : id);
 
 			let saved: Challenge | null = null;
 			if (!problems.length) {
@@ -1313,6 +1478,70 @@ export const commands: Chat.ChatCommands = {
 			return this.parse(`/join ${PAGE}-seguranca-${type || 'todos'}-${account || 'todos'}-0`);
 		},
 
+		exportarpacote(target, room, user) {
+			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
+			const values = new Map<string, string>();
+			for (const pair of target.split(',')) {
+				const [key, value] = Utils.splitFirst(pair, '=');
+				values.set(key.trim(), value.trim());
+			}
+			const store = getStore();
+			const chosen = (prefix: string, ids: number[]) => (
+				ids.filter(id => values.get(`${prefix}${fieldKey(id)}`) === 'on').join('x') || '0'
+			);
+			const challenges = chosen('c', store.listChallenges().map(c => c.id));
+			const trainers = chosen('t', store.listTrainers().map(t => t.id));
+			return reopenPage(this, user, `${PAGE.slice('view-'.length)}-exportar-${challenges}-${trainers}`);
+		},
+
+		previaimportacao(target, room, user, connection) {
+			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
+			const text = target.trim();
+			if (!text) {
+				connection.popup(this.TL`Paste the pack to import.`);
+				return this.parse(`/join ${PAGE}-pacotes`);
+			}
+			// Só na memória até a confirmação (validado de novo ao confirmar)
+			pendingImports.set(user, text);
+			return reopenPage(this, user, `${PAGE.slice('view-'.length)}-importar`);
+		},
+
+		confirmarimportacao(target, room, user, connection) {
+			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
+			const text = pendingImports.get(user);
+			if (!text) throw new Chat.ErrorMessage(this.TL`No import in progress.`);
+			const store = getStore();
+			// O banco pode ter mudado desde a prévia: valida de novo
+			const plan = planImport(store, text);
+			if (!canImport(plan)) {
+				connection.popup(this.TL`The pack can no longer be imported as it was previewed. Review the preview.`);
+				return this.parse(`/join ${PAGE}-importar`);
+			}
+			const result = applyImport(store, plan);
+			pendingImports.take(user);
+			const trainerCount = result.trainers.length;
+			const challengeCount = result.challenges.length;
+			this.globalModlog('GYMIMPORT', null, `${trainerCount} trainers, ${challengeCount} challenges`);
+			let html = `<p><strong>${this.TL`Pack imported: ${trainerCount} trainer(s) and ${challengeCount} challenge(s).`}</strong></p>`;
+			if (result.challenges.length) {
+				html += `<p>${this.TL`The challenges are drafts: review them and open them in the panel.`}</p><p>` +
+					result.challenges.map(challenge => (
+						`<button class="button" name="gymGo" value="${PAGE}-desafio-${challenge.id}">` +
+						`${Utils.escapeHTML(challenge.name)}</button>`
+					)).join(' ') + `</p>`;
+			}
+			html += `<p><button class="button" name="gymGo" value="${PAGE}-treinadores">${this.TL`Trainers`}</button></p>`;
+			importResults.set(user, html);
+			this.sendReply(this.TL`Pack imported.`);
+			return this.parse(`/join ${PAGE}-importar`);
+		},
+
+		cancelarimportacao(target, room, user) {
+			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
+			pendingImports.take(user);
+			return reopenPage(this, user, `${PAGE.slice('view-'.length)}-pacotes`);
+		},
+
 		apagardesafio(target, room, user, connection) {
 			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
 			const id = Number(target);
@@ -1333,4 +1562,6 @@ export const commands: Chat.ChatCommands = {
 export function start() {
 	// O time chega numa textarea (várias linhas) no último parâmetro
 	Chat.multiLinePattern.register('/(ginasioadmin|gymadmin) salvartreinador ');
+	// O pacote JSON também (importação)
+	Chat.multiLinePattern.register('/(ginasioadmin|gymadmin) previaimportacao ');
 }

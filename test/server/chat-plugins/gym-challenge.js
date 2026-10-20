@@ -1135,4 +1135,144 @@ describe('Gym Challenge', () => {
 			assert.deepEqual(npcErrors, [], 'o NPC não responde aos pedidos antigos da reprodução');
 		});
 	});
+	describe('packs', () => {
+		// trainer-sprites.ts usa os globais do PS, que só existem depois de test/main.js
+		let transfer;
+		before(() => {
+			transfer = require('../../../dist/server/chat-plugins/gym-challenge/transfer');
+		});
+		const ROCK_TEAM = [
+			'Golem @ Leftovers', 'Ability: Sturdy', 'EVs: 252 HP / 252 Atk / 4 Def', 'Adamant Nature',
+			'- Earthquake', '- Stone Edge',
+		].join('\n');
+		const basePack = () => ({
+			type: transfer.PACK_TYPE, version: 1,
+			trainers: [
+				{ name: 'Brock', title: 'Gym Leader', type: 'Rock', sprite: 'brock-gen3', team: ROCK_TEAM },
+				{ name: 'Blue', title: 'Champion', type: null, doubles: true, team: FIRE_TEAM },
+			],
+			challenges: [{
+				name: 'Liga Teste', gymCount: 1,
+				stages: [
+					{ kind: 'gym', position: 1, trainer: 'Brock', badge: 'kanto-boulder' },
+					{ kind: 'champion', position: 1, trainer: 'Blue', aiLevel: 'hard' },
+				],
+			}],
+		});
+		const plan = (store, pack) => transfer.planImport(store, typeof pack === 'string' ? pack : JSON.stringify(pack));
+		/** Todos os problemas do plano, como texto (mensagem com os valores). */
+		const problemsOf = result => [
+			...result.problems, ...result.trainers.flatMap(t => t.problems), ...result.challenges.flatMap(c => c.problems),
+		].map(p => p.message.replace(/\{(\d+)\}/g, (m, i) => String(p.args[i])));
+
+		let store;
+		beforeEach(() => {
+			store = new GymStore(':memory:');
+		});
+		afterEach(() => store.close());
+
+		it('imports trainers and challenges, the challenges as drafts', () => {
+			const result = plan(store, basePack());
+			assert.deepEqual(problemsOf(result), []);
+			assert(transfer.canImport(result));
+			assert.deepEqual(result.challenges[0].notReady, [], 'o desafio já pode ser aberto');
+			transfer.applyImport(store, result);
+			const trainers = store.listTrainers();
+			assert.deepEqual(trainers.map(t => t.name), ['Blue', 'Brock']);
+			const brock = trainers.find(t => t.name === 'Brock');
+			const blue = trainers.find(t => t.name === 'Blue');
+			assert.equal(brock.avatar, 'brock-gen3');
+			assert.equal(blue.doubles, true);
+			const [challenge] = store.listChallenges();
+			assert.equal(challenge.status, 'draft');
+			assert.equal(challenge.baseFormat, challenges.DEFAULT_CHALLENGE.baseFormat, 'campos ausentes usam o padrão');
+			assert.deepEqual(store.getStages(challenge.id), [
+				{ kind: 'gym', position: 1, trainerId: brock.id, aiLevel: null, badgeId: 'kanto-boulder' },
+				{ kind: 'champion', position: 1, trainerId: blue.id, aiLevel: 'hard', badgeId: null },
+			]);
+		});
+
+		it('exports what it imports', () => {
+			transfer.applyImport(store, plan(store, basePack()));
+			const [challenge] = store.listChallenges();
+			const exported = transfer.exportPack(store, [challenge.id], []);
+			assert.deepEqual(exported.pack.trainers.map(t => t.name), ['Blue', 'Brock'], 'leva os treinadores do desafio');
+			const other = new GymStore(':memory:');
+			try {
+				transfer.applyImport(other, plan(other, exported.pack));
+				const summary = s => s.listTrainers().map(t => [t.name, t.title, t.type, t.team, t.avatar, t.doubles]);
+				assert.deepEqual(summary(other), summary(store));
+				const [copy] = other.listChallenges();
+				assert.deepEqual({ ...copy, id: 0, createdAt: 0 }, { ...challenge, id: 0, createdAt: 0 });
+				const stages = (s, id) => s.getStages(id).map(stage => [stage.kind, stage.aiLevel, stage.badgeId]);
+				assert.deepEqual(stages(other, copy.id), stages(store, challenge.id));
+			} finally {
+				other.close();
+			}
+		});
+
+		it('skips trainers and challenges that already exist', () => {
+			const brock = store.createTrainer(trainerInput('BROCK', 'Rock', teams.importTeam(ROCK_TEAM).team));
+			const result = plan(store, basePack());
+			assert.deepEqual(result.trainers.map(t => t.action), ['skip', 'create']);
+			assert.deepEqual(result.trainers[0].existing.map(t => t.id), [brock.id], 'a prévia mostra o do banco');
+			transfer.applyImport(store, result);
+			const [challenge] = store.listChallenges();
+			assert.equal(store.getStages(challenge.id)[0].trainerId, brock.id, 'usa o treinador do banco');
+			assert.equal(store.getTrainer(brock.id).name, 'BROCK', 'não altera o treinador do banco');
+
+			const again = plan(store, basePack());
+			assert.deepEqual(again.trainers.map(t => t.action), ['skip', 'skip']);
+			assert.deepEqual(again.challenges.map(c => c.action), ['skip']);
+			assert(!transfer.canImport(again), 'nada a importar');
+		});
+
+		it('refuses invalid packs as a whole', () => {
+			assert.match(problemsOf(plan(store, '{ not json'))[0], /not valid JSON/);
+			assert.deepEqual(problemsOf(plan(store, { ...basePack(), type: 'other' })), ['This is not a Gym Challenge pack.']);
+			assert.deepEqual(problemsOf(plan(store, { ...basePack(), version: 2 })), ['Unsupported pack version: 2.']);
+
+			const wrongType = basePack();
+			wrongType.trainers[0].type = 'Water';
+			const wrongTypeProblems = problemsOf(plan(store, wrongType));
+			assert(wrongTypeProblems.some(p => p.startsWith('Team of Brock:')), 'time fora do tipo');
+			assert(wrongTypeProblems.includes('gym 1: trainer Brock has errors in the pack.'));
+
+			const broken = basePack();
+			broken.trainers[0].sprite = 'nope';
+			broken.challenges[0].stages.push(
+				{ kind: 'gym', position: 2, trainer: 'Brock' },
+				{ kind: 'elite4', position: 1, trainer: 'Misty' }
+			);
+			broken.challenges[0].stages[1].badge = 'kanto-boulder';
+			broken.challenges[0].stages[0].aiLevel = 'expert';
+			broken.challenges[0].gymCount = '1';
+			const result = plan(store, broken);
+			assert(transfer.planHasProblems(result));
+			assert(!transfer.canImport(result));
+			assert.deepEqual(problemsOf(result), [
+				'Invalid sprite.',
+				'Invalid value in "challenges[0].gymCount".',
+			], 'campo de tipo errado: as etapas nem são lidas');
+			broken.challenges[0].gymCount = 1;
+			assert.deepEqual(problemsOf(plan(store, broken)).slice(1), [
+				'gym 1: invalid difficulty.',
+				'gym 1: trainer Brock has errors in the pack.',
+				'champion 1: only gyms give badges.',
+				'Stage gym 2 does not exist with this challenge configuration.',
+				'Stage elite4 1 does not exist with this challenge configuration.',
+			]);
+
+			const missing = basePack();
+			missing.trainers.pop();
+			assert(problemsOf(plan(store, missing)).includes('champion 1: trainer Blue is not in the pack or in the bank.'));
+			assert.equal(store.listTrainers().length, 0, 'nada foi gravado');
+		});
+
+		it('refuses to export two trainers with the same name', () => {
+			const a = store.createTrainer(trainerInput('Brock', 'Rock'));
+			const b = store.createTrainer(trainerInput('brock', 'Rock'));
+			assert('error' in transfer.exportPack(store, [], [a.id, b.id]));
+		});
+	});
 });

@@ -8,8 +8,9 @@
  */
 import { TLkey } from '../../../sim/dex-text';
 import type { Challenge, ChallengeInput, PoolEntry, Stage, Trainer } from './store';
-import { checkReadyToOpen, ELITE4_SIZE, type Problem } from './rules';
+import { checkChallengeSettings, checkReadyToOpen, ELITE4_SIZE, RULES_MAX_LENGTH, type Problem } from './rules';
 import { checkFormat, validateTeam } from './teams';
+import { challengeFormatName, doublesFormatId } from './formats';
 
 /**
  * Valores iniciais de um desafio novo. O formato padrão é o definido pelo
@@ -32,6 +33,38 @@ export const DEFAULT_CHALLENGE: ChallengeInput = {
 	eliminateOnElite4Loss: false,
 	eliminateOnChampionLoss: false,
 };
+
+/**
+ * Validação dos campos de um desafio a salvar (formulário ou importação): regras,
+ * formato base, nome repetido e conflito com formatos existentes. `id` é o do
+ * desafio editado (null = desafio novo); `existing`, os desafios já cadastrados.
+ */
+export function checkChallengeInput(input: ChallengeInput, existing: Challenge[], id: number | null): Problem[] {
+	const problems = [...checkChallengeSettings(input)];
+	if (input.baseFormat) {
+		const formatProblem = checkFormat(input);
+		if (formatProblem) problems.push(formatProblem);
+		else if (Dex.formats.get(input.baseFormat).gymChallenge) {
+			problems.push({ message: TLkey`A challenge format cannot be the base of another challenge.`, args: [] });
+		}
+	}
+	if (input.customRules.length > RULES_MAX_LENGTH) {
+		problems.push({ message: TLkey`The extra rules are too long.`, args: [] });
+	}
+	// O nome vira nome de formato: não pode repetir nem com outra grafia
+	if (existing.some(c => c.id !== id && toID(c.name) === toID(input.name))) {
+		problems.push({ message: TLkey`There is already a challenge with this name.`, args: [] });
+	}
+	const formatName = challengeFormatName(input.name, Dex.formats.get(input.baseFormat).mod);
+	const existingFormat = Dex.formats.get(formatName);
+	// A variante em dupla (treinadores em dupla) também não pode repetir
+	const existingDoubles = Dex.formats.get(doublesFormatId(formatName));
+	const taken = [existingFormat, existingDoubles].some(format => format.exists && format.gymChallenge !== String(id));
+	if (input.name && taken) {
+		problems.push({ message: TLkey`This name conflicts with an existing format.`, args: [] });
+	}
+	return problems;
+}
 
 /** Etapas que valem com a configuração atual (as demais ficam fora da validação). */
 export function activeStages(challenge: ChallengeInput, stages: Stage[]): Stage[] {

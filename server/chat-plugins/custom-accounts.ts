@@ -4,6 +4,7 @@
  * - /convite [nome]      (admin) gera um código de convite de uso único
  * - /redefinirsenha nome (admin) gera um código para o jogador redefinir a senha
  * - /conta               link para a página da conta (trocar senha, excluir conta)
+ * - /renomearconta antigo, Novo Nome  (admin) troca o nome de uma conta, com os dados de jogo
  * - API usada também pelas páginas de convites e de segurança do painel admin
  *   (gym-challenge/admin.ts)
  * - exclusão dos dados de jogo de contas excluídas no login (ladder, ranks, forfeit nas
@@ -114,6 +115,55 @@ async function removeFromLadders(userid: ID) {
 		if (rows.length) await ladder.save();
 		else await FS(`config/ladders/${file}`).unlinkIfExists();
 	}
+}
+
+/** Passa as linhas do usuário nas ladders locais para o identificador e o nome novos. */
+async function renameInLadders(oldid: ID, newid: ID, username: string) {
+	const files = await FS('config/ladders').readdirIfExists();
+	for (const file of files) {
+		if (!file.endsWith('.tsv')) continue;
+		const ladder = new LadderStore(file.slice(0, -4));
+		const rows = await ladder.getLadder();
+		const index = ladder.indexOfUser(oldid);
+		if (index < 0) continue;
+		rows[index][0] = newid;
+		rows[index][2] = username;
+		await ladder.save();
+	}
+}
+
+// --- Troca de nome pelo admin --------------------------------------------------
+// O login troca o identificador da conta (a senha fica); aqui os dados de jogo passam
+// para o identificador novo. O modlog e a trilha de segurança ficam com o antigo (são
+// histórico; a trilha registra a troca).
+
+/**
+ * Verificações dos outros plugins: devolvem true se o usuário tem algo que impede a
+ * troca (ex.: batalha do Desafio de Ginásios salva, que guarda o nome antigo).
+ */
+export const accountRenameBlockers: ((userid: ID) => boolean)[] = [];
+
+function hasBattleInProgress(userid: ID) {
+	for (const room of Rooms.rooms.values()) {
+		if (room.battle && !room.battle.ended && room.battle.playerTable[userid]) return true;
+	}
+	return accountRenameBlockers.some(blocked => blocked(userid));
+}
+
+async function renameGameData(oldid: ID, newid: ID, username: string) {
+	if (Users.globalAuth.has(oldid)) {
+		const group = Users.globalAuth.get(oldid);
+		Users.globalAuth.set(newid, group, username);
+		Users.globalAuth.delete(oldid);
+	}
+	for (const room of Rooms.rooms.values()) {
+		if (!room.auth.has(oldid)) continue;
+		room.auth.set(newid, room.auth.getDirect(oldid));
+		room.auth.delete(oldid);
+	}
+	await renameInLadders(oldid, newid, username);
+	// Dados dos outros plugins (ex.: jornadas e conquistas do Desafio de Ginásios)
+	Chat.runHandlers('onAccountRename', oldid, newid);
 }
 
 // --- Logs de batalha: retenção de 30 dias e exclusão com a conta -------------
@@ -380,6 +430,42 @@ export const commands: Chat.ChatCommands = {
 	},
 	redefinirsenhahelp: [
 		`/redefinirsenha [nome] - Gera um código de uso único (válido por 24h) para o jogador redefinir a senha. Requer: ~`,
+	],
+
+	renameaccount: 'renomearconta',
+	async renomearconta(target, room, user) {
+		if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can rename accounts.`);
+		const [rawOld, rawNew] = Utils.splitFirst(target, ',').map(part => part.trim());
+		const oldid = toID(rawOld);
+		if (!oldid || !toID(rawNew)) return this.parse('/help renomearconta');
+		if (hasBattleInProgress(oldid)) {
+			throw new Chat.ErrorMessage(this.TL`This account has a battle in progress or saved. Try again when it ends.`);
+		}
+		const reply = await callLoginServer('/internal/rename', {
+			userid: oldid, username: rawNew, actor: user.id, lang: loginLang(user),
+		});
+		if (!reply.ok || !reply.userid || !reply.username) {
+			throw new Chat.ErrorMessage(reply.error || this.TL`Could not rename the account.`);
+		}
+		const newid = reply.userid as ID;
+		const username = reply.username;
+		if (newid !== oldid) {
+			await renameGameData(oldid, newid, username);
+			// Quem está conectado com o nome antigo entra de novo com o novo (a senha é a mesma)
+			const current = Users.getExact(oldid);
+			if (current?.named) {
+				const TL = Chat.getTranslator(current.language);
+				current.popup(TL`An administrator changed your account name to ${username}. Log in again with the new name; your password is the same.`);
+				current.resetName();
+			}
+		}
+		const previous = oldid;
+		this.sendReply(this.TL`Account ${previous} renamed to ${username}.`);
+		// LGPD: o modlog fica depois da exclusão da conta; não guarda o nome de jogadores
+		this.globalModlog('ACCOUNTRENAME', null, newid === oldid ? 'display name' : 'new id');
+	},
+	renomearcontahelp: [
+		`/renomearconta [nome atual], [nome novo] - Troca o nome de uma conta. A senha continua a mesma; o jogador entra de novo com o nome novo. Jornadas, conquistas, ranking e cargos passam para o nome novo. Requer: ~`,
 	],
 
 	account: 'conta',

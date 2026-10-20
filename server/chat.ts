@@ -97,6 +97,8 @@ interface Handlers {
 	onSearchOverride: (user: User, connection: Connection, format: ID) => boolean;
 	/** pokemon-showdown-custom: conta excluída no login server; apague os dados do usuário */
 	onAccountPurge: (userid: ID) => void;
+	/** pokemon-showdown-custom: conta renomeada pelo admin; passe os dados para o id novo */
+	onAccountRename: (oldid: ID, newid: ID) => void;
 	onBattleRanked: (
 		battle: Rooms.RoomBattle, winner: ID, ratings: (LadderRating | null)[], players: ID[]
 	) => void;

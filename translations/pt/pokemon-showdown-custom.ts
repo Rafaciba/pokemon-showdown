@@ -333,4 +333,11 @@ export const translations: TranslationCatalog = {
 	"By": "Por",
 	"Where": "Onde",
 	"Older events": "Eventos mais antigos",
+	"Only administrators can rename accounts.": "Só administradores podem renomear contas.",
+	"This account has a battle in progress or saved. Try again when it ends.": "Essa conta tem uma batalha em andamento ou salva. Tente de novo quando ela terminar.",
+	"Could not rename the account.": "Não foi possível renomear a conta.",
+	"An administrator changed your account name to {username}. Log in again with the new name; your password is the same.": "Um administrador trocou o nome da sua conta para {username}. Entre de novo com o nome novo; a senha é a mesma.",
+	"Account {previous} renamed to {username}.": "Conta {previous} renomeada para {username}.",
+	"Account renamed": "Conta renomeada",
+	"previous name: {previous}": "nome anterior: {previous}",
 };

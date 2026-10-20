@@ -602,6 +602,11 @@ export class GymStore {
 		return Number(this.db.prepare('DELETE FROM runs WHERE userid = ?').run(userid).changes);
 	}
 
+	/** Conta renomeada: as jornadas (e, por elas, as conquistas) passam para o id novo. */
+	renameUser(oldid: string, newid: string): number {
+		return Number(this.db.prepare('UPDATE runs SET userid = ? WHERE userid = ?').run(newid, oldid).changes);
+	}
+
 	setRunStatus(id: number, status: RunStatus) {
 		this.db.prepare(`UPDATE runs SET status = ?, ended_at = ? WHERE id = ?`)
 			.run(status, status === 'active' ? null : now(), id);

@@ -333,4 +333,11 @@ export const translations: TranslationCatalog = {
 	"By": null,
 	"Where": null,
 	"Older events": null,
+	"Only administrators can rename accounts.": null,
+	"This account has a battle in progress or saved. Try again when it ends.": null,
+	"Could not rename the account.": null,
+	"An administrator changed your account name to {username}. Log in again with the new name; your password is the same.": null,
+	"Account {previous} renamed to {username}.": null,
+	"Account renamed": null,
+	"previous name: {previous}": null,
 };

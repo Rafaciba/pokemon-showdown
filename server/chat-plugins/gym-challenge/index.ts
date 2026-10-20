@@ -17,6 +17,10 @@
 import { resumeSavedBattles, startStageBattle } from './runs';
 import { getStore } from './state';
 import { renderProblem } from './admin';
+import { accountRenameBlockers } from '../custom-accounts';
+
+// Batalha salva (suspensa) guarda o nome do jogador: a troca de nome espera ela acabar
+accountRenameBlockers.push(userid => getStore().listSavedBattles(userid).length > 0);
 
 function gymChallengeId(formatid: string) {
 	const format = Dex.formats.get(formatid);
@@ -55,5 +59,8 @@ export const handlers: Chat.Handlers = {
 	onAccountPurge(userid) {
 		// Conta excluída: jornadas, batalhas e conquistas (que vêm das jornadas vencidas)
 		getStore().deleteUserData(userid);
+	},
+	onAccountRename(oldid, newid) {
+		getStore().renameUser(oldid, newid);
 	},
 };

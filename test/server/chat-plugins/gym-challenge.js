@@ -610,6 +610,16 @@ describe('Gym Challenge', () => {
 				assert.deepEqual(store.getRunBattles(run.id).map(b => b.result), ['win', null]);
 			});
 
+			it('moves the journeys of a renamed account', () => {
+				const c = store.createChallenge(challengeInput());
+				store.createRun(c.id, 'jos', []);
+				store.createRun(c.id, 'other', []);
+				assert.equal(store.renameUser('jos', 'jose'), 1);
+				assert.equal(store.listUserRuns('jos').length, 0);
+				assert.equal(store.listUserRuns('jose').length, 1);
+				assert.equal(store.listUserRuns('other').length, 1);
+			});
+
 			it('keeps the player species only for wins', () => {
 				const c = store.createChallenge(challengeInput());
 				const run = store.createRun(c.id, 'ash', []);

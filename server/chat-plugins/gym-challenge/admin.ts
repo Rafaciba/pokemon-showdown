@@ -104,6 +104,7 @@ function securityEventTypes(TL: Translator): [string, string][] {
 		['resetissued', TL`Reset code issued`],
 		['resetused', TL`Password reset with a code`],
 		['accountdeleted', TL`Account deleted`],
+		['accountrenamed', TL`Account renamed`],
 		['inviteissued', TL`Invite issued`],
 		['inviterevoked', TL`Invite revoked`],
 		['csrfrejected', TL`Form from another site refused`],
@@ -113,7 +114,11 @@ function securityEventTypes(TL: Translator): [string, string][] {
 }
 
 /** Onde o evento aconteceu (gravado pelo login) ou o caminho pedido. */
-function securityDetail(TL: Translator, detail: string | null) {
+function securityDetail(TL: Translator, type: string, detail: string | null) {
+	if (type === 'accountrenamed' && detail) {
+		const previous = Utils.escapeHTML(detail);
+		return TL`previous name: ${previous}`;
+	}
 	switch (detail) {
 	case null: return '';
 	case 'login': return TL`login`;
@@ -841,7 +846,7 @@ export const pages: Chat.PageTable = {
 					`<td>${account ? `<button class="button" name="gymGo" value="${pageOf(type, account)}">${account}</button>` : ''}</td>` +
 					`<td>${Utils.escapeHTML(event.ip || '')}</td>` +
 					`<td>${Utils.escapeHTML(event.actor || '')}</td>` +
-					`<td>${securityDetail(this.TL, event.detail)}</td></tr>`;
+					`<td>${securityDetail(this.TL, event.type, event.detail)}</td></tr>`;
 			}
 			buf += `</table></div>`;
 			// O login devolve até 100 por vez: "mais antigos" continua do último id

@@ -7,6 +7,7 @@
 
 import { Formats as OfficialFormats } from './formats';
 import { buildChallengeFormats, FORMAT_SECTION } from '../server/chat-plugins/gym-challenge/formats';
+import { buildExpeditionFormats } from '../server/chat-plugins/expedition/formats';
 
 declare module '../sim/dex-formats' {
 	interface Format {
@@ -29,6 +30,11 @@ declare module '../sim/dex-formats' {
 		 * em dupla). Fica fora do menu; só as batalhas da jornada a usam.
 		 */
 		gymDoubles?: boolean;
+		/**
+		 * pokemon-showdown-custom: variação da Expedição (modo roguelike) deste formato.
+		 * Formatos escondidos, usados só pelas batalhas das runs.
+		 */
+		expedition?: string;
 	}
 }
 
@@ -55,4 +61,6 @@ export const Formats: FormatList = markCustom([
 	// Simulações fora do servidor (banco de testes e treino da IA Mestre) não precisam
 	// dos formatos de desafio nem do banco do plugin
 	...(process.env.GYM_CHALLENGE_FORMATS === 'off' ? [] : buildChallengeFormats(officialFormats)),
+	// Expedição: um formato escondido por variação (e a variante em dupla), sem banco: vêm do código
+	...buildExpeditionFormats(officialFormats),
 ]);

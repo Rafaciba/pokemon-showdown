@@ -13,6 +13,7 @@
 import type { Translator } from '../../../sim/dex-text';
 import type { PRNG } from '../../../sim/prng';
 import type { RunMon } from './team';
+import type { AILevel } from '../gym-challenge/levels';
 
 /** Batalhas jogadas pelo jogador ou automáticas (IA contra IA). */
 export type BattleMode = 'manual' | 'auto';
@@ -49,16 +50,62 @@ export interface MapSettings {
 	minFloor: Record<string, number>;
 	/** Tipos que não se repetem em seguida no mesmo caminho. */
 	noRepeat: string[];
+	/**
+	 * Tipos que só aparecem a partir do segundo ato; numa expedição de um ato só, na
+	 * metade final do ato (decisão do usuário para o nó de lendário).
+	 */
+	lateTypes?: string[];
+	/** Máximo de nós de um tipo em cada ato. */
+	maxPerAct?: Record<string, number>;
 	/** Tipo do nó do chefe, no fim de cada ato. */
 	bossType: string;
+}
+
+/**
+ * Formato das batalhas: formato base e regras na sintaxe do PS. Padrão (decisão do
+ * usuário): o do Desafio de Ginásios, individual, Pokédex completa da gen 9, com
+ * Megaevolução e sem Tera, Z-moves e Dynamax. Variações futuras podem usar formatos
+ * temáticos de uma geração ou liberar Tera e Dynamax.
+ */
+export interface FormatSpec {
+	base: string;
+	rules: string;
+}
+
+export const DEFAULT_FORMAT: FormatSpec = {
+	base: 'gen9nationaldexag', rules: 'Standard NatDex, Terastal Clause, Z-Move Clause, Dynamax Clause',
+};
+
+/** Tipos de encontro com batalha. */
+export type EncounterKind = 'wild' | 'trainer' | 'boss' | 'legendary';
+/**
+ * De onde vêm os adversários (decisão do usuário: as três coexistem, e cada variação
+ * escolhe): sorteados da Pokédex, treinadores do banco do Desafio de Ginásios
+ * (ajustados ao nível do andar) ou listas próprias da variação.
+ */
+export type OpponentSource = 'pokedex' | 'gym' | 'pool';
+
+/** Listas próprias de uma variação (fonte "pool"). */
+export interface VariantPool {
+	/** Espécies básicas para selvagens e treinadores (evoluem pelo nível). */
+	species: string[];
+	/** Treinadores: nome, sprite e espécies básicas do time. */
+	trainers: { name: string, avatar: string, species: string[] }[];
 }
 
 /** Configurações em vigor numa run (as da variação com os ajustes do painel). */
 export interface RunSettings {
 	rules: VariantRules;
 	map: MapSettings;
-	/** Números próprios da variação (dificuldade, níveis...). */
+	/**
+	 * Números próprios da variação. A base usa: startLevel (nível inicial), levelsPerAct
+	 * (níveis da curva por ato, progression.ts) e bossLegendaryChance (% de o chefe ter
+	 * um lendário).
+	 */
 	extra: Record<string, number>;
+	format: FormatSpec;
+	/** Chance de cada fonte, por tipo de encontro. */
+	encounters: Partial<Record<EncounterKind, Partial<Record<OpponentSource, number>>>>;
 }
 
 /**
@@ -82,6 +129,13 @@ export interface ExpeditionVariant {
 	map: MapSettings;
 	extra?: Record<string, number>;
 	tunables: Tunable[];
+	format?: FormatSpec;
+	encounters: Partial<Record<EncounterKind, Partial<Record<OpponentSource, number>>>>;
+	pool?: VariantPool;
+	/** Nível de IA dos adversários por tipo de encontro e progresso da run (0 = início, 1 = fim). */
+	aiLevel(kind: EncounterKind, progress: number): AILevel;
+	/** Batalhas automáticas: IA que joga pelo jogador. */
+	autoAILevel?: AILevel;
 	/** Opções de time inicial de uma run (sorteadas com o gerador da run). */
 	starterOptions(prng: PRNG, settings: RunSettings): RunMon[][];
 }
@@ -124,8 +178,11 @@ export function resolveSettings(variant: ExpeditionVariant, overrides: Record<st
 		map: {
 			...variant.map, weights: { ...variant.map.weights }, fixedFloors: { ...variant.map.fixedFloors },
 			minFloor: { ...variant.map.minFloor }, noRepeat: [...variant.map.noRepeat],
+			lateTypes: [...variant.map.lateTypes || []], maxPerAct: { ...variant.map.maxPerAct },
 		},
-		extra: { ...variant.extra },
+		extra: { startLevel: 5, levelsPerAct: 30, bossLegendaryChance: 0, ...variant.extra },
+		format: { ...(variant.format || DEFAULT_FORMAT) },
+		encounters: JSON.parse(JSON.stringify(variant.encounters)),
 	};
 	for (const tunable of variant.tunables) {
 		const raw = overrides[tunable.key];

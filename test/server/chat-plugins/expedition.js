@@ -7,7 +7,7 @@
 const assert = require('assert').strict;
 
 describe('Expedition', () => {
-	let random, mapModule, team, variant, store, state, runs;
+	let random, mapModule, team, variant, store, state, runs, battles, progression, species;
 	before(() => {
 		random = require('../../../dist/server/chat-plugins/expedition/random');
 		mapModule = require('../../../dist/server/chat-plugins/expedition/map');
@@ -16,6 +16,9 @@ describe('Expedition', () => {
 		store = require('../../../dist/server/chat-plugins/expedition/store');
 		state = require('../../../dist/server/chat-plugins/expedition/state');
 		runs = require('../../../dist/server/chat-plugins/expedition/runs');
+		battles = require('../../../dist/server/chat-plugins/expedition/battles');
+		progression = require('../../../dist/server/chat-plugins/expedition/progression');
+		species = require('../../../dist/server/chat-plugins/expedition/species');
 	});
 
 	const MAP = {
@@ -79,6 +82,18 @@ describe('Expedition', () => {
 			}
 		});
 
+		it('keeps late types for the second act on, or the second half of a single act, at most once per act', () => {
+			const late = { ...MAP, weights: { ...MAP.weights, legendary: 60 }, lateTypes: ['legendary'], maxPerAct: { legendary: 1 } };
+			for (let i = 0; i < 30; i++) {
+				assert(!mapModule.generateAct(`late${i}`, 1, late).nodes.some(node => node.type === 'legendary'), 'ato 1 de 2');
+				assert(mapModule.generateAct(`late${i}`, 2, late).nodes.filter(node => node.type === 'legendary').length <= 1);
+				const single = mapModule.generateAct(`late${i}`, 1, { ...late, acts: 1 });
+				const legendaries = single.nodes.filter(node => node.type === 'legendary');
+				assert(legendaries.length <= 1);
+				assert(legendaries.every(node => node.floor >= MAP.floors / 2), 'metade final do ato');
+			}
+		});
+
 		it('lists the reachable nodes: the first floor at the start, then the connected ones', () => {
 			const map = mapModule.generateAct('reach', 1, MAP);
 			const first = mapModule.reachableNodes(map, null);
@@ -134,6 +149,73 @@ describe('Expedition', () => {
 		});
 	});
 
+	describe('progression', () => {
+		it('picks the stage by level, with special evolutions at their own level for NPCs', () => {
+			const prng = random.seededRandom('stage', 'test');
+			assert.equal(species.evolveForLevel(prng, 'Abra', 15), 'Abra');
+			assert.equal(species.evolveForLevel(prng, 'Abra', 16), 'Kadabra');
+			assert.equal(species.evolveForLevel(prng, 'Abra', 31), 'Kadabra', 'troca: 16 + 16 = 32');
+			assert.equal(species.evolveForLevel(prng, 'Abra', 32), 'Alakazam');
+			assert.equal(species.evolveForLevel(prng, 'Eevee', 29), 'Eevee', 'mínimo de 30');
+			assert.notEqual(species.evolveForLevel(prng, 'Eevee', 30), 'Eevee');
+			assert.equal(species.evolveForLevel(prng, 'Pichu', 45), 'Pikachu', 'amizade no 30, pedra no 30 + 16');
+			assert.equal(species.evolveForLevel(prng, 'Pichu', 46).startsWith('Raichu'), true);
+		});
+
+		it('keeps legendaries apart from the regular pool', () => {
+			assert(species.legendarySpecies().includes('Mewtwo'));
+			assert(!species.basicSpecies().includes('Mewtwo'));
+			assert(species.basicSpecies().includes('Bulbasaur'));
+			assert(!species.basicSpecies().includes('Ivysaur'), 'só espécies básicas');
+			assert(!species.basicSpecies().some(name => name.includes('-Mega') || name.includes('-Gmax')));
+		});
+
+		it('levels the team with experience, learns moves with room and queues the decisions', () => {
+			const prng = random.seededRandom('xp', 'test');
+			const bulba = team.createMon(prng, 'Bulbasaur', 5, 'a');
+			const fainted = { ...team.createMon(prng, 'Squirtle', 5, 'b'), fainted: true, hp: 0 };
+			const { decisions, gains } = progression.gainExperience([bulba, fainted], [{ species: 'Onix', level: 20 }], true, 10);
+			assert.equal(gains.length, 2);
+			assert.equal(gains[0].to, bulba.level);
+			assert(bulba.level > 5, `${bulba.level}`);
+			// Modo padrão: quem desmaiou ganha metade
+			assert.equal(gains[1].exp, Math.floor(gains[0].exp * progression.FAINTED_EXP_SHARE), 'desmaiado ganha metade');
+			assert(fainted.level > 5 && fainted.level < bulba.level, `${fainted.level}`);
+			assert(bulba.moves.length === 4);
+			assert(decisions.every(decision => decision.uid === 'a' || decision.uid === 'b'));
+			if (bulba.level >= 16) assert(decisions.some(decision => decision.kind === 'evolve' && decision.into === 'Ivysaur'));
+			progression.evolveMon(bulba, 'Ivysaur');
+			assert.equal(bulba.species, 'Ivysaur');
+			assert.equal(bulba.ability, 'Overgrow');
+		});
+
+		it('gives a smaller Nuzlocke team a little more experience', () => {
+			assert.equal(progression.nuzlockeBonus(6, 6), 1);
+			assert.equal(progression.nuzlockeBonus(1, 6), 1.5);
+			assert(progression.nuzlockeBonus(3, 6) > 1 && progression.nuzlockeBonus(3, 6) < progression.nuzlockeBonus(2, 6));
+		});
+
+		it('follows the level curve per act and calibrates the experience to it', () => {
+			const { TEST_VARIANT } = require('../../../dist/server/chat-plugins/expedition/variants');
+			const settings = variant.resolveSettings(TEST_VARIANT);
+			const { multiplier, boss } = progression.expRates(settings);
+			assert(multiplier > 0);
+			assert.equal(boss, 1, 'um ato só: o chefe não tem saída');
+			assert.equal(progression.nodeProgress(settings, 1, 0), 0);
+			assert.equal(progression.nodeProgress(settings, 1, settings.map.floors), 1);
+			// 30 níveis por ato: um ato só termina por volta do 35; o terceiro ato, do 95
+			assert.equal(progression.curveLevel(settings, 1, 0), 5);
+			assert.equal(progression.curveLevel(settings, 1, settings.map.floors), 35);
+			assert.equal(progression.curveLevel({ ...settings, map: { ...settings.map, acts: 3 } }, 3, settings.map.floors), 95);
+			assert.equal(progression.curveLevel(settings, 5, settings.map.floors), 100, 'até o 100');
+			const longer = variant.resolveSettings(TEST_VARIANT, { floors: 12 });
+			assert(progression.expRates(longer).multiplier < multiplier, 'mais andares, menos experiência por batalha');
+			const threeActs = { ...settings, map: { ...settings.map, acts: 3 } };
+			const rates = progression.expRates(threeActs);
+			assert(rates.boss > 0 && rates.boss < 1, `peso do chefe ${rates.boss}`);
+		});
+	});
+
 	describe('runs', () => {
 		const { makeUser } = require('../../users-utils');
 		let db, user;
@@ -141,7 +223,9 @@ describe('Expedition', () => {
 			variant.registerVariant({
 				id: 'unitteste', name: () => 'Unit', description: () => 'Unit',
 				rules: { battles: 'manual', progression: 'levels', attrition: 'persist', faint: 'revive', teamSize: 6 },
-				map: { ...MAP, acts: 2, floors: 3 }, tunables: [],
+				map: { ...MAP, acts: 2, floors: 3, weights: { rest: 50, item: 50 }, fixedFloors: {} }, tunables: [],
+				encounters: { wild: { pokedex: 100 }, trainer: { pokedex: 100 }, boss: { pokedex: 100 } },
+				aiLevel: () => 'random',
 				starterOptions: prng => [0, 1, 2].map(i => [team.createMon(prng, 'Bulbasaur', 5, `u${i}`)]),
 			});
 		});
@@ -183,8 +267,20 @@ describe('Expedition', () => {
 						run.team[0].hp = 0.2;
 						run.team[0].fainted = true;
 					}
-					assert.equal(runs.chooseInNode(run, 'nope', TL), 'badchoice');
-					assert.equal(runs.chooseInNode(run, view.view.choices[0].id, TL), null);
+					assert.equal(runs.chooseInNode(run, 'nope', TL, user), 'badchoice');
+					if (node.id === map.boss) {
+						// Batalha: a vitória termina o nó (sem sala: o resultado é aplicado direto)
+						const battle = db.createBattle(run.id, run.act, node.id, run.team.map(mon => mon.uid));
+						battles.finishExpeditionBattle(battle.id, 'win', [{ index: 0, hp: 0.5, ppUsed: [1], fainted: false }]);
+						Object.assign(run, db.getRun(run.id));
+						for (let guard = 0; guard < 200 && run.decisions.length; guard++) {
+							if (run.decisions[0].kind === 'learn') runs.decideLearn(run, null);
+							else runs.decideEvolve(run, null);
+						}
+						current = node.id;
+						break;
+					}
+					assert.equal(runs.chooseInNode(run, view.view.choices[0].id, TL, user), null);
 					if (node.type === 'rest') assert.deepEqual([run.team[0].hp, run.team[0].fainted], [1, false], 'o descanso cura');
 					current = node.id;
 					if (node.id === map.boss) break;
@@ -199,11 +295,140 @@ describe('Expedition', () => {
 			assert.equal(typeof runs.startRun(user, 'unitteste'), 'object', 'depois de terminar, pode começar outra');
 		});
 
+		it('generates the same encounter for a node, following the variant rules', () => {
+			const { TEST_VARIANT } = require('../../../dist/server/chat-plugins/expedition/variants');
+			const encounters = require('../../../dist/server/chat-plugins/expedition/encounters');
+			const run = { seed: 'enc', act: 1, settings: variant.resolveSettings(TEST_VARIANT) };
+			const at = (type, floor) => ({ id: `${floor}-0`, floor, col: 0, type, next: [] });
+			const wild = encounters.generateEncounter(run, TEST_VARIANT, at('wild', 0));
+			assert.deepEqual(encounters.generateEncounter(run, TEST_VARIANT, at('wild', 0)), wild);
+			assert.equal(wild.team.length, 1);
+			assert.equal(wild.aiLevel, 'random');
+			assert(wild.team[0].level <= 6);
+			const boss = encounters.generateEncounter(run, TEST_VARIANT, { ...at('boss', 6), id: 'boss' });
+			assert.equal(boss.team.length >= 1, true);
+			assert.equal(boss.aiLevel, 'master', 'chefe no fim da run');
+			assert(boss.trainer);
+			for (let i = 0; i < 30; i++) {
+				const trainer = encounters.generateEncounter({ ...run, seed: `t${i}` }, TEST_VARIANT, at('trainer', 3));
+				assert(trainer.team.length >= 1 && trainer.team.length <= 5);
+				assert(!trainer.team.some(mon => species.isLegendary(Dex.species.get(mon.species))), 'treinador sem lendários');
+			}
+			const legendary = encounters.generateEncounter(run, TEST_VARIANT, at('legendary', 3));
+			assert(species.isLegendary(Dex.species.get(legendary.team[0].species)) ||
+				species.legendarySpecies().includes(Dex.species.get(legendary.team[0].species).baseSpecies));
+			assert(Teams.unpack(boss.packed).length === boss.team.length);
+		});
+
+		it('ends the run on a defeat, and applies the battle state on a win', () => {
+			const run = runs.startRun(user, 'unitteste');
+			runs.chooseStarter(run, 0);
+			run.node = '0-0';
+			db.saveRun(run);
+			const battle = db.createBattle(run.id, run.act, '0-0', [run.team[0].uid]);
+			battles.finishExpeditionBattle(battle.id, 'loss', [{ index: 0, hp: 0, ppUsed: [3], fainted: true }]);
+			const lost = db.getRun(run.id);
+			assert.equal(lost.status, 'lost');
+			assert.equal(lost.team[0].fainted, true);
+			assert.equal(lost.lastBattle.result, 'loss', 'resumo da derrota');
+			assert.equal(db.getBattle(battle.id).result, 'loss');
+			battles.finishExpeditionBattle(battle.id, 'win');
+			assert.equal(db.getRun(run.id).status, 'lost', 'o resultado só conta uma vez');
+		});
+
+		it('resolves move and evolution decisions', () => {
+			const run = runs.startRun(user, 'unitteste');
+			runs.chooseStarter(run, 0);
+			const mon = run.team[0];
+			mon.moves = ['tackle', 'growl', 'vinewhip', 'leechseed'];
+			run.decisions = [{ kind: 'learn', uid: mon.uid, move: 'razorleaf' }, { kind: 'evolve', uid: mon.uid, into: 'Ivysaur' }];
+			db.saveRun(run);
+			assert.equal(runs.runPhase(run), 'decision');
+			assert.equal(runs.enterNode(run, '0-0'), 'decisions', 'o mapa espera as decisões');
+			assert.equal(runs.decideEvolve(run, 'ivysaur'), 'nodecision', 'uma de cada vez');
+			assert.equal(runs.decideLearn(run, 7), 'badchoice');
+			assert.equal(runs.decideLearn(run, 1), null);
+			assert.deepEqual(mon.moves, ['tackle', 'razorleaf', 'vinewhip', 'leechseed']);
+			assert.equal(runs.decideEvolve(run, 'venusaur'), 'badchoice');
+			assert.equal(runs.decideEvolve(run, 'ivysaur'), null);
+			assert.equal(mon.species, 'Ivysaur');
+			assert.equal(runs.runPhase(run), 'map');
+		});
+
+		it('starts a real battle with the team state, and a forfeit ends the run', async function () {
+			this.timeout(30000);
+			const run = runs.startRun(user, 'unitteste');
+			runs.chooseStarter(run, 0);
+			run.team[0].hp = 0.5;
+			run.team[0].ppUsed = run.team[0].moves.map(() => 2);
+			run.node = '0-0';
+			db.saveRun(run);
+			// Os formatos saem das variações carregadas com o servidor: a batalha usa o da variação de teste
+			run.variant = 'teste';
+			// O nó do teste não é de batalha: o encontro vem de um selvagem forçado
+			const encounter = require('../../../dist/server/chat-plugins/expedition/encounters');
+			const original = encounter.generateEncounter;
+			const { TEST_VARIANT } = require('../../../dist/server/chat-plugins/expedition/variants');
+			battles.setEncounterOverride(() => original(run, TEST_VARIANT, { id: '0-0', floor: 0, col: 0, type: 'wild', next: [] }));
+			const room = (() => {
+				assert(battles.startOrResumeBattle(user, run));
+				return Rooms.get(db.getOpenBattle(run).roomid);
+			})();
+			try {
+				const waitFor = async check => {
+					for (let i = 0; i < 800 && !check(); i++) await new Promise(resolve => { setTimeout(resolve, 10); });
+					assert(check(), 'tempo esgotado');
+				};
+				await waitFor(() => room.battle.p1.request.request);
+				const request = JSON.parse(room.battle.p1.request.request);
+				const [current, max] = request.side.pokemon[0].condition.split(' ')[0].split('/').map(Number);
+				assert(Math.abs(current - max * 0.5) <= 1, `HP aplicado: ${current}/${max}`);
+				room.battle.forfeit(user);
+				await waitFor(() => db.getRun(run.id).status !== 'active');
+				const ended = db.getRun(run.id);
+				assert.equal(ended.status, 'lost');
+				// O estado final voltou do simulador (linha privada do formato): HP e PP como entraram
+				assert(Math.abs(ended.team[0].hp - current / max) < 0.001, `HP de volta: ${ended.team[0].hp}`);
+				assert.deepEqual(ended.team[0].ppUsed, run.team[0].moves.map(() => 2));
+			} finally {
+				battles.setEncounterOverride(null);
+				room?.destroy();
+			}
+		});
+
+		it('plays automatic battles to the end, with the computer playing for the player', async function () {
+			this.timeout(60000);
+			const run = runs.startRun(user, 'unitteste');
+			runs.chooseStarter(run, 0);
+			run.node = '0-0';
+			db.saveRun(run);
+			run.variant = 'teste';
+			run.settings.rules.battles = 'auto';
+			const encounter = require('../../../dist/server/chat-plugins/expedition/encounters');
+			const { TEST_VARIANT } = require('../../../dist/server/chat-plugins/expedition/variants');
+			const original = encounter.generateEncounter;
+			battles.setEncounterOverride(() => original(run, TEST_VARIANT, { id: '0-0', floor: 0, col: 0, type: 'wild', next: [] }));
+			let room = null;
+			try {
+				assert(battles.startOrResumeBattle(user, run));
+				const battleId = db.getOpenBattle(run).id;
+				room = Rooms.get(db.getBattle(battleId).roomid);
+				// Nenhuma jogada do usuário: só as IAs
+				for (let i = 0; i < 5000 && !db.getBattle(battleId).result; i++) {
+					await new Promise(resolve => { setTimeout(resolve, 10); });
+				}
+				assert(db.getBattle(battleId).result, 'a batalha automática terminou');
+			} finally {
+				battles.setEncounterOverride(null);
+				room?.destroy();
+			}
+		});
+
 		it('hides test variants from players and gives up runs', () => {
 			assert.equal(runs.startRun(user, 'teste'), 'disabled', 'a variação de teste é só para administradores');
 			assert.equal(runs.startRun(user, 'nope'), 'novariant');
 			const run = runs.startRun(user, 'unitteste');
-			runs.abandonRun(run);
+			runs.abandonRun(user, run);
 			assert.equal(db.getRun(run.id).status, 'abandoned');
 		});
 

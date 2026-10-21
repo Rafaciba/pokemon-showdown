@@ -5,9 +5,10 @@
  * escolha faz com a run. Os tipos ficam numa lista, e cada variação escolhe quais usa
  * (pelos pesos do mapa); variações podem registrar os seus.
  *
- * Os genéricos da base são batalha selvagem, treinador, chefe, descanso e item. Na
- * etapa 1, só o descanso tem efeito: as batalhas chegam na etapa 2, e os itens na 3.
- * Até lá, esses nós só mostram o tipo e seguem em frente.
+ * Os genéricos da base são batalha selvagem, treinador, chefe, lendário (raro),
+ * descanso e item. Os de batalha (`encounter`) mostram o adversário e começam a batalha
+ * (encounters.ts, battles.ts). O item ainda só segue em frente: os itens chegam na
+ * etapa 3.
  *
  * @license MIT
  */
@@ -38,12 +39,14 @@ export interface NodeType {
 	/** Símbolo do nó no mapa. */
 	icon: string;
 	label(TL: Translator): string;
-	view(context: NodeContext): NodeView;
+	/** Nó de batalha: a run mostra o encontro e a escolha começa a batalha (o nó termina com a vitória). */
+	encounter?: boolean;
+	view?(context: NodeContext): NodeView;
 	/**
 	 * Aplica a escolha à run (que é gravada depois). Devolve true se o nó terminou,
 	 * false se continua aberto, ou null se a escolha não existe.
 	 */
-	choose(context: NodeContext, choice: string): boolean | null;
+	choose?(context: NodeContext, choice: string): boolean | null;
 }
 
 const registry = new Map<string, NodeType>();
@@ -68,9 +71,10 @@ function placeholder(id: string, icon: string, label: (TL: Translator) => string
 	};
 }
 
-registerNodeType(placeholder('wild', '\u{1F33F}', TL => TL`Wild Pokémon`));
-registerNodeType(placeholder('trainer', '\u{1F9E2}', TL => TL`Trainer`));
-registerNodeType(placeholder('boss', '\u{1F451}', TL => TL`Boss`));
+registerNodeType({ id: 'wild', icon: '\u{1F33F}', label: TL => TL`Wild Pokémon`, encounter: true });
+registerNodeType({ id: 'trainer', icon: '\u{1F9E2}', label: TL => TL`Trainer`, encounter: true });
+registerNodeType({ id: 'boss', icon: '\u{1F451}', label: TL => TL`Boss`, encounter: true });
+registerNodeType({ id: 'legendary', icon: '\u{2728}', label: TL => TL`Legendary Pokémon`, encounter: true });
 registerNodeType(placeholder('item', '\u{1F381}', TL => TL`Item`));
 
 registerNodeType({

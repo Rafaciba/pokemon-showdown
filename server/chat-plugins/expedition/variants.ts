@@ -7,7 +7,13 @@
  *   - batalhas jogadas pelo jogador, níveis que sobem;
  *   - HP e PP continuam entre as batalhas, e o desmaiado fica no time até um descanso;
  *   - o jogador escolhe um entre três times de três iniciais dos jogos, no nível 5,
- *     com os golpes do nível.
+ *     com os golpes do nível;
+ *   - adversários das três fontes (Pokédex, banco do Desafio e a lista abaixo), um nó
+ *     bem raro de lendário (no máximo um, na metade final do ato) e, às vezes, um
+ *     lendário no chefe;
+ *   - IA: selvagem Aleatório e depois Fácil; treinador do Fácil ao Difícil; chefe
+ *     Difícil e Mestre nos três quartos finais da run (o lendário usa a Difícil);
+ *   - 30 níveis por ato: com um ato só, o time chega ao chefe por volta do nível 35.
  *
  * @license MIT
  */
@@ -26,11 +32,15 @@ export const TEST_VARIANT: ExpeditionVariant = {
 	rules: { battles: 'manual', progression: 'levels', attrition: 'persist', faint: 'revive', teamSize: 6 },
 	map: {
 		acts: 1, floors: 6, columns: 5, paths: 4,
-		weights: { wild: 45, trainer: 30, item: 15, rest: 10 },
+		weights: { wild: 45, trainer: 30, item: 15, rest: 10, legendary: 2 },
 		// O primeiro andar é sempre selvagem, e o último antes do chefe, sempre descanso
 		fixedFloors: { 0: 'wild', [-1]: 'rest' },
 		minFloor: { rest: 2, item: 1 },
-		noRepeat: ['rest', 'item'],
+		noRepeat: ['rest', 'item', 'legendary'],
+		// Lendário bem raro (decisão do usuário): no máximo um por ato e, com um ato só, na
+		// metade final dele
+		lateTypes: ['legendary'],
+		maxPerAct: { legendary: 1 },
 		bossType: 'boss',
 	},
 	tunables: [
@@ -41,7 +51,34 @@ export const TEST_VARIANT: ExpeditionVariant = {
 		{ key: 'weight:trainer', min: 0, max: 100 },
 		{ key: 'weight:item', min: 0, max: 100 },
 		{ key: 'weight:rest', min: 0, max: 100 },
+		{ key: 'weight:legendary', min: 0, max: 100 },
+		{ key: 'extra:levelsPerAct', min: 10, max: 50 },
+		{ key: 'extra:bossLegendaryChance', min: 0, max: 100 },
 	],
+	extra: { startLevel: STARTER_LEVEL, levelsPerAct: 30, bossLegendaryChance: 20 },
+	encounters: {
+		wild: { pokedex: 70, pool: 30 },
+		trainer: { pokedex: 50, gym: 25, pool: 25 },
+		boss: { pokedex: 40, gym: 40, pool: 20 },
+		legendary: { pokedex: 100 },
+	},
+	pool: {
+		species: [
+			'Pidgey', 'Rattata', 'Caterpie', 'Weedle', 'Zubat', 'Geodude', 'Oddish', 'Poliwag', 'Machop', 'Abra',
+			'Magikarp', 'Eevee', 'Growlithe', 'Ponyta', 'Gastly', 'Dratini',
+		],
+		trainers: [
+			{ name: 'Bug Catcher Rick', avatar: 'bugcatcher', species: ['Caterpie', 'Weedle', 'Venonat', 'Paras', 'Scyther'] },
+			{ name: 'Hiker Anthony', avatar: 'hiker', species: ['Geodude', 'Onix', 'Machop', 'Diglett', 'Rhyhorn'] },
+			{ name: 'Swimmer Luis', avatar: 'swimmer', species: ['Magikarp', 'Tentacool', 'Staryu', 'Goldeen', 'Horsea'] },
+		],
+	},
+	aiLevel(kind, progress) {
+		if (kind === 'wild') return progress < 0.5 ? 'random' : 'easy';
+		if (kind === 'trainer') return progress < 1 / 3 ? 'easy' : progress < 2 / 3 ? 'medium' : 'hard';
+		if (kind === 'boss') return progress < 0.75 ? 'hard' : 'master';
+		return 'hard';
+	},
 	starterOptions(prng) {
 		// 9 iniciais diferentes, em três times de três
 		const pool = [...GAME_STARTERS];

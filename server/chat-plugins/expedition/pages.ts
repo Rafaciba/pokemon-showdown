@@ -10,7 +10,9 @@
  *   /expedicao iniciar <variação>       começa uma run
  *   /expedicao inicial <variação>,<n>   escolhe o time inicial n (0, 1 ou 2)
  *   /expedicao avancar <variação>,<nó>  vai para um nó ligado ao atual
- *   /expedicao escolha <variação>,<id>  escolha no nó atual
+ *   /expedicao escolha <variação>,<id>  escolha no nó atual ("battle" começa ou retoma a batalha)
+ *   /expedicao aprender <variação>,<n>  golpe novo: esquece o golpe n (0 a 3) ou "nao"
+ *   /expedicao evoluir <variação>,<espécie>  evolui para a espécie, ou "nao" (adia)
  *   /expedicao desistir <variação>      encerra a run (fica no histórico)
  *
  * Só contas registradas jogam.
@@ -24,11 +26,13 @@ import { getVariant, listVariants } from './variant';
 import { getNodeType } from './nodes';
 import { BOSS_NODE, reachableNodes, type ActMap } from './map';
 import {
-	abandonRun, chooseInNode, chooseStarter, currentMap, currentNodeView, enterNode, runPhase, startRun,
-	variantAvailable, visitedNodes, type RunProblem,
+	abandonRun, chooseInNode, chooseStarter, currentMap, currentNodeView, decideEvolve, decideLearn, enterNode, runPhase,
+	startRun, variantAvailable, visitedNodes, type RunProblem,
 } from './runs';
+import { currentEncounter } from './battles';
+import { trainerSpriteImg } from '../gym-challenge/trainer-sprites';
 import type { ExpeditionRun } from './store';
-import type { RunMon } from './team';
+import { expForLevel, MAX_LEVEL, type RunMon } from './team';
 
 const PAGE = 'view-expedicao';
 
@@ -46,20 +50,44 @@ function problemText(TL: Translator, problem: RunProblem) {
 	case 'badchoice': return TL`Invalid choice.`;
 	case 'unreachable': return TL`You can only go to a node connected to where you are.`;
 	case 'nodeopen': return TL`Finish the current node first.`;
+	case 'decisions': return TL`Decide about your Pokémon first.`;
+	case 'nodecision': return TL`There is nothing to decide right now.`;
+	case 'nobattle': return TL`The battle could not be started. Try again in a moment.`;
 	default: return TL`You are not in a node.`;
 	}
 }
 
 // --- Partes das páginas -----------------------------------------------------------------
 
+/** Barra de progresso (fração de 0 a 1), com a cor dada. */
+function bar(fraction: number, color: string, title = '') {
+	const width = Math.round(Math.max(0, Math.min(1, fraction)) * 100);
+	return `<div title="${title}" style="width: 90px; height: 7px; background: rgba(128,128,128,0.3); border-radius: 4px; ` +
+		`overflow: hidden; display: inline-block; vertical-align: middle"><div style="width: ${width}%; height: 100%; ` +
+		`background: ${color}"></div></div>`;
+}
+
+/** Experiência do nível atual até o próximo: barra, com o que falta no título. */
+function expBar(TL: Translator, mon: RunMon) {
+	if (mon.level >= MAX_LEVEL) return bar(1, '#3b8fd6', TL`Maximum level`);
+	const start = expForLevel(mon.level);
+	const toNext = expForLevel(mon.level + 1) - mon.exp;
+	return bar((mon.exp - start) / (expForLevel(mon.level + 1) - start), '#3b8fd6', TL`${toNext} Exp. to the next level`);
+}
+
+function hpBar(mon: RunMon) {
+	const color = mon.hp > 0.5 ? '#4a7' : mon.hp > 0.2 ? '#e8b221' : '#d33';
+	return bar(mon.hp, color);
+}
+
 function monLine(TL: Translator, mon: RunMon) {
 	const species = Utils.escapeHTML(mon.species);
 	const level = mon.level;
 	const hp = Math.round(mon.hp * 100);
 	const moves = mon.moves.map(id => Utils.escapeHTML(Dex.moves.get(id).name)).join(', ');
-	const state = mon.fainted ? `<strong>${TL`Fainted`}</strong>` : TL`HP ${hp}%`;
+	const state = mon.fainted ? `<strong>${TL`Fainted`}</strong>` : `${hpBar(mon)} ${TL`HP ${hp}%`}`;
 	return `<tr><td><psicon pokemon="${species}" title="${species}" /> <strong>${species}</strong></td>` +
-		`<td>${TL`Lv. ${level}`}</td><td>${state}</td><td><small>${moves}</small></td></tr>`;
+		`<td>${TL`Lv. ${level}`}<br />${expBar(TL, mon)}</td><td>${state}</td><td><small>${moves}</small></td></tr>`;
 }
 
 function teamTable(TL: Translator, team: RunMon[]) {
@@ -68,6 +96,8 @@ function teamTable(TL: Translator, team: RunMon[]) {
 }
 
 const CELL = 'width: 44px; height: 30px; text-align: center; padding: 0';
+const EDGE_ON = 'color: #4a7; font-weight: bold; font-size: 18px';
+const EDGE_OFF = 'opacity: 0.5; font-size: 18px';
 
 /**
  * Mapa do ato (do chefe, no alto, ao primeiro andar), no estilo Slay the Spire. Entre
@@ -99,7 +129,7 @@ function mapHtml(TL: Translator, run: ExpeditionRun, map: ActMap, variantId: str
 	let toBoss = '';
 	for (let col = 0; col < width; col++) {
 		const node = col % 2 === 0 ? byCell.get(`${map.floors - 1}-${col / 2}`) : undefined;
-		const color = node && pathEdge(node.id, BOSS_NODE) ? 'color: #4a7; font-weight: bold; font-size: 18px' : 'opacity: 0.5; font-size: 18px';
+		const color = node && pathEdge(node.id, BOSS_NODE) ? EDGE_ON : EDGE_OFF;
 		toBoss += `<td style="${CELL}"><span style="${color}">${node ? '│' : ''}</span></td>`;
 	}
 	rows += `<tr>${toBoss}</tr>`;
@@ -118,7 +148,7 @@ function mapHtml(TL: Translator, run: ExpeditionRun, map: ActMap, variantId: str
 				const target = map.nodes.find(entry => entry.id === next)!;
 				const index = node.col + target.col;
 				const symbol = target.col === node.col ? '│' : target.col > node.col ? '╱' : '╲';
-				const color = pathEdge(node.id, next) ? 'color: #4a7; font-weight: bold; font-size: 18px' : 'opacity: 0.5; font-size: 18px';
+				const color = pathEdge(node.id, next) ? EDGE_ON : EDGE_OFF;
 				links[index] = `<span style="${color}">${symbol}</span>`;
 			}
 		}
@@ -134,6 +164,108 @@ function legend(TL: Translator, run: ExpeditionRun) {
 		const type = getNodeType(id);
 		return type ? `${type.icon} ${type.label(TL)}` : '';
 	}).filter(Boolean).join(' &middot; ') + `</small></p>`;
+}
+
+/** Resumo da última vitória: experiência, níveis e golpes aprendidos de cada Pokémon. */
+function lastBattleSection(TL: Translator, run: ExpeditionRun) {
+	const last = run.lastBattle;
+	if (last?.result !== 'win') return '';
+	const opponent = Utils.escapeHTML(last.opponent);
+	const rows = last.gains.map(gain => {
+		const mon = run.team.find(entry => entry.uid === gain.uid);
+		if (!mon) return '';
+		const species = Utils.escapeHTML(mon.species);
+		const exp = gain.exp;
+		const { from, to } = gain;
+		const level = to;
+		const levelText = to > from ? `<strong>${TL`Lv. ${from} → ${to}`}</strong>` : TL`Lv. ${level}`;
+		const moves = gain.learned.map(id => Utils.escapeHTML(Dex.moves.get(id).name)).join(', ');
+		const learned = moves ? TL`Learned ${moves}` : '';
+		// Quem desmaiou ganha metade (decisão do usuário)
+		const fainted = mon.fainted ? `<br /><small>${TL`Fainted: half Exp.`}</small>` : '';
+		return `<tr><td><psicon pokemon="${species}" title="${species}" /> ${species}</td>` +
+			`<td>${TL`+${exp} Exp.`}${fainted}</td><td>${levelText}<br />${expBar(TL, mon)}</td>` +
+			`<td><small>${learned}</small></td></tr>`;
+	}).join('');
+	return `<div class="infobox"><h3 style="margin-top: 0">${TL`Victory against ${opponent}!`}</h3>` +
+		(rows ? `<table>${rows}</table>` : '') + `</div>`;
+}
+
+/** Tipo, categoria, poder, precisão e PP de um golpe (para decidir qual aprender ou esquecer). */
+function moveInfo(id: string) {
+	const move = Dex.moves.get(id);
+	const power = move.basePower ? `${move.basePower}` : '&mdash;';
+	const accuracy = move.accuracy === true ? '&mdash;' : `${move.accuracy}%`;
+	return `<psicon type="${move.type}" /> <psicon category="${move.category}" /> ` +
+		`<small>${power} &middot; ${accuracy} &middot; ${move.pp} PP</small>`;
+}
+
+/** Primeira decisão pendente: golpe novo (qual esquecer) ou evolução (qual, ou adiar). */
+function decisionSection(TL: Translator, run: ExpeditionRun, variantId: string) {
+	const decision = run.decisions[0];
+	const mon = run.team.find(entry => entry.uid === decision.uid);
+	if (!mon) return '';
+	const species = Utils.escapeHTML(mon.species);
+	const icon = `<psicon pokemon="${species}" title="${species}" />`;
+	// As evoluções de um mesmo Pokémon contam como uma decisão (são resolvidas juntas)
+	const count = run.decisions.filter((entry, i) => (
+		entry.kind === 'learn' || !run.decisions.slice(0, i).some(other => other.kind === 'evolve' && other.uid === entry.uid)
+	)).length;
+	const left = count > 1 ? `<p><small>${TL`Decisions left: ${count}`}</small></p>` : '';
+	if (decision.kind === 'learn') {
+		const move = Utils.escapeHTML(Dex.moves.get(decision.move).name);
+		return `<div class="infobox"><h3 style="margin-top: 0">${TL`New move`}</h3>` +
+			`<p>${icon} ${TL`${species} wants to learn ${move}, but already knows four moves. Forget which one?`}</p>` +
+			`<p><strong>${move}</strong> ${moveInfo(decision.move)}</p><p>` +
+			mon.moves.map((id, slot) => (
+				`<button class="button" name="send" value="/expedicao aprender ${variantId},${slot}" style="margin: 2px">` +
+				`${TL`Forget`} <strong>${Utils.escapeHTML(Dex.moves.get(id).name)}</strong><br />${moveInfo(id)}</button>`
+			)).join(' ') +
+			`</p><p><button class="button" name="send" value="/expedicao aprender ${variantId},nao">` +
+			`${TL`Don't learn ${move}`}</button></p>${left}</div>`;
+	}
+	const options = run.decisions.filter(entry => entry.kind === 'evolve' && entry.uid === mon.uid);
+	return `<div class="infobox"><h3 style="margin-top: 0">${TL`Evolution`}</h3>` +
+		`<p>${icon} ${TL`${species} can evolve.`}</p><p>` +
+		options.map(entry => {
+			const into = Utils.escapeHTML(entry.kind === 'evolve' ? Dex.species.get(entry.into).name : '');
+			return `<button class="button" name="send" value="/expedicao evoluir ${variantId},${toID(into)}">` +
+				`<psicon pokemon="${into}" /> ${TL`Evolve into ${into}`}</button>`;
+		}).join(' ') +
+		` <button class="button" name="send" value="/expedicao evoluir ${variantId},nao">${TL`Not now`}</button></p>` +
+		`<p><small>${TL`If you wait, the evolution is offered again when the Pokémon levels up.`}</small></p>${left}</div>`;
+}
+
+/** Adversário do nó atual: os selvagens aparecem; dos treinadores, o sprite (o time fica escondido). */
+function encounterIcons(run: ExpeditionRun) {
+	const encounter = currentEncounter(run);
+	if (!encounter) return '';
+	if (encounter.kind !== 'wild' && encounter.kind !== 'legendary') return trainerSpriteImg(encounter.avatar, 80);
+	return encounter.team.map(mon => {
+		const species = Utils.escapeHTML(mon.species);
+		return `<psicon pokemon="${species}" title="${species}" />`;
+	}).join('');
+}
+
+/** Resumo da última run encerrada: resultado, até onde chegou, quem venceu o time e o time no fim. */
+function endedSummary(TL: Translator, run: ExpeditionRun) {
+	let result = '';
+	if (run.status === 'won') result = TL`Your last expedition: completed!`;
+	if (run.status === 'lost') result = TL`Your last expedition: defeated.`;
+	if (run.status === 'abandoned') result = TL`Your last expedition: given up.`;
+	if (!result) return '';
+	let buf = `<div class="infobox"><h3 style="margin-top: 0">${result}</h3>`;
+	const opponent = Utils.escapeHTML(run.lastBattle?.opponent || '');
+	if (run.status === 'lost' && opponent) buf += `<p>${TL`Defeated by ${opponent}.`}</p>`;
+	if (run.status !== 'won' && run.node) {
+		const act = run.act;
+		const acts = run.settings.map.acts;
+		const number = Number(run.node.split('-')[0]) + 1;
+		const floor = run.node === BOSS_NODE ? TL`the boss` : TL`floor ${number}`;
+		buf += `<p>${TL`You reached ${floor} of act ${act} of ${acts}.`}</p>`;
+	}
+	if (run.team.length) buf += `<h4>${TL`Your team at the end`}</h4>` + teamTable(TL, run.team);
+	return buf + `</div>`;
 }
 
 function runSection(TL: Translator, run: ExpeditionRun, variantId: string) {
@@ -153,10 +285,13 @@ function runSection(TL: Translator, run: ExpeditionRun, variantId: string) {
 	const acts = run.settings.map.acts;
 	let buf = '';
 	const node = currentNodeView(run, TL);
-	if (node) {
+	buf += lastBattleSection(TL, run);
+	if (phase === 'decision') {
+		buf += decisionSection(TL, run, variantId);
+	} else if (node) {
 		const type = getNodeType(node.type)!;
 		buf += `<div class="infobox"><h3 style="margin-top: 0">${type.icon} ${type.label(TL)}</h3>` +
-			`<p>${Utils.escapeHTML(node.view.text)}</p><p>` + node.view.choices.map(choice => (
+			`<p>${encounterIcons(run)} ${Utils.escapeHTML(node.view.text)}</p><p>` + node.view.choices.map(choice => (
 			`<button class="button" name="send" value="/expedicao escolha ${variantId},${Utils.escapeHTML(choice.id)}">` +
 			`${Utils.escapeHTML(choice.label)}</button>`
 		)).join(' ') + `</p></div>`;
@@ -202,7 +337,9 @@ export const pages: Chat.PageTable = {
 			if (!isPlayer(user)) return buf + `<p>${this.TL`Log in to take part in the Expedition.`}</p></div>`;
 			const run = getStore().getActiveRun(user.id, variant.id);
 			if (!run) {
-				return buf + `<p>${variant.description(this.TL)}</p>` +
+				// Resultado da última expedição desta variação
+				const last = getStore().listRuns(user.id, 10).find(entry => entry.variant === variant.id);
+				return buf + (last ? endedSummary(this.TL, last) : '') + `<p>${variant.description(this.TL)}</p>` +
 					`<p><button class="button" name="send" value="/expedicao iniciar ${variant.id}">` +
 					`<strong>${this.TL`Start expedition`}</strong></button></p></div>`;
 			}
@@ -253,14 +390,30 @@ export const commands: Chat.ChatCommands = {
 		escolha(target, room, user) {
 			const [variantId, choice] = target.split(',');
 			const run = requireRun(this, user, variantId);
-			const problem = chooseInNode(run, (choice || '').trim(), this.TL);
+			const problem = chooseInNode(run, (choice || '').trim(), this.TL, user);
 			if (problem) throw new Chat.ErrorMessage(problemText(this.TL, problem));
 			if (run.status === 'won') this.sendReply(this.TL`Expedition complete. Congratulations!`);
 			return refresh(this, variantId);
 		},
 
+		aprender(target, room, user) {
+			const [variantId, choice] = target.split(',');
+			const slot = toID(choice) === 'nao' ? null : Number(choice);
+			const problem = decideLearn(requireRun(this, user, variantId), slot);
+			if (problem) throw new Chat.ErrorMessage(problemText(this.TL, problem));
+			return refresh(this, variantId);
+		},
+
+		evoluir(target, room, user) {
+			const [variantId, choice] = target.split(',');
+			const into = toID(choice) === 'nao' ? null : toID(choice);
+			const problem = decideEvolve(requireRun(this, user, variantId), into);
+			if (problem) throw new Chat.ErrorMessage(problemText(this.TL, problem));
+			return refresh(this, variantId);
+		},
+
 		desistir(target, room, user) {
-			abandonRun(requireRun(this, user, target));
+			abandonRun(user, requireRun(this, user, target));
 			this.sendReply(this.TL`You gave up the expedition. It stays in your history.`);
 			return refresh(this, target);
 		},

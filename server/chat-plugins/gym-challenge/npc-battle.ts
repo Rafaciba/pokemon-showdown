@@ -27,6 +27,11 @@ export interface NpcSpec {
 	team: string;
 	avatar?: string;
 	ai: NpcAI;
+	/**
+	 * Campos extras nas opções do lado do NPC (">player p2"), que ficam no registro de
+	 * entrada da batalha. A Expedição manda ali o estado dos times (expedition/formats.ts).
+	 */
+	playerData?: AnyObject;
 }
 
 export interface NpcBattleHooks {
@@ -53,6 +58,12 @@ export interface NpcBattleHooks {
 	onPositions?: (
 		positions: { perspective: 'npc' | 'player', features: number[] }[], npcWon: boolean, doubles: boolean
 	) => void;
+	/**
+	 * Linha privada do formato para o lado do desafiante, que não vai para o cliente
+	 * (ex.: "|expeditionstate|..." da Expedição, com o estado final do time). Recebe a
+	 * linha inteira; devolve true se a linha foi tratada.
+	 */
+	onPrivateLine?: (line: string) => boolean;
 }
 
 interface NpcBattleOptions extends RoomBattleOptions {
@@ -60,6 +71,8 @@ interface NpcBattleOptions extends RoomBattleOptions {
 	hooks: NpcBattleHooks;
 	/** Desafiante dono da batalha (o resultado só vale para ele). */
 	ownerid: ID;
+	/** Batalha automática: esta IA joga pelo desafiante, que só assiste. */
+	autoPlayer?: NpcAI;
 }
 
 /** O NPC é sempre o jogador 2; o desafiante, o jogador 1. */
@@ -137,6 +150,7 @@ export class NpcBattle extends RoomBattle {
 			avatar: this.options.npc?.avatar || '',
 			team: playerOpts.team || undefined,
 			rating: 0,
+			...this.options.npc?.playerData,
 		};
 		void this.stream.write(`>player ${player.slot} ${JSON.stringify(options)}`);
 		player.hasTeam = true;
@@ -221,6 +235,16 @@ export class NpcBattle extends RoomBattle {
 	}
 
 	override receive(lines: string[]) {
+		// Linha privada do formato para o desafiante (ex.: estado final da Expedição): não vai ao cliente
+		if (lines[0] === 'sideupdate' && lines[1] === 'p1' && this.options.hooks.onPrivateLine && lines[2]?.startsWith('|') &&
+			!lines[2].startsWith('|request|') && !lines[2].startsWith('|error|')) {
+			try {
+				if (this.options.hooks.onPrivateLine(lines[2])) return;
+			} catch (err: any) {
+				Monitor.crashlog(err, 'A NPC battle private line', { roomid: this.roomid });
+				return;
+			}
+		}
 		super.receive(lines);
 		if (lines[0] === 'update') {
 			// Log público (o que um espectador vê): base para IAs que avaliam a batalha.
@@ -243,6 +267,7 @@ export class NpcBattle extends RoomBattle {
 			if (lines[2].startsWith('|request|')) {
 				void this.saveState();
 				this.recordPosition('player', lines[2].slice(9));
+				if (this.options.autoPlayer) this.scheduleAutoChoice();
 			}
 		} else if (lines[0] === 'sideupdate' && lines[1] === NPC_SLOT) {
 			if (lines[2].startsWith('|request|')) {
@@ -314,6 +339,7 @@ export class NpcBattle extends RoomBattle {
 		}
 		this.replaying = false;
 		this.scheduleNpcChoice();
+		if (this.options.autoPlayer) this.scheduleAutoChoice();
 	}
 
 	/** Responde fora da pilha do receive(), para não reentrar no processamento do stream. */
@@ -349,6 +375,41 @@ export class NpcBattle extends RoomBattle {
 		});
 	}
 
+	/** Batalha automática: a IA responde pelo desafiante, como o NPC responde pelo lado dele. */
+	private scheduleAutoChoice() {
+		const ai = this.options.autoPlayer;
+		if (!ai) return;
+		setImmediate(() => {
+			if (this.ended || !this.room || this.replaying) return;
+			const pending = this.p1.request;
+			if (!pending.request || pending.isWait) return;
+			let choice: string | null | Promise<string | null>;
+			try {
+				choice = ai.choose(JSON.parse(pending.request) as ChoiceRequest, { log: this.npcLog });
+			} catch (err: any) {
+				Monitor.crashlog(err, 'A NPC battle auto player', { roomid: this.roomid });
+				choice = 'default';
+			}
+			const asked = pending.request;
+			void Promise.resolve(choice).then(result => {
+				const current = this.p1.request;
+				if (!result || this.ended || current.request !== asked || current.isWait) return;
+				current.isWait = true;
+				current.choice = result;
+				void this.stream.write(`>p1 ${result}`);
+			});
+		});
+	}
+
+	/** Batalha automática: o desafiante assiste, as jogadas são da IA. */
+	override choose(user: User, data: string) {
+		if (this.options.autoPlayer) {
+			user.popup(`This battle is automatic: your team is played by the computer.`);
+			return;
+		}
+		return super.choose(user, data);
+	}
+
 	/** Envia a escolha do NPC, se o pedido `asked` ainda está pendente. */
 	private submitNpcChoice(asked: string, choice: string | null) {
 		if (!choice || this.ended || !this.room || this.replaying) return;
@@ -372,6 +433,8 @@ export interface NpcBattleSettings {
 	hooks?: NpcBattleHooks;
 	/** Limite de tempo por turno em segundos; sem valor = tempo livre (timer desligado). */
 	turnSeconds?: number | null;
+	/** Batalha automática: IA que joga pelo desafiante. */
+	autoPlayer?: NpcAI;
 }
 
 /**
@@ -404,6 +467,7 @@ export function createNpcBattle(human: User, settings: NpcBattleSettings): GameR
 		npc: settings.npc,
 		hooks: settings.hooks || {},
 		ownerid: human.id,
+		autoPlayer: settings.autoPlayer,
 	};
 	const title = settings.title || `${human.name} vs. ${settings.npc.name}`;
 	const roomid = Rooms.global.prepBattleRoom(settings.format);

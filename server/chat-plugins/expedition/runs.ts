@@ -3,10 +3,12 @@
  *
  * Fases da run:
  *   1. escolha do time inicial (`pending.kind = 'starter'`);
- *   2. mapa: o jogador escolhe o próximo nó, entre os do primeiro andar no começo do
+ *   2. decisões pendentes: golpes novos e evoluções da última vitória (o mapa espera);
+ *   3. mapa: o jogador escolhe o próximo nó, entre os do primeiro andar no começo do
  *      ato ou os ligados ao nó atual;
- *   3. nó: o tipo do nó mostra as escolhas, e uma delas termina o nó;
- *   4. terminar o nó do chefe passa para o próximo ato ou, no último, vence a run.
+ *   4. nó: o tipo do nó mostra as escolhas, e uma delas termina o nó. Nos nós de
+ *      batalha, a escolha começa a batalha, e a vitória termina o nó (battles.ts);
+ *   5. terminar o nó do chefe passa para o próximo ato ou, no último, vence a run.
  *
  * O mapa não é guardado: ele é gerado de novo a partir da semente e das configurações
  * da run (map.ts).
@@ -19,13 +21,16 @@ import { findNode, generateAct, reachableNodes, type ActMap } from './map';
 import { getNodeType, type NodeView } from './nodes';
 import './variants';
 import { newSeed, seededRandom } from './random';
+import { battleCallbacks, currentEncounter, forfeitOpenBattle, hasOpenBattle, startOrResumeBattle } from './battles';
+import { evolveMon } from './progression';
 import type { ExpeditionRun } from './store';
 import type { Translator } from '../../../sim/dex-text';
 
 export type RunProblem =
-	'novariant' | 'disabled' | 'active' | 'norun' | 'nostarter' | 'badchoice' | 'unreachable' | 'nodeopen' | 'nonode';
+	'novariant' | 'disabled' | 'active' | 'norun' | 'nostarter' | 'badchoice' | 'unreachable' | 'nodeopen' | 'nonode' |
+	'decisions' | 'nodecision' | 'nobattle';
 
-export type RunPhase = 'starter' | 'map' | 'node' | 'ended';
+export type RunPhase = 'starter' | 'decision' | 'map' | 'node' | 'ended';
 
 /** A variação está disponível para o usuário (administradores veem as de teste e as desligadas). */
 export function variantAvailable(variant: ExpeditionVariant, user: User) {
@@ -36,6 +41,7 @@ export function variantAvailable(variant: ExpeditionVariant, user: User) {
 export function runPhase(run: ExpeditionRun): RunPhase {
 	if (run.status !== 'active') return 'ended';
 	if (run.pending?.kind === 'starter') return 'starter';
+	if (run.decisions.length) return 'decision';
 	return run.node && !run.nodeDone ? 'node' : 'map';
 }
 
@@ -74,15 +80,33 @@ export function chooseStarter(run: ExpeditionRun, index: number): RunProblem | n
 
 export function enterNode(run: ExpeditionRun, nodeId: string): RunProblem | null {
 	const phase = runPhase(run);
+	if (phase === 'decision') return 'decisions';
 	if (phase === 'node') return 'nodeopen';
 	if (phase !== 'map') return 'norun';
 	const map = currentMap(run);
 	if (!reachableNodes(map, run.node).some(node => node.id === nodeId)) return 'unreachable';
 	run.node = nodeId;
 	run.nodeDone = false;
+	run.lastBattle = null;
 	run.path.push(`${run.act}:${nodeId}`);
 	getStore().saveRun(run);
 	return null;
+}
+
+/** Nó atual terminado: no chefe, passa para o próximo ato ou vence a run (a run é gravada por quem chama). */
+export function completeNode(run: ExpeditionRun) {
+	run.nodeDone = true;
+	if (run.node !== currentMap(run).boss) return;
+	if (run.act < run.settings.map.acts) {
+		run.act++;
+		run.node = null;
+		run.nodeDone = false;
+	} else {
+		// Run vencida: golpes e evoluções pendentes não têm mais efeito
+		run.status = 'won';
+		run.endedAt = Math.floor(Date.now() / 1000);
+		run.decisions = [];
+	}
 }
 
 /** O que o nó atual mostra (null fora de um nó). */
@@ -91,38 +115,95 @@ export function currentNodeView(run: ExpeditionRun, TL: Translator): { type: str
 	const node = findNode(currentMap(run), run.node!);
 	const type = node && getNodeType(node.type);
 	if (!node || !type) return null;
+	if (type.encounter) {
+		const encounter = currentEncounter(run);
+		if (!encounter) return null;
+		const name = encounter.name;
+		const count = encounter.team.length;
+		const level = encounter.team[0]?.level || 1;
+		let text: string;
+		if (encounter.kind === 'wild' || encounter.kind === 'legendary') {
+			text = TL`${name} (Lv. ${level}) appeared!`;
+		} else if (encounter.kind === 'boss') {
+			text = TL`The boss ${name} challenges you, with ${count} Pokémon around level ${level}.`;
+		} else {
+			text = TL`${name} wants to battle, with ${count} Pokémon around level ${level}.`;
+		}
+		const open = hasOpenBattle(run);
+		const label = open ? TL`Continue the battle` : TL`Battle!`;
+		return { type: type.id, view: { text, choices: [{ id: 'battle', label }] } };
+	}
+	if (!type.view) return null;
 	return { type: type.id, view: type.view({ run, node, TL }) };
 }
 
-export function chooseInNode(run: ExpeditionRun, choice: string, TL: Translator): RunProblem | null {
+export function chooseInNode(run: ExpeditionRun, choice: string, TL: Translator, user: User): RunProblem | null {
 	if (runPhase(run) !== 'node') return 'nonode';
 	const map = currentMap(run);
 	const node = findNode(map, run.node!);
 	const type = node && getNodeType(node.type);
 	if (!node || !type) return 'nonode';
-	const done = type.choose({ run, node, TL }, choice);
-	if (done === null) return 'badchoice';
-	if (done) {
-		run.nodeDone = true;
-		if (node.id === map.boss) {
-			// Fim do ato: o próximo começa do primeiro andar; no último, a run está vencida
-			if (run.act < run.settings.map.acts) {
-				run.act++;
-				run.node = null;
-				run.nodeDone = false;
-			} else {
-				run.status = 'won';
-				run.endedAt = Math.floor(Date.now() / 1000);
-			}
-		}
+	if (type.encounter) {
+		if (choice !== 'battle') return 'badchoice';
+		return startOrResumeBattle(user, run) ? null : 'nobattle';
 	}
+	const done = type.choose?.({ run, node, TL }, choice) ?? null;
+	if (done === null) return 'badchoice';
+	if (done) completeNode(run);
 	getStore().saveRun(run);
 	return null;
 }
 
-export function abandonRun(run: ExpeditionRun) {
+/** Golpe novo com quatro já conhecidos: `slot` (0 a 3) é o esquecido; null = não aprende. */
+export function decideLearn(run: ExpeditionRun, slot: number | null): RunProblem | null {
+	const decision = run.decisions[0];
+	if (runPhase(run) !== 'decision' || decision?.kind !== 'learn') return 'nodecision';
+	const mon = run.team.find(entry => entry.uid === decision.uid);
+	if (slot !== null) {
+		if (!mon || !(slot >= 0 && slot < mon.moves.length)) return 'badchoice';
+		mon.moves[slot] = decision.move;
+		mon.ppUsed[slot] = 0;
+	}
+	run.decisions.shift();
+	getStore().saveRun(run);
+	return null;
+}
+
+/** Evolução por nível: `into` é a espécie escolhida; null = agora não. */
+export function decideEvolve(run: ExpeditionRun, into: string | null): RunProblem | null {
+	const decision = run.decisions[0];
+	if (runPhase(run) !== 'decision' || decision?.kind !== 'evolve') return 'nodecision';
+	const uid = decision.uid;
+	// Várias evoluções possíveis do mesmo Pokémon ficam juntas: a escolha resolve todas
+	const options = run.decisions.filter(entry => entry.kind === 'evolve' && entry.uid === uid);
+	if (into !== null) {
+		const option = options.find(entry => entry.kind === 'evolve' && toID(entry.into) === toID(into));
+		const mon = run.team.find(entry => entry.uid === uid);
+		if (!option || option.kind !== 'evolve' || !mon) return 'badchoice';
+		evolveMon(mon, option.into);
+	}
+	run.decisions = run.decisions.filter(entry => !(entry.kind === 'evolve' && entry.uid === uid));
+	getStore().saveRun(run);
+	return null;
+}
+
+export function abandonRun(user: User, run: ExpeditionRun) {
 	if (run.status !== 'active') return;
 	run.status = 'abandoned';
 	run.endedAt = Math.floor(Date.now() / 1000);
 	getStore().saveRun(run);
+	forfeitOpenBattle(user, run);
 }
+
+/** Redesenha a página da run para o jogador, se ele estiver com ela aberta. */
+export function refreshRunPage(userid: string, variantId: string) {
+	const user = Users.getExact(userid);
+	if (!user) return;
+	const page = `expedicao-run-${variantId}`;
+	for (const connection of user.connections) {
+		if (connection.openPages?.has(page)) void Chat.parse(`/join view-${page}`, null, user, connection);
+	}
+}
+
+battleCallbacks.completeNode = completeNode;
+battleCallbacks.refresh = refreshRunPage;

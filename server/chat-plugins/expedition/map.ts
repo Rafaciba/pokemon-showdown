@@ -5,7 +5,8 @@
  * a cada andar, cada um sobe para a mesma coluna ou uma vizinha, sem cruzar outro
  * caminho, e todos terminam no chefe. Os nós do mapa são a união desses caminhos, e o
  * tipo de cada nó é sorteado com as chances da variação (com andares de tipo fixo, o
- * primeiro andar de cada tipo e tipos que não se repetem em seguida).
+ * primeiro andar de cada tipo, tipos que não se repetem em seguida, tipos que só
+ * aparecem tarde na run e um máximo de nós de um tipo por ato).
  *
  * A mesma semente gera sempre o mesmo mapa.
  *
@@ -101,6 +102,9 @@ export function generateAct(seed: string, act: number, map: MapSettings): ActMap
 		for (const next of node.next) parents.set(next, [...parents.get(next) || [], node]);
 	}
 	const ordered = [...nodes.values()].sort((a, b) => a.floor - b.floor || a.col - b.col);
+	const counts: Record<string, number> = {};
+	// Tipos tardios: a partir do segundo ato; com um ato só, na metade final dele
+	const lateAllowed = (floor: number) => act >= 2 || (map.acts <= 1 && floor >= floors / 2);
 	for (const node of ordered) {
 		const fixed = fixedType(map, node.floor);
 		if (fixed) {
@@ -110,6 +114,8 @@ export function generateAct(seed: string, act: number, map: MapSettings): ActMap
 		const weights: Record<string, number> = {};
 		for (const [type, weight] of Object.entries(map.weights)) {
 			if (node.floor < (map.minFloor[type] ?? 0)) continue;
+			if (map.lateTypes?.includes(type) && !lateAllowed(node.floor)) continue;
+			if ((counts[type] || 0) >= (map.maxPerAct?.[type] ?? Infinity)) continue;
 			if (map.noRepeat.includes(type)) {
 				if ((parents.get(node.id) || []).some(parent => parent.type === type)) continue;
 				if (fixedType(map, node.floor + 1) === type) continue;
@@ -117,6 +123,7 @@ export function generateAct(seed: string, act: number, map: MapSettings): ActMap
 			weights[type] = weight;
 		}
 		node.type = weightedPick(prng, weights) || Object.keys(map.weights)[0] || map.bossType;
+		counts[node.type] = (counts[node.type] || 0) + 1;
 	}
 	return { act, floors, columns, nodes: [...ordered, boss], boss: BOSS_NODE };
 }

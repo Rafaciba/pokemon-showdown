@@ -1929,9 +1929,10 @@ export const Chat = new class {
 		for (const file of FS(dir).readdirSync()) {
 			const path = pathModule.join(dir, file);
 			if (FS(path).isDirectorySync()) {
-				depth++;
-				if (depth > MAX_PLUGIN_LOADING_DEPTH) continue;
-				this.loadPluginDirectory(path, depth);
+				// pokemon-showdown-custom: a profundidade conta o aninhamento, não as pastas irmãs
+				// (o original somava 1 a cada subpasta e só carregava as 3 primeiras de chat-plugins/)
+				if (depth + 1 > MAX_PLUGIN_LOADING_DEPTH) continue;
+				this.loadPluginDirectory(path, depth + 1);
 			} else {
 				try {
 					this.loadPluginFile(path);

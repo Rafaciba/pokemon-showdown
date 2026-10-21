@@ -456,4 +456,5 @@ export const translations: TranslationCatalog = {
 	"Not selected only": "Só os não selecionados",
 	"Click a column title to sort.": "Clique no título de uma coluna para ordenar.",
 	"Selected first": "Selecionados primeiro",
+	"Sprites per page": "Sprites por página",
 };

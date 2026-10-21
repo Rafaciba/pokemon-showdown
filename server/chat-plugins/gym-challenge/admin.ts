@@ -5,7 +5,7 @@
  *   view-ginasiosadmin                    início do painel (desafios)
  *   view-ginasiosadmin-treinadores        banco de treinadores NPC
  *   view-ginasiosadmin-treinador-<id>     criar ("novo") / editar treinador
- *   view-ginasiosadmin-sprites-<id>-<página>[-<busca>]  galeria de sprites do treinador
+ *   view-ginasiosadmin-sprites-<id>-<página>-<por página>[-<busca>]  galeria de sprites do treinador
  *   view-ginasiosadmin-desafio-<id>       criar ("novo") / editar / abrir / encerrar desafio
  *   view-ginasiosadmin-jornadas-<id>      jornadas do desafio (encerrar a de um jogador)
  *   view-ginasiosadmin-convites           convites (gerar, listar, revogar) e redefinição de senha
@@ -45,7 +45,32 @@ import type {
 
 const PAGE = 'view-ginasiosadmin';
 /** Sprites por página da galeria. */
+/** Sprites por página na galeria (escolha na própria galeria; padrão 48). */
+const SPRITE_PAGE_SIZES = [24, 48, 96, 192];
 const SPRITES_PER_PAGE = 48;
+
+function spritePageSize(value: unknown) {
+	const size = Number(value);
+	return SPRITE_PAGE_SIZES.includes(size) ? size : SPRITES_PER_PAGE;
+}
+
+/**
+ * Abre uma página da galeria de sprites no lugar da que estava aberta: o número da
+ * página faz parte do id, e sem isso cada página (ou busca) abriria uma aba nova.
+ */
+function openSpriteGallery(
+	context: Chat.CommandContext, user: User, target: number | 'novo', page: number, size: number, q: string
+) {
+	const prefix = `${PAGE.slice('view-'.length)}-sprites-${target}-`;
+	for (const conn of user.connections) {
+		for (const open of [...conn.openPages || []]) {
+			if (!open.startsWith(prefix)) continue;
+			conn.send(`>view-${open}\n|deinit`);
+			conn.openPages!.delete(open);
+		}
+	}
+	return context.parse(`/join ${PAGE}-sprites-${target}-${page}-${size}${q ? `-${q}` : ''}`);
+}
 /**
  * Tamanho máximo de um pacote colado: o PS descarta mensagens acima de 100 KB
  * (sockets.ts), e o comando também vai na mensagem.
@@ -785,7 +810,7 @@ export const pages: Chat.PageTable = {
 				`<p><label class="label">${this.TL`Trainer sprite`}:</label><br />` +
 				`<input type="hidden" name="avatar" value="${Utils.escapeHTML(values.avatar || '')}" />` +
 				`<span class="gym-sprite-preview" data-empty="${this.TL`No sprite`}">${preview}</span> ` +
-				`<button class="button" type="button" name="gymGo" value="${PAGE}-sprites-novo-1">` +
+				`<button class="button" type="button" name="gymGo" value="${PAGE}-sprites-novo-1-${SPRITES_PER_PAGE}">` +
 				`${this.TL`Choose sprite`}</button></p>`;
 
 			let buf = `<div class="pad">` +
@@ -821,7 +846,7 @@ export const pages: Chat.PageTable = {
 			if (trainer) {
 				buf += `<hr /><h3>${this.TL`Trainer sprite`}</h3>` +
 					`<p>${trainerSpriteImg(trainer.avatar, 80) || `<em>${this.TL`No sprite`}</em>`}</p>` +
-					`<p><button class="button" name="gymGo" value="${PAGE}-sprites-${trainer.id}-1">` +
+					`<p><button class="button" name="gymGo" value="${PAGE}-sprites-${trainer.id}-1-${SPRITES_PER_PAGE}">` +
 					`${this.TL`Choose sprite`}</button></p>` +
 					`<hr /><h3>${this.TL`Team`}</h3><p>${teamIcons(trainer.team)} ${typeIcon(trainer.type)}` +
 					(trainer.doubles ? ` <small>${this.TL`Doubles`}</small>` : '') + `</p>`;
@@ -849,14 +874,15 @@ export const pages: Chat.PageTable = {
 			const trainer = isNew ? null : getStore().getTrainer(Number(query[0]));
 			if (!isNew && !trainer) throw new Chat.ErrorMessage(this.TL`Trainer not found.`);
 			const target = trainer ? String(trainer.id) : 'novo';
-			const q = spriteQuery(query[2] || '');
+			const size = spritePageSize(query[2]);
+			const q = spriteQuery(query[3] || '');
 			const found = searchTrainerSprites(q);
-			const pageCount = Math.max(1, Math.ceil(found.length / SPRITES_PER_PAGE));
+			const pageCount = Math.max(1, Math.ceil(found.length / size));
 			const pageNumber = Math.min(Math.max(1, Number(query[1]) || 1), pageCount);
 			const trainerName = trainer ? trainer.name : this.TL`New trainer`;
 			this.title = `[${this.TL`Sprite`}] ${trainerName}`;
 
-			const link = (n: number) => `/join ${PAGE}-sprites-${target}-${n}${q ? `-${q}` : ''}`;
+			const link = (n: number, perPage = size) => `/ginasioadmin paginasprite ${target},${n},${perPage},${q}`;
 			// Treinador salvo: o servidor grava; novo: o cliente preenche o formulário de criação
 			const pick = (sprite: string) => (trainer ?
 				`name="send" value="/ginasioadmin definirsprite ${trainer.id},${sprite}"` :
@@ -872,13 +898,17 @@ export const pages: Chat.PageTable = {
 			} else {
 				buf += `<p><button class="button" ${pick('')}>${this.TL`No sprite`}</button></p>`;
 			}
-			buf += `<form data-submitsend="/ginasioadmin buscarsprite ${target},{q}"><p>` +
+			buf += `<form data-submitsend="/ginasioadmin buscarsprite ${target},${size},{q}"><p>` +
 				`<input name="q" class="textbox" maxlength="30" value="${q}" placeholder="${this.TL`Name (e.g. brock)`}" /> ` +
 				`<button class="button" type="submit">${this.TL`Search`}</button></p></form>` +
 				`<p><small>${this.TL`${count} sprites`}</small></p>`;
 			if (!count) return buf + `<p><em>${this.TL`No sprites found.`}</em></p></div>`;
+			// Quantos por página: volta para a página 1, com a mesma busca
+			buf += `<p><small>${this.TL`Sprites per page`}:</small> ` + SPRITE_PAGE_SIZES.map(n => (n === size ?
+				`<button class="button disabled" disabled><strong>${n}</strong></button>` :
+				`<button class="button" name="send" value="${link(1, n)}">${n}</button>`)).join(' ') + `</p>`;
 			buf += `<p>`;
-			for (const id of found.slice((pageNumber - 1) * SPRITES_PER_PAGE, pageNumber * SPRITES_PER_PAGE)) {
+			for (const id of found.slice((pageNumber - 1) * size, pageNumber * size)) {
 				const mark = id === current ? ' style="border: 2px solid #4a7"' : '';
 				buf += `<button class="button" ${pick(id)}${mark}>` +
 					`${trainerSpriteImg(id, 80)}<br /><small>${id}</small></button> `;
@@ -1368,11 +1398,20 @@ export const commands: Chat.ChatCommands = {
 
 		buscarsprite(target, room, user) {
 			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
-			const [rawId, rawQuery] = Utils.splitFirst(target, ',');
+			const [rawId, rawSize, rawQuery] = Utils.splitFirst(target, ',', 2);
 			const id = rawId.trim() === 'novo' ? 'novo' : Number(rawId);
 			if (id !== 'novo' && !getStore().getTrainer(id)) throw new Chat.ErrorMessage(this.TL`Trainer not found.`);
-			const q = spriteQuery(rawQuery || '');
-			return this.parse(`/join ${PAGE}-sprites-${id}-1${q ? `-${q}` : ''}`);
+			return openSpriteGallery(this, user, id, 1, spritePageSize(rawSize), spriteQuery(rawQuery || ''));
+		},
+
+		paginasprite(target, room, user) {
+			if (!isAdmin(user)) throw new Chat.ErrorMessage(this.TL`Only administrators can manage the Gym Challenge.`);
+			const [rawId, rawPage, rawSize, rawQuery] = target.split(',');
+			const id = rawId.trim() === 'novo' ? 'novo' : Number(rawId);
+			if (id !== 'novo' && !getStore().getTrainer(id)) throw new Chat.ErrorMessage(this.TL`Trainer not found.`);
+			// A página é conferida (e limitada ao total) ao desenhar a galeria
+			const page = Math.max(1, Math.floor(Number(rawPage)) || 1);
+			return openSpriteGallery(this, user, id, page, spritePageSize(rawSize), spriteQuery(rawQuery || ''));
 		},
 
 		definirsprite(target, room, user) {

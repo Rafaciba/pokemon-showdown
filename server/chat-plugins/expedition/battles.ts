@@ -8,6 +8,9 @@
  *   o formato devolve o estado final do time, que volta para a run.
  * - Vitória: experiência para quem não desmaiou, golpes novos e evoluções na fila de
  *   decisões, e o nó termina. Derrota (ou empate): a run acaba (decisão do usuário).
+ * - Uma aba só (pedido do usuário; também evita mexer na run pela página durante a
+ *   batalha): ao abrir a batalha, a aba da página da run fecha; no fim, o botão de
+ *   volta fecha a aba da batalha e abre a da run (client-custom.js → expeditionReturn).
  * - Interrupção (servidor reiniciado, sala fechada): a batalha fica aberta. Com save
  *   state, é retomada do ponto em que parou; sem ele, começa de novo, com o mesmo
  *   encontro e o mesmo estado do time.
@@ -106,11 +109,28 @@ function openBattleRoom(user: User, run: ExpeditionRun, encounter: Encounter, ba
 	return room;
 }
 
+/** Fecha a aba da página da run nas conexões do jogador (a batalha fica como a única aba da expedição). */
+function closeRunPage(user: User, variantId: string) {
+	const page = `expedicao-run-${variantId}`;
+	for (const connection of user.connections) {
+		if (!connection.openPages?.has(page)) continue;
+		connection.openPages.delete(page);
+		connection.send(`>view-${page}\n|deinit`);
+	}
+}
+
 /**
  * Batalha do nó atual: vai para a sala se ela está aberta, retoma a interrompida ou
- * começa uma nova. Devolve false se não foi possível (ex.: servidor reiniciando).
+ * começa uma nova (e fecha a aba da página da run). Devolve false se não foi possível
+ * (ex.: servidor reiniciando).
  */
 export function startOrResumeBattle(user: User, run: ExpeditionRun): boolean {
+	const started = openOrResume(user, run);
+	if (started) closeRunPage(user, run.variant);
+	return started;
+}
+
+function openOrResume(user: User, run: ExpeditionRun): boolean {
 	const store = getStore();
 	const encounter = currentEncounter(run);
 	if (!encounter) return false;
@@ -194,7 +214,8 @@ function announceResult(roomid: string | null, run: ExpeditionRun) {
 	if (run.status === 'won') message = 'Expedition complete. Congratulations!';
 	if (run.status === 'lost') message = 'Defeat. The expedition is over.';
 	room.add(`|raw|<div class="broadcast-blue"><strong>${message}</strong><br />` +
-		`<button class="button" name="joinRoom" value="view-expedicao-run-${run.variant}">Back to the expedition</button></div>`
+		`<button class="button" name="expeditionReturn" value="view-expedicao-run-${run.variant}">` +
+		`Back to the expedition</button></div>`
 	).update();
 }
 

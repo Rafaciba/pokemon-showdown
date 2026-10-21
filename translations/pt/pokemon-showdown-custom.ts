@@ -547,4 +547,8 @@ export const translations: TranslationCatalog = {
 	"Your team is full: choose who leaves to make room (their held item goes to the bag).": "O seu time está cheio: escolha quem sai para abrir a vaga (o item dele vai para a mochila).",
 	"Swap {name}": "Trocar {name}",
 	"Let it go": "Deixar ir",
+	"Stats of {species}": "Atributos de {species}",
+	"Ability: {abilityName}": "Habilidade: {abilityName}",
+	"Nature: {natureName}": "Natureza: {natureName}",
+	"Item: {item}": "Item: {item}",
 };

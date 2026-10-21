@@ -547,4 +547,8 @@ export const translations: TranslationCatalog = {
 	"Your team is full: choose who leaves to make room (their held item goes to the bag).": null,
 	"Swap {name}": null,
 	"Let it go": null,
+	"Stats of {species}": null,
+	"Ability: {abilityName}": null,
+	"Nature: {natureName}": null,
+	"Item: {item}": null,
 };

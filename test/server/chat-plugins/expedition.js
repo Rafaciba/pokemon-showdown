@@ -191,6 +191,22 @@ describe('Expedition', () => {
 			assert.equal(species.randomSpeciesForLevel(prng, 20, ['Magikarp'], null), 'Gyarados');
 		});
 
+		it('builds tooltips with the stats at the level and the move descriptions in the player language', () => {
+			const tooltips = require('../../../dist/server/chat-plugins/expedition/tooltips');
+			const prng = random.seededRandom('tip', 'test');
+			const mon = { ...team.createMon(prng, 'Bulbasaur', 5, 'a'), nature: 'Adamant' };
+			mon.ivs = { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 };
+			const stats = tooltips.monStats(mon);
+			assert.equal(stats.hp, 21);
+			assert.equal(stats.atk, Math.floor((Math.floor((2 * 49 + 31) * 5 / 100) + 5) * 1.1), 'natureza Adamant: +Atk');
+			assert.equal(stats.spa, Math.floor((Math.floor((2 * 65 + 31) * 5 / 100) + 5) * 0.9), 'natureza Adamant: -SpA');
+			assert.equal(tooltips.maxPP('tackle'), 56);
+			assert.notEqual(tooltips.moveDescription('absorb', 'pt'), tooltips.moveDescription('absorb', 'en'));
+			const html = tooltips.withTip('X', tooltips.monTooltip((strings, ...values) => String.raw({ raw: strings }, ...values), 'en', mon));
+			assert(html.startsWith('<span class="exp-tip">X<span class="exp-tip-body">'));
+			assert(html.includes('Adamant') && html.includes('Tackle'));
+		});
+
 		it('offers Mega Stones the team can use when there are any', () => {
 			const items = require('../../../dist/server/chat-plugins/expedition/items');
 			assert(items.megaStones().length > 40);

@@ -35,6 +35,11 @@ export interface RunMon {
 	/** PP gastos de cada golpe (na ordem de `moves`). */
 	ppUsed: number[];
 	fainted: boolean;
+	/**
+	 * Status que continua entre as batalhas, como nos jogos (decisão do usuário): brn,
+	 * par, psn, tox, slp ou frz; vazio (ou ausente, nas runs antigas) = nenhum.
+	 */
+	status?: string;
 }
 
 /** Iniciais oficiais das gerações 1 a 9 (os das variações que sorteiam iniciais dos jogos). */
@@ -118,7 +123,7 @@ export function createMon(prng: PRNG, speciesName: string, level: number, uid: s
 		ability: abilities[prng.random(abilities.length)] || '',
 		nature: NATURES[prng.random(NATURES.length)], gender,
 		ivs: { hp: iv(), atk: iv(), def: iv(), spa: iv(), spd: iv(), spe: iv() },
-		item: '', hp: 1, ppUsed: moves.map(() => 0), fainted: false,
+		item: '', hp: 1, ppUsed: moves.map(() => 0), fainted: false, status: '',
 	};
 }
 
@@ -167,9 +172,10 @@ export function expReward(defeated: { species: string, level: number }, winnerLe
 	return Math.floor(base * (trainer ? 1.5 : 1) * multiplier);
 }
 
-/** Cura completa: HP e PP cheios, e quem estava desmaiado volta. */
+/** Cura completa: HP e PP cheios, sem status, e quem estava desmaiado volta. */
 export function healMon(mon: RunMon) {
 	mon.hp = 1;
 	mon.fainted = false;
+	mon.status = '';
 	mon.ppUsed = mon.moves.map(() => 0);
 }

@@ -178,6 +178,29 @@ describe('Expedition', () => {
 			assert.equal(species.evolveForLevel(prng, 'Pichu', 46).startsWith('Raichu'), true);
 		});
 
+		it('draws opponents within the strength cap of their level', () => {
+			const prng = random.seededRandom('cap', 'test');
+			assert.equal(species.maxBstForLevel(5), 330);
+			assert.equal(species.maxBstForLevel(20), 400);
+			for (let i = 0; i < 200; i++) {
+				const name = species.randomSpeciesForLevel(prng, 20);
+				assert(species.baseStatTotal(name) <= 400, `${name} no nível 20`);
+			}
+			// Gyarados (540) no nível 20 fica de fora; sem teto, a linha do Magikarp chega a ele
+			assert(species.baseStatTotal('Gyarados') > species.maxBstForLevel(20));
+			assert.equal(species.randomSpeciesForLevel(prng, 20, ['Magikarp'], null), 'Gyarados');
+		});
+
+		it('offers Mega Stones the team can use when there are any', () => {
+			const items = require('../../../dist/server/chat-plugins/expedition/items');
+			assert(items.megaStones().length > 40);
+			const prng = random.seededRandom('mega', 'test');
+			const charmander = team.createMon(prng, 'Charmander', 5, 'a');
+			for (let i = 0; i < 10; i++) {
+				assert(['Charizardite X', 'Charizardite Y'].includes(items.pickMegaStone(prng, [charmander])));
+			}
+		});
+
 		it('keeps legendaries apart from the regular pool', () => {
 			assert(species.legendarySpecies().includes('Mewtwo'));
 			assert(!species.basicSpecies().includes('Mewtwo'));
@@ -377,6 +400,8 @@ describe('Expedition', () => {
 			runs.chooseStarter(run, 0);
 			run.team[0].hp = 0.5;
 			run.team[0].ppUsed = run.team[0].moves.map(() => 2);
+			run.team[0].status = 'par';
+			run.team[0].item = 'Leftovers';
 			run.node = '0-0';
 			db.saveRun(run);
 			// Os formatos saem das variações carregadas com o servidor: a batalha usa o da variação de teste
@@ -399,6 +424,7 @@ describe('Expedition', () => {
 				const request = JSON.parse(room.battle.p1.request.request);
 				const [current, max] = request.side.pokemon[0].condition.split(' ')[0].split('/').map(Number);
 				assert(Math.abs(current - max * 0.5) <= 1, `HP aplicado: ${current}/${max}`);
+				assert(request.side.pokemon[0].condition.endsWith(' par'), `status aplicado: ${request.side.pokemon[0].condition}`);
 				room.battle.forfeit(user);
 				await waitFor(() => db.getRun(run.id).status !== 'active');
 				const ended = db.getRun(run.id);
@@ -406,6 +432,8 @@ describe('Expedition', () => {
 				// O estado final voltou do simulador (linha privada do formato): HP e PP como entraram
 				assert(Math.abs(ended.team[0].hp - current / max) < 0.001, `HP de volta: ${ended.team[0].hp}`);
 				assert.deepEqual(ended.team[0].ppUsed, run.team[0].moves.map(() => 2));
+				assert.equal(ended.team[0].status, 'par', 'o status continua');
+				assert.equal(ended.team[0].item, 'Leftovers', 'item não gasto continua');
 			} finally {
 				battles.setEncounterOverride(null);
 				room?.destroy();
@@ -438,6 +466,75 @@ describe('Expedition', () => {
 				battles.setEncounterOverride(null);
 				room?.destroy();
 			}
+		});
+
+		it('offers the defeated wild Pokémon, keeps the status and loses used items', () => {
+			const run = runs.startRun(user, 'unitteste');
+			runs.chooseStarter(run, 0);
+			run.settings.rules.capture = 'choose';
+			run.team[0].item = 'Sitrus Berry';
+			run.node = '0-0';
+			db.saveRun(run);
+			// As configurações da run só são gravadas na criação
+			db.db.prepare('UPDATE runs SET settings = ? WHERE id = ?').run(JSON.stringify(run.settings), run.id);
+			const encounter = require('../../../dist/server/chat-plugins/expedition/encounters');
+			const { TEST_VARIANT } = require('../../../dist/server/chat-plugins/expedition/variants');
+			const original = encounter.generateEncounter;
+			battles.setEncounterOverride(() => original(run, TEST_VARIANT, { id: '0-0', floor: 0, col: 0, type: 'wild', next: [] }));
+			try {
+				const battle = db.createBattle(run.id, run.act, '0-0', [run.team[0].uid]);
+				battles.finishExpeditionBattle(battle.id, 'win', [
+					{ index: 0, hp: 0.4, ppUsed: [1], fainted: false, status: 'brn', itemUsed: true },
+				]);
+			} finally {
+				battles.setEncounterOverride(null);
+			}
+			const after = db.getRun(run.id);
+			assert.equal(after.team[0].status, 'brn');
+			assert.equal(after.team[0].item, '', 'berry comida se perde');
+			const capture = after.decisions[after.decisions.length - 1];
+			assert.equal(capture.kind, 'capture');
+			while (after.decisions[0].kind !== 'capture') {
+				if (after.decisions[0].kind === 'learn') runs.decideLearn(after, null);
+				else runs.decideEvolve(after, null);
+			}
+			assert.equal(runs.decideCapture(after, 'keep'), null);
+			assert.equal(after.team.length, 2);
+			assert.equal(after.team[1].species, capture.mon.species);
+			assert.equal(after.team[1].hp, 1);
+
+			// Time cheio: alguém sai (o item dele vai para a mochila)
+			after.team = [0, 1, 2, 3, 4, 5].map(i => ({ ...after.team[0], uid: `f${i}`, item: i === 2 ? 'Leftovers' : '' }));
+			after.decisions = [{ ...capture }];
+			assert.equal(runs.decideCapture(after, 'keep'), 'teamfull');
+			assert.equal(runs.decideCapture(after, 'f2'), null);
+			assert.equal(after.team.length, 6);
+			assert(!after.team.some(mon => mon.uid === 'f2'));
+			assert.deepEqual(after.items, ['Leftovers']);
+		});
+
+		it('moves held items between the bag and the team, and the item node fills the bag', () => {
+			const run = runs.startRun(user, 'unitteste');
+			runs.chooseStarter(run, 0);
+			const uid = run.team[0].uid;
+			run.items = ['Leftovers'];
+			assert.equal(runs.setHeldItem(run, uid, 'leftovers'), null);
+			assert.equal(run.team[0].item, 'Leftovers');
+			assert.deepEqual(run.items, []);
+			assert.equal(runs.setHeldItem(run, uid, 'choiceband'), 'noitem');
+			assert.equal(runs.setHeldItem(run, uid, ''), null);
+			assert.equal(run.team[0].item, '');
+			assert.deepEqual(run.items, ['Leftovers']);
+
+			const nodes = require('../../../dist/server/chat-plugins/expedition/nodes');
+			const context = { run, node: { id: '1-0', floor: 1, col: 0, type: 'item', next: [] }, TL };
+			const view = nodes.getNodeType('item').view(context);
+			assert.equal(view.choices.length, 3);
+			assert.equal(new Set(view.choices.map(choice => choice.item)).size, 3);
+			assert.deepEqual(nodes.getNodeType('item').view(context), view, 'os mesmos itens ao voltar');
+			assert.equal(nodes.getNodeType('item').choose(context, 'pick:nada'), null);
+			assert.equal(nodes.getNodeType('item').choose(context, view.choices[1].id), true);
+			assert.deepEqual(run.items, ['Leftovers', view.choices[1].item]);
 		});
 
 		it('hides test variants from players and gives up runs', () => {

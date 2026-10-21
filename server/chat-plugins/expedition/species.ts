@@ -13,6 +13,10 @@
  *   máximo 50 (Kadabra → Alakazam no 32, Eevee → evoluções no 30).
  * - O jogador só evolui por nível (e escolhe); as evoluções especiais dele vêm de nós
  *   de evento (etapa 3).
+ * - Força pelo nível (pedido do usuário depois de um Gyarados nível 20 no andar 4 de
+ *   um ato 1): o sorteio não olha só o nível, mas também a força da espécie no estágio
+ *   sorteado, pela soma dos atributos base. Acima do teto do nível (`maxBstForLevel`),
+ *   sorteia de novo. Não vale para o nó de lendário.
  *
  * @license MIT
  */
@@ -101,7 +105,36 @@ export function evolveForLevel(prng: PRNG, speciesName: string, level: number): 
 	return species.name;
 }
 
-/** Sorteia uma espécie básica e a leva ao estágio do nível. */
-export function randomSpeciesForLevel(prng: PRNG, level: number, pool: readonly string[] = basicSpecies()) {
-	return evolveForLevel(prng, pool[prng.random(pool.length)], level);
+/** Soma dos atributos base. */
+export function baseStatTotal(speciesName: string) {
+	const stats = Dex.species.get(speciesName).baseStats;
+	return stats.hp + stats.atk + stats.def + stats.spa + stats.spd + stats.spe;
+}
+
+/**
+ * Teto de força (soma dos atributos base) dos adversários sorteados num nível: 330 até
+ * o nível 12 (as espécies básicas comuns), depois 9 pontos por nível. Exemplos: nível
+ * 20, 400 (Ivysaur, Monferno; sem Gyarados, 540); nível 30, 490; nível 37, 553;
+ * pseudo-lendários (600) a partir do 42. Escolha nossa, ajustável aqui.
+ */
+export function maxBstForLevel(level: number) {
+	return Math.max(330, 220 + 9 * level);
+}
+
+const STRENGTH_TRIES = 12;
+
+/**
+ * Sorteia uma espécie básica e a leva ao estágio do nível, dentro do teto de força do
+ * nível (`cap` null = sem teto). Se nenhuma das tentativas couber, fica a mais fraca.
+ */
+export function randomSpeciesForLevel(
+	prng: PRNG, level: number, pool: readonly string[] = basicSpecies(), cap: number | null = maxBstForLevel(level)
+) {
+	let weakest = '';
+	for (let i = 0; i < STRENGTH_TRIES; i++) {
+		const species = evolveForLevel(prng, pool[prng.random(pool.length)], level);
+		if (cap === null || baseStatTotal(species) <= cap) return species;
+		if (!weakest || baseStatTotal(species) < baseStatTotal(weakest)) weakest = species;
+	}
+	return weakest;
 }

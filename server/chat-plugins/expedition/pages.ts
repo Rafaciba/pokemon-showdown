@@ -13,6 +13,8 @@
  *   /expedicao escolha <variação>,<id>  escolha no nó atual ("battle" começa ou retoma a batalha)
  *   /expedicao aprender <variação>,<n>  golpe novo: esquece o golpe n (0 a 3) ou "nao"
  *   /expedicao evoluir <variação>,<espécie>  evolui para a espécie, ou "nao" (adia)
+ *   /expedicao capturar <variação>,<keep | uid de quem sai | nao>  selvagem vencido
+ *   /expedicao item <variação>,<uid>,<item>  dá um item da mochila (vazio: guarda o atual)
  *   /expedicao desistir <variação>      encerra a run (fica no histórico)
  *
  * Só contas registradas jogam.
@@ -26,10 +28,10 @@ import { getVariant, listVariants } from './variant';
 import { getNodeType } from './nodes';
 import { BOSS_NODE, reachableNodes, type ActMap } from './map';
 import {
-	abandonRun, chooseInNode, chooseStarter, currentMap, currentNodeView, decideEvolve, decideLearn, enterNode, runPhase,
-	startRun, variantAvailable, visitedNodes, type RunProblem,
+	abandonRun, chooseInNode, chooseStarter, currentMap, currentNodeView, decideCapture, decideEvolve, decideLearn,
+	enterNode, runPhase, setHeldItem, startRun, variantAvailable, visitedNodes, type RunProblem,
 } from './runs';
-import { currentEncounter } from './battles';
+import { currentEncounter, hasOpenBattle } from './battles';
 import { trainerSpriteImg } from '../gym-challenge/trainer-sprites';
 import type { ExpeditionRun } from './store';
 import { expForLevel, MAX_LEVEL, type RunMon } from './team';
@@ -53,6 +55,9 @@ function problemText(TL: Translator, problem: RunProblem) {
 	case 'decisions': return TL`Decide about your Pokémon first.`;
 	case 'nodecision': return TL`There is nothing to decide right now.`;
 	case 'nobattle': return TL`The battle could not be started. Try again in a moment.`;
+	case 'teamfull': return TL`Your team is full: choose who leaves.`;
+	case 'inbattle': return TL`Finish the battle first.`;
+	case 'noitem': return TL`That item is not in your bag.`;
 	default: return TL`You are not in a node.`;
 	}
 }
@@ -80,29 +85,92 @@ function hpBar(mon: RunMon) {
 	return bar(mon.hp, color);
 }
 
-function monLine(TL: Translator, mon: RunMon) {
+function itemLabel(item: string) {
+	const name = Utils.escapeHTML(Dex.items.get(item).name || item);
+	return `<psicon item="${name}" /> ${name}`;
+}
+
+/** Cores dos selos de status (fora da batalha, o CSS das batalhas do PS não vale). */
+const STATUS_COLORS: { [status: string]: string } = {
+	brn: '#e0602c', par: '#c9a400', psn: '#a050a0', tox: '#7a2f7a', slp: '#7a7a7a', frz: '#3a9ad9',
+};
+
+/** Selo do status. */
+function statusBadge(mon: RunMon) {
+	if (!mon.status || mon.fainted || !STATUS_COLORS[mon.status]) return '';
+	return ` <span style="background: ${STATUS_COLORS[mon.status]}; color: #fff; font-size: 9px; font-weight: bold; ` +
+		`padding: 1px 4px; border-radius: 3px">${mon.status.toUpperCase()}</span>`;
+}
+
+/** Item que o Pokémon segura; na run, com a troca pela mochila. */
+function itemCell(TL: Translator, mon: RunMon, manage: { run: ExpeditionRun, variantId: string } | null) {
+	const current = mon.item ? itemLabel(mon.item) : `<small>${TL`No item`}</small>`;
+	if (!manage) return current;
+	const bag = [...new Set(manage.run.items.map(item => toID(item)))].filter(id => id !== toID(mon.item));
+	if (!bag.length && !mon.item) return current;
+	const options = (mon.item ? [`<option value="">${TL`Put it in the bag`}</option>`] : []).concat(bag.map(id => (
+		`<option value="${id}">${Utils.escapeHTML(Dex.items.get(id).name)}</option>`
+	)));
+	return `${current}<br /><form data-submitsend="/expedicao item ${manage.variantId},${mon.uid},{item}">` +
+		`<select name="item">${options.join('')}</select> ` +
+		`<button class="button" type="submit">${TL`Change`}</button></form>`;
+}
+
+function monLine(TL: Translator, mon: RunMon, manage: { run: ExpeditionRun, variantId: string } | null) {
 	const species = Utils.escapeHTML(mon.species);
 	const level = mon.level;
 	const hp = Math.round(mon.hp * 100);
 	const moves = mon.moves.map(id => Utils.escapeHTML(Dex.moves.get(id).name)).join(', ');
-	const state = mon.fainted ? `<strong>${TL`Fainted`}</strong>` : `${hpBar(mon)} ${TL`HP ${hp}%`}`;
+	const state = mon.fainted ? `<strong>${TL`Fainted`}</strong>` : `${hpBar(mon)} ${TL`HP ${hp}%`}${statusBadge(mon)}`;
 	return `<tr><td><psicon pokemon="${species}" title="${species}" /> <strong>${species}</strong></td>` +
-		`<td>${TL`Lv. ${level}`}<br />${expBar(TL, mon)}</td><td>${state}</td><td><small>${moves}</small></td></tr>`;
+		`<td>${TL`Lv. ${level}`}<br />${expBar(TL, mon)}</td><td>${state}</td><td>${itemCell(TL, mon, manage)}</td>` +
+		`<td><small>${moves}</small></td></tr>`;
 }
 
-function teamTable(TL: Translator, team: RunMon[]) {
+/** Tabela do time; com `manage`, o item de cada um pode ser trocado pela mochila. */
+function teamTable(TL: Translator, team: RunMon[], manage: { run: ExpeditionRun, variantId: string } | null = null) {
 	return `<div class="ladder"><table><tr><th>${TL`Pokémon`}</th><th>${TL`Level`}</th><th>${TL`State`}</th>` +
-		`<th>${TL`Moves`}</th></tr>` + team.map(mon => monLine(TL, mon)).join('') + `</table></div>`;
+		`<th>${TL`Held item`}</th><th>${TL`Moves`}</th></tr>` + team.map(mon => monLine(TL, mon, manage)).join('') +
+		`</table></div>`;
 }
 
-const CELL = 'width: 44px; height: 30px; text-align: center; padding: 0';
-const EDGE_ON = 'color: #4a7; font-weight: bold; font-size: 18px';
-const EDGE_OFF = 'opacity: 0.5; font-size: 18px';
+/** Mochila da run: os itens guardados. */
+function bagSection(TL: Translator, run: ExpeditionRun) {
+	if (!run.items.length) return '';
+	const counts = new Map<string, number>();
+	for (const item of run.items) counts.set(item, (counts.get(item) || 0) + 1);
+	const list = [...counts].map(([item, count]) => `${itemLabel(item)}${count > 1 ? ` &times;${count}` : ''}`);
+	return `<h3>${TL`Bag`}</h3><p>${list.join(' &middot; ')}</p>` +
+		`<p><small>${TL`Give items to your Pokémon in the Held item column of your team.`}</small></p>`;
+}
+
+const CELL = 'width: 56px; height: 44px; text-align: center; vertical-align: middle; padding: 0';
+const LINK_ON = '#4a7';
+const LINK_OFF = 'rgba(128,128,128,0.55)';
+const EDGE_ON = `color: ${LINK_ON}; font-weight: bold; font-size: 30px; line-height: 44px`;
+const EDGE_OFF = 'opacity: 0.5; font-size: 30px; line-height: 44px';
+const ICON = 'font-size: 26px; line-height: 1';
+
+/**
+ * Célula de ligação desenhada com bordas, dividida em quatro quadrantes: linha
+ * horizontal no meio (metade esquerda e/ou direita) e linha vertical no centro (de
+ * cima até o meio e/ou do meio até embaixo). Cada trecho tem a sua cor (caminho
+ * percorrido em destaque).
+ */
+function joinCell(parts: { left?: string, right?: string, up?: string, down?: string }) {
+	const line = (color?: string) => (color ? `3px solid ${color}` : '0');
+	const quadrant = (style: string) => `<td style="padding: 0; width: 50%; height: 50%; ${style}"></td>`;
+	return `<td style="${CELL}"><table style="width: 100%; height: 44px; border-collapse: collapse"><tr>` +
+		quadrant(`border-bottom: ${line(parts.left)}; border-right: ${line(parts.up)}`) +
+		quadrant(`border-bottom: ${line(parts.right)}`) + `</tr><tr>` +
+		quadrant(`border-right: ${line(parts.down)}`) + quadrant('') + `</tr></table></td>`;
+}
 
 /**
  * Mapa do ato (do chefe, no alto, ao primeiro andar), no estilo Slay the Spire. Entre
  * dois andares, uma linha de ligações: "│" sobe reto, "╱" sobe para a direita e "╲"
- * para a esquerda; as do caminho percorrido ficam em destaque.
+ * para a esquerda. Do último andar ao chefe, todos os caminhos sobem até uma barra que
+ * converge no chefe. As ligações do caminho percorrido ficam em destaque.
  */
 function mapHtml(TL: Translator, run: ExpeditionRun, map: ActMap, variantId: string) {
 	const visited = new Set(visitedNodes(run));
@@ -116,23 +184,47 @@ function mapHtml(TL: Translator, run: ExpeditionRun, map: ActMap, variantId: str
 		const label = type ? type.label(TL) : node.type;
 		if (choosable.has(id)) {
 			return `<button class="button" name="send" value="/expedicao avancar ${variantId},${id}" title="${label}" ` +
-				`style="font-size: 16px; padding: 1px 5px">${icon}</button>`;
+				`style="${ICON}; padding: 3px 6px">${icon}</button>`;
 		}
 		const current = id === run.node;
-		const style = current ? 'border: 2px solid #4a7; border-radius: 4px; padding: 1px 4px' :
+		const style = current ? 'border: 3px solid #4a7; border-radius: 6px; padding: 2px 5px' :
 			visited.has(id) ? 'opacity: 1' : 'opacity: 0.45';
-		return `<span title="${label}" style="font-size: 16px; ${style}">${icon}</span>`;
+		return `<span title="${label}" style="${ICON}; ${style}">${icon}</span>`;
 	};
 	const pathEdge = (from: string, to: string) => visited.has(from) && visited.has(to);
-	let rows = `<tr><td colspan="${width}" style="${CELL}">${nodeCell(BOSS_NODE)}</td></tr>`;
-	// Ligações dos nós do último andar com o chefe
-	let toBoss = '';
-	for (let col = 0; col < width; col++) {
-		const node = col % 2 === 0 ? byCell.get(`${map.floors - 1}-${col / 2}`) : undefined;
-		const color = node && pathEdge(node.id, BOSS_NODE) ? EDGE_ON : EDGE_OFF;
-		toBoss += `<td style="${CELL}"><span style="${color}">${node ? '│' : ''}</span></td>`;
+	const boss = map.nodes.find(node => node.id === BOSS_NODE)!;
+	const bossIndex = boss.col * 2;
+	let rows = '';
+	// Chefe, na coluna dele
+	rows += `<tr>${Array.from({ length: width }, (_, i) => (
+		`<td style="${CELL}">${i === bossIndex ? nodeCell(BOSS_NODE) : ''}</td>`
+	)).join('')}</tr>`;
+	// Convergência no chefe: barra horizontal ligando as colunas do último andar à do chefe
+	const last = map.nodes.filter(node => node.floor === map.floors - 1);
+	const indexes = [...last.map(node => node.col * 2), bossIndex];
+	const from = Math.min(...indexes);
+	const to = Math.max(...indexes);
+	const reached = last.find(node => pathEdge(node.id, BOSS_NODE));
+	const reachedIndex = reached ? reached.col * 2 : -1;
+	// Trecho da barra entre a coluna percorrida e a do chefe fica em destaque
+	const onPath = (a: number, b: number) => reached && Math.min(a, b) >= Math.min(reachedIndex, bossIndex) &&
+		Math.max(a, b) <= Math.max(reachedIndex, bossIndex);
+	const color = (lit: boolean | undefined) => (lit ? LINK_ON : LINK_OFF);
+	let join = '';
+	for (let i = 0; i < width; i++) {
+		if (i < from || i > to) {
+			join += `<td style="${CELL}"></td>`;
+			continue;
+		}
+		const node = i % 2 === 0 ? byCell.get(`${map.floors - 1}-${i / 2}`) : undefined;
+		join += joinCell({
+			left: i > from ? color(onPath(i - 1, i)) : undefined,
+			right: i < to ? color(onPath(i, i + 1)) : undefined,
+			up: i === bossIndex ? color(!!reached) : undefined,
+			down: node ? color(node === reached) : undefined,
+		});
 	}
-	rows += `<tr>${toBoss}</tr>`;
+	rows += `<tr>${join}</tr>`;
 	for (let floor = map.floors - 1; floor >= 0; floor--) {
 		let cells = '';
 		for (let col = 0; col < width; col++) {
@@ -148,8 +240,7 @@ function mapHtml(TL: Translator, run: ExpeditionRun, map: ActMap, variantId: str
 				const target = map.nodes.find(entry => entry.id === next)!;
 				const index = node.col + target.col;
 				const symbol = target.col === node.col ? '│' : target.col > node.col ? '╱' : '╲';
-				const color = pathEdge(node.id, next) ? EDGE_ON : EDGE_OFF;
-				links[index] = `<span style="${color}">${symbol}</span>`;
+				links[index] = `<span style="${pathEdge(node.id, next) ? EDGE_ON : EDGE_OFF}">${symbol}</span>`;
 			}
 		}
 		rows += `<tr>${links.map(link => `<td style="${CELL}">${link}</td>`).join('')}</tr>`;
@@ -160,10 +251,10 @@ function mapHtml(TL: Translator, run: ExpeditionRun, map: ActMap, variantId: str
 function legend(TL: Translator, run: ExpeditionRun) {
 	const types = [...Object.keys(run.settings.map.weights), ...Object.values(run.settings.map.fixedFloors),
 		...Object.keys(run.settings.map.rareNodes || {}), run.settings.map.bossType];
-	return `<p><small>` + [...new Set(types)].map(id => {
+	return `<p style="text-align: center">` + [...new Set(types)].map(id => {
 		const type = getNodeType(id);
-		return type ? `${type.icon} ${type.label(TL)}` : '';
-	}).filter(Boolean).join(' &middot; ') + `</small></p>`;
+		return type ? `<span style="font-size: 20px">${type.icon}</span> ${type.label(TL)}` : '';
+	}).filter(Boolean).join(' &middot; ') + `</p>`;
 }
 
 /** Resumo da última vitória: experiência, níveis e golpes aprendidos de cada Pokémon. */
@@ -200,10 +291,33 @@ function moveInfo(id: string) {
 		`<small>${power} &middot; ${accuracy} &middot; ${move.pp} PP</small>`;
 }
 
-/** Primeira decisão pendente: golpe novo (qual esquecer) ou evolução (qual, ou adiar). */
+/** Captura do selvagem vencido: ficar com ele (com vaga, ou trocando por alguém do time) ou não. */
+function captureSection(TL: Translator, run: ExpeditionRun, variantId: string, mon: RunMon, left: string) {
+	const species = Utils.escapeHTML(mon.species);
+	const level = mon.level;
+	const moves = mon.moves.map(id => Utils.escapeHTML(Dex.moves.get(id).name)).join(', ');
+	let buf = `<div class="infobox"><h3 style="margin-top: 0">${TL`Capture`}</h3>` +
+		`<p><psicon pokemon="${species}" title="${species}" /> ${TL`${species} (Lv. ${level}) can join your team.`}` +
+		`<br /><small>${Utils.escapeHTML(mon.ability)} &middot; ${moves}</small></p>`;
+	if (run.team.length < run.settings.rules.teamSize) {
+		buf += `<p><button class="button" name="send" value="/expedicao capturar ${variantId},keep">` +
+			`<strong>${TL`Keep ${species}`}</strong></button> `;
+	} else {
+		buf += `<p>${TL`Your team is full: choose who leaves to make room (their held item goes to the bag).`}</p><p>` +
+			run.team.map(member => {
+				const name = Utils.escapeHTML(member.species);
+				return `<button class="button" name="send" value="/expedicao capturar ${variantId},${member.uid}">` +
+					`<psicon pokemon="${name}" /> ${TL`Swap ${name}`}</button>`;
+			}).join(' ') + `</p><p>`;
+	}
+	return buf + `<button class="button" name="send" value="/expedicao capturar ${variantId},nao">` +
+		`${TL`Let it go`}</button></p>${left}</div>`;
+}
+
+/** Primeira decisão pendente: golpe novo (qual esquecer), evolução (qual, ou adiar) ou captura. */
 function decisionSection(TL: Translator, run: ExpeditionRun, variantId: string) {
 	const decision = run.decisions[0];
-	const mon = run.team.find(entry => entry.uid === decision.uid);
+	const mon = decision.kind === 'capture' ? decision.mon : run.team.find(entry => entry.uid === decision.uid);
 	if (!mon) return '';
 	const species = Utils.escapeHTML(mon.species);
 	const icon = `<psicon pokemon="${species}" title="${species}" />`;
@@ -212,6 +326,7 @@ function decisionSection(TL: Translator, run: ExpeditionRun, variantId: string) 
 		entry.kind === 'learn' || !run.decisions.slice(0, i).some(other => other.kind === 'evolve' && other.uid === entry.uid)
 	)).length;
 	const left = count > 1 ? `<p><small>${TL`Decisions left: ${count}`}</small></p>` : '';
+	if (decision.kind === 'capture') return captureSection(TL, run, variantId, decision.mon, left);
 	if (decision.kind === 'learn') {
 		const move = Utils.escapeHTML(Dex.moves.get(decision.move).name);
 		return `<div class="infobox"><h3 style="margin-top: 0">${TL`New move`}</h3>` +
@@ -293,13 +408,15 @@ function runSection(TL: Translator, run: ExpeditionRun, variantId: string) {
 		buf += `<div class="infobox"><h3 style="margin-top: 0">${type.icon} ${type.label(TL)}</h3>` +
 			`<p>${encounterIcons(run)} ${Utils.escapeHTML(node.view.text)}</p><p>` + node.view.choices.map(choice => (
 			`<button class="button" name="send" value="/expedicao escolha ${variantId},${Utils.escapeHTML(choice.id)}">` +
-			`${Utils.escapeHTML(choice.label)}</button>`
+			`${choice.item ? `<psicon item="${Utils.escapeHTML(choice.item)}" /> ` : ''}${Utils.escapeHTML(choice.label)}</button>`
 		)).join(' ') + `</p></div>`;
 	} else {
 		buf += `<p>${TL`Choose the next node on the map.`}</p>`;
 	}
 	buf += `<h3>${TL`Act ${act} of ${acts}`}</h3>` + mapHtml(TL, run, map, variantId) + legend(TL, run);
-	buf += `<h3>${TL`Your team`}</h3>` + teamTable(TL, run.team);
+	// Itens só fora de batalha (com uma batalha aberta, o time já foi enviado)
+	const manage = hasOpenBattle(run) ? null : { run, variantId };
+	buf += `<h3>${TL`Your team`}</h3>` + teamTable(TL, run.team, manage) + bagSection(TL, run);
 	buf += `<details><summary>${TL`Give up`}</summary>` +
 		`<p>${TL`The expedition ends and stays in your history. You can start a new one.`}</p>` +
 		`<p><button class="button" name="send" value="/expedicao desistir ${variantId}">${TL`Confirm`}</button></p></details>`;
@@ -400,6 +517,21 @@ export const commands: Chat.ChatCommands = {
 			const [variantId, choice] = target.split(',');
 			const slot = toID(choice) === 'nao' ? null : Number(choice);
 			const problem = decideLearn(requireRun(this, user, variantId), slot);
+			if (problem) throw new Chat.ErrorMessage(problemText(this.TL, problem));
+			return refresh(this, variantId);
+		},
+
+		capturar(target, room, user) {
+			const [variantId, choice] = target.split(',');
+			const id = (choice || '').trim();
+			const problem = decideCapture(requireRun(this, user, variantId), toID(id) === 'nao' ? null : id);
+			if (problem) throw new Chat.ErrorMessage(problemText(this.TL, problem));
+			return refresh(this, variantId);
+		},
+
+		item(target, room, user) {
+			const [variantId, uid, item] = target.split(',');
+			const problem = setHeldItem(requireRun(this, user, variantId), (uid || '').trim(), item || '');
 			if (problem) throw new Chat.ErrorMessage(problemText(this.TL, problem));
 			return refresh(this, variantId);
 		},

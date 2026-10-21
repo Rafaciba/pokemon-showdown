@@ -28,7 +28,7 @@ import type { Translator } from '../../../sim/dex-text';
 
 export type RunProblem =
 	'novariant' | 'disabled' | 'active' | 'norun' | 'nostarter' | 'badchoice' | 'unreachable' | 'nodeopen' | 'nonode' |
-	'decisions' | 'nodecision' | 'nobattle';
+	'decisions' | 'nodecision' | 'nobattle' | 'teamfull' | 'inbattle' | 'noitem';
 
 export type RunPhase = 'starter' | 'decision' | 'map' | 'node' | 'ended';
 
@@ -183,6 +183,52 @@ export function decideEvolve(run: ExpeditionRun, into: string | null): RunProble
 		evolveMon(mon, option.into);
 	}
 	run.decisions = run.decisions.filter(entry => !(entry.kind === 'evolve' && entry.uid === uid));
+	getStore().saveRun(run);
+	return null;
+}
+
+/**
+ * Captura do selvagem vencido: "keep" (com vaga no time), o uid de quem sai do time
+ * para dar a vaga (o item de quem sai vai para a mochila) ou null (não fica com ele).
+ */
+export function decideCapture(run: ExpeditionRun, choice: string | null): RunProblem | null {
+	const decision = run.decisions[0];
+	if (runPhase(run) !== 'decision' || decision?.kind !== 'capture') return 'nodecision';
+	if (choice !== null) {
+		const full = run.team.length >= run.settings.rules.teamSize;
+		if (choice === 'keep') {
+			if (full) return 'teamfull';
+		} else {
+			const index = run.team.findIndex(mon => mon.uid === choice);
+			if (index < 0 || !full) return 'badchoice';
+			const [released] = run.team.splice(index, 1);
+			if (released.item) run.items.push(released.item);
+		}
+		run.team.push(decision.mon);
+	}
+	run.decisions.shift();
+	getStore().saveRun(run);
+	return null;
+}
+
+/**
+ * Troca o item que um Pokémon segura (decisão do usuário: os itens vão e voltam da
+ * mochila, e o jogador alterna como quiser). `item` vazio só guarda o atual na mochila.
+ * Fora de batalha: com uma batalha aberta, o time já foi enviado.
+ */
+export function setHeldItem(run: ExpeditionRun, uid: string, item: string): RunProblem | null {
+	const phase = runPhase(run);
+	if (phase === 'starter' || phase === 'ended') return 'norun';
+	if (hasOpenBattle(run)) return 'inbattle';
+	const mon = run.team.find(entry => entry.uid === uid);
+	if (!mon) return 'badchoice';
+	const id = toID(item);
+	if (id === toID(mon.item)) return null;
+	const index = id ? run.items.findIndex(entry => toID(entry) === id) : -1;
+	if (id && index < 0) return 'noitem';
+	if (index >= 0) run.items.splice(index, 1);
+	if (mon.item) run.items.push(mon.item);
+	mon.item = id ? Dex.items.get(id).name : '';
 	getStore().saveRun(run);
 	return null;
 }

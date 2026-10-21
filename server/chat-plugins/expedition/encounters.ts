@@ -19,7 +19,9 @@ import { getStore as getGymStore } from '../gym-challenge/state';
 import { isTrainerSprite } from '../gym-challenge/trainer-sprites';
 import { seededRandom, weightedPick } from './random';
 import { createMon, type RunMon } from './team';
-import { evolveForLevel, isLegendary, legendarySpecies, randomSpeciesForLevel } from './species';
+import {
+	baseStatTotal, evolveForLevel, isLegendary, legendarySpecies, maxBstForLevel, randomSpeciesForLevel,
+} from './species';
 import { nodeProgress, opponentLevel, opponentTeamSize } from './progression';
 import type { EncounterKind, ExpeditionVariant, OpponentSource } from './variant';
 import type { ExpeditionRun } from './store';
@@ -95,13 +97,17 @@ function gymTrainer(prng: PRNG, size: number, level: number, allowLegendary: boo
 	} catch {
 		return null;
 	}
+	// Só os Pokémon dentro do teto de força do nível (species.ts); sem nenhum, o treinador fica de fora
+	const cap = maxBstForLevel(level);
+	const fitting = (team: string) => (Teams.unpack(team) || []).filter(set => baseStatTotal(set.species) <= cap);
 	const candidates = trainers.filter(trainer => {
 		const sets = Teams.unpack(trainer.team) || [];
-		return sets.length && (allowLegendary || !sets.some(set => isLegendary(Dex.species.get(set.species))));
+		return fitting(trainer.team).length &&
+			(allowLegendary || !sets.some(set => isLegendary(Dex.species.get(set.species))));
 	});
 	if (!candidates.length) return null;
 	const trainer = candidates[prng.random(candidates.length)];
-	const sets = (Teams.unpack(trainer.team) || []).slice(0, size).map(set => ({ ...set, level }));
+	const sets = fitting(trainer.team).slice(0, size).map(set => ({ ...set, level }));
 	const team = sets.map((set, i) => ({
 		...createMon(prng, set.species, level, `o${i}`), moves: set.moves.map(move => Dex.moves.get(move).id),
 	}));

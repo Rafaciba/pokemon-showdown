@@ -9,11 +9,13 @@
  * atuais, e o simulador roda noutro processo. Por isso o estado vai nas opções do lado
  * do NPC (o campo `expedition` do ">player p2", escrito pelo NpcBattle), que ficam no
  * registro de entrada da batalha. No começo da batalha, o `onBegin` do formato lê esse
- * registro e aplica HP e PP. Retomar a batalha pelo save state reproduz o registro e
- * aplica o mesmo estado.
+ * registro e aplica HP, PP e status. Retomar a batalha pelo save state reproduz o
+ * registro e aplica o mesmo estado.
  *
  * No fim, o formato manda o estado final do time do jogador (p1) numa linha privada
- * "|expeditionstate|", que o NpcBattle entrega ao plugin sem passar ao cliente.
+ * "|expeditionstate|", que o NpcBattle entrega ao plugin sem passar ao cliente: HP, PP,
+ * desmaio, status e se o item foi gasto (berry comida, Focus Sash usada). Como nos
+ * jogos, item gasto se perde; item tirado (Knock Off, Trick) volta depois da batalha.
  *
  * Este arquivo roda também no processo do simulador: não pode depender do banco nem
  * do servidor.
@@ -26,19 +28,25 @@ import './variants';
 
 export const EXPEDITION_STATE_LINE = '|expeditionstate|';
 
-/** Estado de um Pokémon na entrada da batalha: HP (fração) e PP gastos de cada golpe. */
+/** Estado de um Pokémon na entrada da batalha: HP (fração), PP gastos de cada golpe e status. */
 export interface MonBattleState {
 	hp: number;
 	ppUsed: number[];
+	status?: string;
 }
 
-/** Estado final de um Pokémon do jogador: posição no time enviado, HP (fração), PP gastos e desmaio. */
+/** Estado final de um Pokémon do jogador: posição no time enviado, HP (fração), PP gastos, desmaio, status e item gasto. */
 export interface MonFinalState {
 	index: number;
 	hp: number;
 	ppUsed: number[];
 	fainted: boolean;
+	status?: string;
+	itemUsed?: boolean;
 }
+
+/** Status que continuam entre as batalhas. */
+export const PERSISTENT_STATUSES = ['brn', 'par', 'psn', 'tox', 'slp', 'frz'];
 
 export function expeditionFormatName(variantId: string, doubles = false) {
 	return `[Gen 9] Expedition (${variantId}${doubles ? ', Doubles' : ''})`;
@@ -74,6 +82,16 @@ function applyState(battle: BattleLike) {
 				const used = Number(entry.ppUsed?.[j]) || 0;
 				slot.pp = Math.max(0, Math.min(slot.maxpp, slot.maxpp - used));
 			});
+			// Status sem mensagem (o cliente vê na condição do Pokémon); o sono recomeça a contagem
+			if (entry.status && PERSISTENT_STATUSES.includes(entry.status)) {
+				pokemon.status = entry.status as ID;
+				pokemon.statusState = battle.initEffectState({ id: entry.status, target: pokemon });
+				if (entry.status === 'slp') {
+					pokemon.statusState.startTime = battle.random(2, 5);
+					pokemon.statusState.time = pokemon.statusState.startTime;
+				}
+				if (entry.status === 'tox') pokemon.statusState.stage = 0;
+			}
 		});
 	}
 }
@@ -87,6 +105,9 @@ function sendFinalState(battle: BattleLike) {
 		hp: pokemon.fainted ? 0 : pokemon.hp / pokemon.maxhp,
 		ppUsed: pokemon.baseMoveSlots.map(slot => Math.max(0, slot.maxpp - slot.pp)),
 		fainted: !!pokemon.fainted,
+		status: pokemon.fainted ? '' : PERSISTENT_STATUSES.includes(pokemon.status) ? pokemon.status : '',
+		// Gasto: sem item e o último usado foi o dele (tirado por Knock Off ou Trick não conta)
+		itemUsed: !!pokemon.set.item && !pokemon.item && toID(pokemon.lastItem) === toID(pokemon.set.item),
 	}));
 	battle.send('sideupdate', `p1\n${EXPEDITION_STATE_LINE}${JSON.stringify(states)}`);
 }

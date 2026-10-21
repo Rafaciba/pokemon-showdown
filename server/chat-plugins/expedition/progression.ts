@@ -37,7 +37,9 @@ import { generateAct, reachableNodes } from './map';
 /** Decisão que o jogador precisa tomar antes de seguir no mapa. */
 export type RunDecision =
 	{ kind: 'learn', uid: string, move: string } |
-	{ kind: 'evolve', uid: string, into: string };
+	{ kind: 'evolve', uid: string, into: string } |
+	/** Selvagem vencido: ficar com ele (`mon`, já pronto para entrar no time) ou não. */
+	{ kind: 'capture', uid: string, mon: RunMon };
 
 /** Experiência ganha numa vitória, para o resumo da página. */
 export interface MonGain {
@@ -86,8 +88,10 @@ function typicalSpecies(level: number, legendary = false) {
 	let sample = sampleCache.get(key);
 	if (!sample) {
 		const prng = seededRandom('expedition', `typical:${key}`);
-		const pool = legendary ? legendarySpecies() : undefined;
-		sample = Array.from({ length: 40 }, () => randomSpeciesForLevel(prng, level, pool));
+		// Lendários sem teto de força (o nó de lendário não usa o teto)
+		sample = Array.from({ length: 40 }, () => (
+			legendary ? randomSpeciesForLevel(prng, level, legendarySpecies(), null) : randomSpeciesForLevel(prng, level)
+		));
 		sampleCache.set(key, sample);
 	}
 	return sample;

@@ -7,8 +7,8 @@
  *
  * Os genéricos da base são batalha selvagem, treinador, chefe, lendário (raro),
  * descanso e item. Os de batalha (`encounter`) mostram o adversário e começam a batalha
- * (encounters.ts, battles.ts). O item ainda só segue em frente: os itens chegam na
- * etapa 3.
+ * (encounters.ts, battles.ts). O de item oferece 3 itens de segurar sorteados, e o
+ * escolhido vai para a mochila (items.ts).
  *
  * @license MIT
  */
@@ -16,10 +16,14 @@ import type { Translator } from '../../../sim/dex-text';
 import type { MapNode } from './map';
 import type { ExpeditionRun } from './store';
 import { healMon } from './team';
+import { MEGA_STONE_CHANCE, pickItems, pickMegaStone } from './items';
+import { seededRandom } from './random';
 
 export interface NodeChoice {
 	id: string;
 	label: string;
+	/** Item mostrado no botão (ícone). */
+	item?: string;
 }
 
 export interface NodeView {
@@ -59,7 +63,7 @@ export function getNodeType(id: string): NodeType | null {
 	return registry.get(id) || null;
 }
 
-/** Nó ainda sem efeito (as batalhas chegam na etapa 2, os itens na 3): só segue em frente. */
+/** Nó ainda sem efeito (a loja e os eventos chegam nas próximas partes da etapa 3): só segue em frente. */
 function placeholder(id: string, icon: string, label: (TL: Translator) => string): NodeType {
 	return {
 		id, icon, label,
@@ -75,7 +79,38 @@ registerNodeType({ id: 'wild', icon: '\u{1F33F}', label: TL => TL`Wild Pokémon`
 registerNodeType({ id: 'trainer', icon: '\u{1F9E2}', label: TL => TL`Trainer`, encounter: true });
 registerNodeType({ id: 'boss', icon: '\u{1F451}', label: TL => TL`Boss`, encounter: true });
 registerNodeType({ id: 'legendary', icon: '\u{2728}', label: TL => TL`Legendary Pokémon`, encounter: true });
-registerNodeType(placeholder('item', '\u{1F381}', TL => TL`Item`));
+/**
+ * Itens do nó de item: 3 sorteados pela semente da run e pelo nó (os mesmos ao voltar à
+ * página); às vezes, o último é uma Mega Stone (item raro, items.ts).
+ */
+function nodeItems({ run, node }: NodeContext) {
+	const prng = seededRandom(run.seed, `item:${run.act}:${node.id}`);
+	const items = pickItems(prng, 3);
+	if (prng.random(100) < MEGA_STONE_CHANCE) {
+		const stone = pickMegaStone(prng, run.team);
+		if (stone) items[items.length - 1] = stone;
+	}
+	return items;
+}
+
+registerNodeType({
+	id: 'item',
+	icon: '\u{1F381}',
+	label: TL => TL`Item`,
+	view: context => ({
+		text: context.TL`Choose one item. It goes to your bag, and you can give it to any Pokémon in your team.`,
+		choices: nodeItems(context).map(item => ({ id: `pick:${toID(item)}`, label: item, item })),
+	}),
+	choose(context, choice) {
+		const item = nodeItems(context).find(name => `pick:${toID(name)}` === choice);
+		if (!item) return null;
+		context.run.items.push(item);
+		return true;
+	},
+});
+
+registerNodeType(placeholder('shop', '\u{1F6D2}', TL => TL`Shop`));
+registerNodeType(placeholder('event', '\u{2753}', TL => TL`Event`));
 
 registerNodeType({
 	id: 'rest',

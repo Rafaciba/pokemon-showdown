@@ -22,7 +22,7 @@ import { getStore } from './state';
 import { getVariant } from './variant';
 import { findNode, generateAct } from './map';
 import { generateEncounter, type Encounter } from './encounters';
-import { EXPEDITION_STATE_LINE, expeditionFormatId, type MonFinalState } from './formats';
+import { EXPEDITION_STATE_LINE, expeditionFormatId, PERSISTENT_STATUSES, type MonFinalState } from './formats';
 import { expRates, gainExperience, nuzlockeBonus } from './progression';
 import { healMon, type RunMon } from './team';
 import type { ExpeditionBattle, ExpeditionRun } from './store';
@@ -91,7 +91,9 @@ function openBattleRoom(user: User, run: ExpeditionRun, encounter: Encounter, ba
 			name: encounter.name, team: encounter.packed, avatar: encounter.avatar || undefined,
 			ai: createAI(encounter.aiLevel),
 			// Estado do time do jogador (HP e PP), aplicado pelo formato no começo da batalha
-			playerData: team ? { expedition: { p1: playerTeam.map(mon => ({ hp: mon.hp, ppUsed: mon.ppUsed })) } } : {},
+			playerData: team ? {
+				expedition: { p1: playerTeam.map(mon => ({ hp: mon.hp, ppUsed: mon.ppUsed, status: mon.status || '' })) },
+			} : {},
 		},
 		title: `${user.name} vs. ${encounter.name}`,
 		hooks: hooksFor(battle.id),
@@ -164,7 +166,20 @@ function applyFinalState(run: ExpeditionRun, battle: ExpeditionBattle, states: M
 		mon.fainted = state.fainted || state.hp <= 0;
 		mon.hp = mon.fainted ? 0 : Math.max(0.01, Math.min(1, state.hp));
 		mon.ppUsed = mon.moves.map((_, i) => Math.max(0, Number(state.ppUsed[i]) || 0));
+		mon.status = !mon.fainted && PERSISTENT_STATUSES.includes(state.status || '') ? state.status : '';
+		// Item gasto (berry comida, Focus Sash) se perde, como nos jogos
+		if (state.itemUsed) mon.item = '';
 	}
+}
+
+/** Selvagem ou lendário vencido, pronto para entrar no time: HP cheio, sem status e sem item. */
+function capturedMon(run: ExpeditionRun, encounter: Encounter): RunMon | null {
+	const foe = encounter.team[0];
+	if (!foe) return null;
+	return {
+		...foe, uid: `c${run.act}-${run.node}`, hp: 1, fainted: false, status: '', item: '',
+		ppUsed: foe.moves.map(() => 0),
+	};
 }
 
 /**
@@ -217,6 +232,10 @@ export function finishExpeditionBattle(battleId: number, result: NpcBattleResult
 		const { decisions, gains } = gainExperience(run.team, defeated, encounter.trainer, multiplier);
 		run.decisions.push(...decisions);
 		run.lastBattle = { opponent: encounter.name, result, gains };
+		// Captura: depois das decisões do time, o jogador escolhe se fica com o selvagem
+		const wild = encounter.kind === 'wild' || encounter.kind === 'legendary';
+		const mon = wild && run.settings.rules.capture === 'choose' ? capturedMon(run, encounter) : null;
+		if (mon) run.decisions.push({ kind: 'capture', uid: mon.uid, mon });
 	}
 	// Nuzlocke: quem desmaiou sai do time; cura total: os demais voltam inteiros
 	if (run.settings.rules.faint === 'nuzlocke') run.team = run.team.filter(mon => !mon.fainted);

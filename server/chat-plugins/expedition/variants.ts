@@ -29,14 +29,16 @@ export const TEST_VARIANT: ExpeditionVariant = {
 		TL`A short expedition to test the mode: one act with wild Pokémon, trainers, a rest, an item and a boss.`
 	),
 	adminOnly: true,
-	rules: { battles: 'manual', progression: 'levels', attrition: 'persist', faint: 'revive', teamSize: 6 },
+	rules: {
+		battles: 'manual', progression: 'levels', attrition: 'persist', faint: 'revive', capture: 'choose', teamSize: 6,
+	},
 	map: {
 		acts: 1, floors: 6, columns: 5, paths: 4,
-		weights: { wild: 45, trainer: 30, item: 15, rest: 10 },
+		weights: { wild: 35, trainer: 25, event: 15, item: 10, rest: 8, shop: 7 },
 		// O primeiro andar é sempre selvagem, e o último antes do chefe, sempre descanso
 		fixedFloors: { 0: 'wild', [-1]: 'rest' },
-		minFloor: { rest: 2, item: 1 },
-		noRepeat: ['rest', 'item', 'legendary'],
+		minFloor: { rest: 2, item: 1, shop: 2 },
+		noRepeat: ['rest', 'item', 'shop', 'legendary'],
 		// Lendário raro (decisão do usuário): não aparece em toda run; no máximo um por ato,
 		// a partir do segundo ato ou, com um ato só, na metade final dele
 		lateTypes: ['legendary'],
@@ -50,6 +52,8 @@ export const TEST_VARIANT: ExpeditionVariant = {
 		{ key: 'weight:wild', min: 0, max: 100 },
 		{ key: 'weight:trainer', min: 0, max: 100 },
 		{ key: 'weight:item', min: 0, max: 100 },
+		{ key: 'weight:event', min: 0, max: 100 },
+		{ key: 'weight:shop', min: 0, max: 100 },
 		{ key: 'weight:rest', min: 0, max: 100 },
 		{ key: 'rare:legendary', min: 0, max: 100 },
 		{ key: 'extra:levelsPerAct', min: 10, max: 50 },

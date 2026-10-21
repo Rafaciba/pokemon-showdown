@@ -23,12 +23,20 @@ export type Progression = 'levels' | 'fixed';
 export type Attrition = 'persist' | 'fullheal';
 /** Pokémon desmaiado continua no time, ou sai dele (Nuzlocke). */
 export type FaintRule = 'revive' | 'nuzlocke';
+/**
+ * Captura de selvagens (decisão do usuário): "choose" = ao vencer, o jogador escolhe
+ * se fica com o Pokémon (o padrão); "none" = sem captura. Guardadas para variações
+ * futuras: com Poké Bola da mochila, e com chance de captura como nos jogos.
+ */
+export type CaptureRule = 'choose' | 'none';
 
 export interface VariantRules {
 	battles: BattleMode;
 	progression: Progression;
 	attrition: Attrition;
 	faint: FaintRule;
+	/** Captura de selvagens e lendários depois da vitória (padrão: sem captura). */
+	capture?: CaptureRule;
 	/** Tamanho máximo do time. */
 	teamSize: number;
 }

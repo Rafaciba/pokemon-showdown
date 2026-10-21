@@ -57,6 +57,12 @@ export interface MapSettings {
 	lateTypes?: string[];
 	/** Máximo de nós de um tipo em cada ato. */
 	maxPerAct?: Record<string, number>;
+	/**
+	 * Nós raros: chance (%) de o ato ter um nó do tipo (no máximo um). Não entram nos
+	 * pesos; quando o sorteio acontece, um nó elegível vira desse tipo (decisão do
+	 * usuário: o lendário é raro e não aparece em toda run).
+	 */
+	rareNodes?: Record<string, number>;
 	/** Tipo do nó do chefe, no fim de cada ato. */
 	bossType: string;
 }
@@ -110,7 +116,8 @@ export interface RunSettings {
 
 /**
  * Número ajustável no painel. A chave aponta para o campo: "acts", "floors",
- * "columns", "paths", "teamSize", "weight:<tipo de nó>" ou "extra:<nome>".
+ * "columns", "paths", "teamSize", "weight:<tipo de nó>", "rare:<tipo de nó>" ou
+ * "extra:<nome>".
  */
 export interface Tunable {
 	key: string;
@@ -179,6 +186,7 @@ export function resolveSettings(variant: ExpeditionVariant, overrides: Record<st
 			...variant.map, weights: { ...variant.map.weights }, fixedFloors: { ...variant.map.fixedFloors },
 			minFloor: { ...variant.map.minFloor }, noRepeat: [...variant.map.noRepeat],
 			lateTypes: [...variant.map.lateTypes || []], maxPerAct: { ...variant.map.maxPerAct },
+			rareNodes: { ...variant.map.rareNodes },
 		},
 		extra: { startLevel: 5, levelsPerAct: 30, bossLegendaryChance: 0, ...variant.extra },
 		format: { ...(variant.format || DEFAULT_FORMAT) },
@@ -191,6 +199,8 @@ export function resolveSettings(variant: ExpeditionVariant, overrides: Record<st
 		const { key } = tunable;
 		if (key.startsWith('weight:')) {
 			settings.map.weights[key.slice(7)] = value;
+		} else if (key.startsWith('rare:')) {
+			settings.map.rareNodes = { ...settings.map.rareNodes, [key.slice(5)]: value };
 		} else if (key.startsWith('extra:')) {
 			settings.extra[key.slice(6)] = value;
 		} else if (key === 'teamSize') {

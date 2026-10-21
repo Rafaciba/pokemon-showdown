@@ -6,7 +6,8 @@
  * caminho, e todos terminam no chefe. Os nós do mapa são a união desses caminhos, e o
  * tipo de cada nó é sorteado com as chances da variação (com andares de tipo fixo, o
  * primeiro andar de cada tipo, tipos que não se repetem em seguida, tipos que só
- * aparecem tarde na run e um máximo de nós de um tipo por ato).
+ * aparecem tarde na run e um máximo de nós de um tipo por ato). Depois, os nós raros:
+ * com a chance da variação, um nó elegível do ato vira de um tipo raro.
  *
  * A mesma semente gera sempre o mesmo mapa.
  *
@@ -124,6 +125,19 @@ export function generateAct(seed: string, act: number, map: MapSettings): ActMap
 		}
 		node.type = weightedPick(prng, weights) || Object.keys(map.weights)[0] || map.bossType;
 		counts[node.type] = (counts[node.type] || 0) + 1;
+	}
+	// Nós raros: o sorteio sempre consome o gerador, para o resto do mapa não depender dele
+	for (const [type, chance] of Object.entries(map.rareNodes || {}).sort()) {
+		const roll = prng.random(100);
+		const candidates = ordered.filter(node => (
+			!fixedType(map, node.floor) && node.floor >= (map.minFloor[type] ?? 0) &&
+			(!map.lateTypes?.includes(type) || lateAllowed(node.floor)) &&
+			// Sem outro nó raro (ou do mesmo tipo) logo antes ou logo depois
+			![...parents.get(node.id) || [], ...node.next.map(id => nodes.get(id)).filter(Boolean) as MapNode[]]
+				.some(other => other.type === type)
+		));
+		const pick = candidates.length ? candidates[prng.random(candidates.length)] : null;
+		if (pick && roll < chance) pick.type = type;
 	}
 	return { act, floors, columns, nodes: [...ordered, boss], boss: BOSS_NODE };
 }

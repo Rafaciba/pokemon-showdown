@@ -159,7 +159,7 @@ function mapHtml(TL: Translator, run: ExpeditionRun, map: ActMap, variantId: str
 
 function legend(TL: Translator, run: ExpeditionRun) {
 	const types = [...Object.keys(run.settings.map.weights), ...Object.values(run.settings.map.fixedFloors),
-		run.settings.map.bossType];
+		...Object.keys(run.settings.map.rareNodes || {}), run.settings.map.bossType];
 	return `<p><small>` + [...new Set(types)].map(id => {
 		const type = getNodeType(id);
 		return type ? `${type.icon} ${type.label(TL)}` : '';

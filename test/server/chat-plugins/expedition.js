@@ -94,6 +94,22 @@ describe('Expedition', () => {
 			}
 		});
 
+		it('places a rare node only in some acts, at most one, in the allowed floors', () => {
+			const single = { ...MAP, acts: 1, lateTypes: ['legendary'], rareNodes: { legendary: 25 } };
+			let acts = 0;
+			for (let i = 0; i < 400; i++) {
+				const legendaries = mapModule.generateAct(`rare${i}`, 1, single).nodes.filter(node => node.type === 'legendary');
+				assert(legendaries.length <= 1);
+				assert(legendaries.every(node => node.floor >= MAP.floors / 2 && node.floor < MAP.floors - 1));
+				if (legendaries.length) acts++;
+			}
+			assert(acts > 60 && acts < 140, `${acts} de 400 com lendário (25%)`);
+			const always = mapModule.generateAct('rare', 1, { ...single, rareNodes: { legendary: 100 } });
+			assert.equal(always.nodes.filter(node => node.type === 'legendary').length, 1);
+			const never = mapModule.generateAct('rare', 1, { ...single, rareNodes: { legendary: 0 } });
+			assert.equal(never.nodes.filter(node => node.type === 'legendary').length, 0);
+		});
+
 		it('lists the reachable nodes: the first floor at the start, then the connected ones', () => {
 			const map = mapModule.generateAct('reach', 1, MAP);
 			const first = mapModule.reachableNodes(map, null);

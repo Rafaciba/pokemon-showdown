@@ -9,7 +9,7 @@
  *   - o jogador escolhe um entre três times de três iniciais dos jogos, no nível 5,
  *     com os golpes do nível;
  *   - adversários das três fontes (Pokédex, banco do Desafio e a lista abaixo), um nó
- *     bem raro de lendário (no máximo um, na metade final do ato) e, às vezes, um
+ *     raro de lendário (10% das runs, na metade final do ato) e, às vezes, um
  *     lendário no chefe;
  *   - IA: selvagem Aleatório e depois Fácil; treinador do Fácil ao Difícil; chefe
  *     Difícil e Mestre nos três quartos finais da run (o lendário usa a Difícil);
@@ -32,15 +32,15 @@ export const TEST_VARIANT: ExpeditionVariant = {
 	rules: { battles: 'manual', progression: 'levels', attrition: 'persist', faint: 'revive', teamSize: 6 },
 	map: {
 		acts: 1, floors: 6, columns: 5, paths: 4,
-		weights: { wild: 45, trainer: 30, item: 15, rest: 10, legendary: 2 },
+		weights: { wild: 45, trainer: 30, item: 15, rest: 10 },
 		// O primeiro andar é sempre selvagem, e o último antes do chefe, sempre descanso
 		fixedFloors: { 0: 'wild', [-1]: 'rest' },
 		minFloor: { rest: 2, item: 1 },
 		noRepeat: ['rest', 'item', 'legendary'],
-		// Lendário bem raro (decisão do usuário): no máximo um por ato e, com um ato só, na
-		// metade final dele
+		// Lendário raro (decisão do usuário): não aparece em toda run; no máximo um por ato,
+		// a partir do segundo ato ou, com um ato só, na metade final dele
 		lateTypes: ['legendary'],
-		maxPerAct: { legendary: 1 },
+		rareNodes: { legendary: 10 },
 		bossType: 'boss',
 	},
 	tunables: [
@@ -51,7 +51,7 @@ export const TEST_VARIANT: ExpeditionVariant = {
 		{ key: 'weight:trainer', min: 0, max: 100 },
 		{ key: 'weight:item', min: 0, max: 100 },
 		{ key: 'weight:rest', min: 0, max: 100 },
-		{ key: 'weight:legendary', min: 0, max: 100 },
+		{ key: 'rare:legendary', min: 0, max: 100 },
 		{ key: 'extra:levelsPerAct', min: 10, max: 50 },
 		{ key: 'extra:bossLegendaryChance', min: 0, max: 100 },
 	],

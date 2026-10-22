@@ -728,7 +728,6 @@ export const translations: TranslationCatalog = {
 	"Runs: {runCount}": null,
 	"Closed expeditions are kept as history and cannot be changed. Reopen it to edit.": null,
 	"Reopen expedition": null,
-	"The expedition is open: changes are only saved if it stays ready to play. Runs in progress keep the settings they started with.": null,
 	"Drafts can be played by administrators, to test them.": null,
 	"Test": null,
 	"Fix these items before opening the expedition:": null,
@@ -936,4 +935,6 @@ export const translations: TranslationCatalog = {
 	"Go to the special act": null,
 	"End as the winner": null,
 	"No expeditions completed yet.": null,
+	"The expedition is open: changes are only saved if it stays ready to play. Runs in progress keep the settings they started with, except the battle rules (base format and extra rules), which apply to every battle.": null,
+	"skipped:": null,
 };

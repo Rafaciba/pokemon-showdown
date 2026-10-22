@@ -1261,6 +1261,15 @@ describe('Expedition', () => {
 			assert.equal(rest.choose(context, 'withdraw:w1'), 'teamfull');
 			run.team = run.team.slice(0, 1);
 			assert.equal(rest.choose(context, 'deposit:' + run.team[0].uid), 'lastmon');
+			// Nem deixar o time só com desmaiados (a run travaria sem ninguém para lutar)
+			run.team.push({ ...run.team[0], uid: 'down', fainted: true, hp: 0 });
+			assert.equal(rest.choose(context, 'deposit:' + run.team[0].uid), 'lastmon');
+			assert.equal(rest.choose(context, 'deposit:down'), false, 'o desmaiado pode ser guardado');
+			// Golpe novo: o espaço precisa ser um número inteiro
+			run.decisions = [{ kind: 'learn', uid: run.team[0].uid, move: 'tackle' }];
+			run.team[0].moves = ['growl', 'leer', 'scratch', 'pound'];
+			assert.equal(runs.decideLearn(run, 1.5), 'badchoice');
+			run.decisions = [];
 			run.box[0].hp = 0.1;
 			assert.equal(rest.choose(context, 'leave'), true);
 			assert.equal(run.box[0].hp, 1, 'quem está no Computador é curado ao sair');

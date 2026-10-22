@@ -262,7 +262,9 @@ registerNodeType({
 		if (choice.startsWith('deposit:')) {
 			const index = run.team.findIndex(mon => mon.uid === choice.slice(8));
 			if (index < 0) return null;
-			if (run.team.length <= 1) return 'lastmon';
+			// O time fica com pelo menos um Pokémon em condição de batalhar (sem ele, a run travaria)
+			const uid = choice.slice(8);
+			if (!run.team.some(mon => mon.uid !== uid && !mon.fainted && mon.hp > 0)) return 'lastmon';
 			if (run.box.length >= PC_SIZE) return 'boxfull';
 			const [stored] = run.team.splice(index, 1);
 			if (stored.item) run.items.push(stored.item);

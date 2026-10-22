@@ -728,7 +728,6 @@ export const translations: TranslationCatalog = {
 	"Runs: {runCount}": "Runs: {runCount}",
 	"Closed expeditions are kept as history and cannot be changed. Reopen it to edit.": "Expedições encerradas ficam no histórico e não podem ser alteradas. Reabra para editar.",
 	"Reopen expedition": "Reabrir expedição",
-	"The expedition is open: changes are only saved if it stays ready to play. Runs in progress keep the settings they started with.": "A expedição está aberta: as mudanças só são salvas se ela continuar pronta para jogar. As runs em andamento continuam com as configurações de quando começaram.",
 	"Drafts can be played by administrators, to test them.": "Os administradores podem jogar os rascunhos, para testá-los.",
 	"Test": "Testar",
 	"Fix these items before opening the expedition:": "Corrija estes itens antes de abrir a expedição:",
@@ -936,4 +935,6 @@ export const translations: TranslationCatalog = {
 	"Go to the special act": "Seguir para o ato especial",
 	"End as the winner": "Encerrar como vencedor",
 	"No expeditions completed yet.": "Nenhuma expedição vencida ainda.",
+	"The expedition is open: changes are only saved if it stays ready to play. Runs in progress keep the settings they started with, except the battle rules (base format and extra rules), which apply to every battle.": "A expedição está aberta: as mudanças só são salvas se ela continuar pronta para jogar. As runs em andamento continuam com as configurações de quando começaram, menos as regras de batalha (formato base e regras extras), que valem para todas as batalhas.",
+	"skipped:": "pulada:",
 };

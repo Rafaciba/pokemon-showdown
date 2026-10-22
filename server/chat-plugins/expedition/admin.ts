@@ -34,7 +34,8 @@ import type { ExpeditionRun } from './store';
 import {
 	BADGE_COUNT, badgeLeagues, COMPLETE_ACTS, DEFAULT_DEFINITION, definitionProblems, drawBadges, GENERATIONS,
 	MAX_ACTS, NAME_MAX_LENGTH, DESCRIPTION_MAX_LENGTH, NODE_WEIGHT_KEYS, normalizeDefinition, checkDefinitionFields,
-	checkExpeditionName, RULES_MAX_LENGTH, MAX_START_MONEY, MAX_SHINY_ODDS, type BankTrainer, type BossSlot,
+	checkExpeditionName, checkExpeditionFormat, RULES_MAX_LENGTH, MAX_START_MONEY, MAX_SHINY_ODDS, type BankTrainer,
+	type BossSlot,
 	type ExpeditionDefinition, type NodeWeightKey,
 } from './definition';
 import { AI_LEVELS } from '../gym-challenge/levels';
@@ -666,7 +667,7 @@ function renderEditor(TL: Translator, user: User, rawId: string) {
 			`</button></p>` + exportBox(TL, id);
 	}
 	if (expedition.status === 'open') {
-		buf += `<p><small>${TL`The expedition is open: changes are only saved if it stays ready to play. Runs in progress keep the settings they started with.`}</small></p>`;
+		buf += `<p><small>${TL`The expedition is open: changes are only saved if it stays ready to play. Runs in progress keep the settings they started with, except the battle rules (base format and extra rules), which apply to every battle.`}</small></p>`;
 	} else {
 		buf += `<p><small>${TL`Drafts can be played by administrators, to test them.`}</small> ` +
 			`<button class="button" name="gymGo" value="view-expedicao-run-${id}">${TL`Test`}</button></p>`;
@@ -787,6 +788,8 @@ export const commands: Chat.ChatCommands = {
 			if (locked) next.def.badges = { ...next.def.badges, mode: current.def.badges.mode, ids: current.def.badges.ids };
 
 			const problems: Problem[] = [...checkExpeditionName(next.name), ...checkDefinitionFields(next.def)];
+			// Regras de batalha conferidas já ao salvar (vão para o formato da expedição)
+			if (section === 'formato') problems.push(...checkExpeditionFormat(next.def.format));
 			if (next.name && nameTaken(next.name, existing?.id ?? null)) {
 				problems.push({ message: TLkey`There is already an expedition with this name.`, args: [] });
 			}
@@ -912,10 +915,18 @@ export const commands: Chat.ChatCommands = {
 			const lines: string[] = [];
 			let created = 0;
 			for (const entry of entries) {
-				const problems = checkExpeditionName(entry.name);
+				// Mesma validação de salvar: nome, campos e formato (o resto é conferido ao abrir)
+				const problems = [
+					...checkExpeditionName(entry.name), ...checkDefinitionFields(entry.def), ...checkExpeditionFormat(entry.def.format),
+				];
 				const label = entry.name || '?';
-				if (problems.length || nameTaken(entry.name, null)) {
+				if (nameTaken(entry.name, null)) {
 					lines.push(`- ${label}: ${this.TL`skipped (invalid name or one that already exists).`}`);
+					continue;
+				}
+				if (problems.length) {
+					const list = problems.map(p => renderProblem(this.TL, p)).join(' ');
+					lines.push(`- ${label}: ${this.TL`skipped:`} ${list}`);
 					continue;
 				}
 				const id = store.createExpedition(entry.name, entry.def);

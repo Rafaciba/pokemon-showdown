@@ -278,7 +278,7 @@ export function decideLearn(run: ExpeditionRun, slot: number | null): RunProblem
 	if (runPhase(run) !== 'decision' || decision?.kind !== 'learn') return 'nodecision';
 	const mon = run.team.find(entry => entry.uid === decision.uid);
 	if (slot !== null) {
-		if (!mon || !(slot >= 0 && slot < mon.moves.length)) return 'badchoice';
+		if (!mon || !Number.isInteger(slot) || !(slot >= 0 && slot < mon.moves.length)) return 'badchoice';
 		mon.moves[slot] = decision.move;
 		mon.ppUsed[slot] = 0;
 	}

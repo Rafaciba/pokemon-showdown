@@ -1,9 +1,13 @@
 /**
  * pokemon-showdown-custom: formatos das batalhas da Expedição.
  *
- * Cada variação tem um formato escondido ("[Gen 9] Expedition (<variação>)") e uma
- * variante em dupla, gerados a partir do formato da variação (variant.ts → format) e
- * somados aos nossos em config/custom-formats.ts.
+ * Cada expedição tem um formato escondido ("[Gen 9] Expedition (<id>)") e uma variante
+ * em dupla, gerados a partir do formato base e das regras da expedição e somados aos
+ * nossos em config/custom-formats.ts. As expedições do banco (rascunhos e abertas) são
+ * lidas direto do arquivo, só para leitura, como os desafios do Desafio de Ginásios
+ * (gym-challenge/formats.ts): a lista é montada também nos processos do simulador, sem
+ * o servidor. O painel recarrega os formatos quando cria, edita, abre ou encerra uma
+ * expedição. As variações do código (a de teste dos testes automáticos) entram junto.
  *
  * Estado do time: o PS monta a batalha pelo time compactado, que não tem HP nem PP
  * atuais, e o simulador roda noutro processo. Por isso o estado vai nas opções do lado
@@ -22,9 +26,13 @@
  *
  * @license MIT
  */
+import * as fs from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { toID } from '../../../sim/dex-data';
-import { DEFAULT_FORMAT, listVariants } from './variant';
+import { DEFAULT_FORMAT, listCodeVariants, type FormatSpec } from './variant';
 import './variants';
+
+export const DEFAULT_DB_PATH = 'databases/expedition.db';
 
 export const EXPEDITION_STATE_LINE = '|expeditionstate|';
 
@@ -123,17 +131,52 @@ function onBegin(this: BattleLike) {
 
 type BaseFormatData = import('../../../sim/dex-formats').FormatData;
 
-/** Formatos das variações, prontos para config/custom-formats.ts. */
-export function buildExpeditionFormats(knownFormats: BaseFormatData[]) {
+/** Formato de cada expedição do banco que pode ter batalhas (rascunhos, para o teste do admin, e abertas). */
+function readExpeditionFormats(dbPath: string): { id: string, format: FormatSpec }[] {
+	if (dbPath !== ':memory:' && !fs.existsSync(dbPath)) return [];
+	const db = new DatabaseSync(dbPath, { readOnly: true });
+	try {
+		const table = db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'expeditions'`).get();
+		if (!table) return [];
+		const rows = db.prepare(`SELECT id, definition FROM expeditions WHERE status IN ('draft', 'open') ORDER BY id`)
+			.all() as { id: number, definition: string }[];
+		return rows.map(row => {
+			let format: FormatSpec = DEFAULT_FORMAT;
+			try {
+				const parsed = JSON.parse(row.definition).format;
+				if (typeof parsed?.base === 'string' && typeof parsed?.rules === 'string') format = parsed;
+			} catch {}
+			return { id: String(row.id), format };
+		});
+	} finally {
+		db.close();
+	}
+}
+
+/** Formatos das expedições, prontos para config/custom-formats.ts. Nunca lança erro. */
+export function buildExpeditionFormats(knownFormats: BaseFormatData[], dbPath = DEFAULT_DB_PATH) {
 	const known = new Map(knownFormats.filter(f => f.name).map(f => [toID(f.name), f]));
+	let stored: { id: string, format: FormatSpec }[] = [];
+	try {
+		stored = readExpeditionFormats(dbPath);
+	} catch (err) {
+		console.error(`[expedition] não foi possível ler as expedições para gerar formatos:`, err);
+	}
+	const entries = [
+		...listCodeVariants().map(variant => ({ id: variant.id, format: variant.format || DEFAULT_FORMAT })),
+		...stored,
+	];
 	const formats = [];
-	for (const variant of listVariants()) {
-		const spec = variant.format || DEFAULT_FORMAT;
+	const used = new Set<string>();
+	for (const { id, format: spec } of entries) {
+		if (used.has(id)) continue;
+		used.add(id);
 		const base = known.get(toID(spec.base));
-		if (!base) {
-			console.error(`[expedition] variação ${variant.id} sem formato: formato base "${spec.base}" indisponível`);
+		if (!base || base.team) {
+			console.error(`[expedition] expedição ${id} sem formato: formato base "${spec.base}" indisponível`);
 			continue;
 		}
+		const variant = { id };
 		const rules = spec.rules.split(',').map(rule => rule.trim()).filter(Boolean);
 		const common = {
 			mod: base.mod || 'gen9',

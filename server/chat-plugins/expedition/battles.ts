@@ -254,7 +254,7 @@ export function finishExpeditionBattle(battleId: number, result: NpcBattleResult
 		const rates = expRates(run.settings);
 		let multiplier = rates.multiplier * (encounter.kind === 'boss' ? rates.boss : 1);
 		if (nuzlocke) multiplier *= nuzlockeBonus(run.team.length, run.settings.rules.teamSize);
-		const { decisions, gains } = gainExperience(run.team, defeated, encounter.trainer, multiplier);
+		const { decisions, gains } = gainExperience(run.team, defeated, encounter.trainer, multiplier, run.settings.theme);
 		run.decisions.push(...decisions);
 		// Dinheiro: só contra treinadores e o chefe, como nos jogos (economy.ts)
 		// Recompensa de um evento (desafio do veterano, árvore de berries): na vitória

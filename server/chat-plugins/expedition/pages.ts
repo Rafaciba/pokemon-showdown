@@ -575,7 +575,8 @@ export const pages: Chat.PageTable = {
 				const run = isPlayer(user) ? store.getActiveRun(user.id, variant.id) : null;
 				const act = run?.act;
 				const status = run ? this.TL`In progress (act ${act})` : '-';
-				const testNote = variant.adminOnly ? `<br /><small>${this.TL`Test only: visible to administrators.`}</small>` : '';
+				const testNote = variant.status === 'draft' ?
+					`<br /><small>${this.TL`Test only: visible to administrators.`}</small>` : '';
 				buf += `<tr><td><strong>${variant.name(this.TL)}</strong><br /><small>${variant.description(this.TL)}</small>` +
 					`${testNote}</td><td>${status}</td>` +
 					`<td><button class="button" name="gymGo" value="${PAGE}-run-${variant.id}">${this.TL`Open`}</button></td></tr>`;
@@ -584,8 +585,10 @@ export const pages: Chat.PageTable = {
 		},
 
 		admin(query, user) {
+			// Página aberta antes do login terminar (link direto, recarga): o cliente pede de novo após logar
+			if (!user.named) return Rooms.RETRY_AFTER_LOGIN;
 			this.title = `[${this.TL`Expedition`}] ${this.TL`admin panel`}`;
-			return renderAdminPage(this.TL, user);
+			return renderAdminPage(this.TL, user, query);
 		},
 
 		run(query, user) {

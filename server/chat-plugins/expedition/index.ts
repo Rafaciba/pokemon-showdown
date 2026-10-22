@@ -2,9 +2,9 @@
  * pokemon-showdown-custom: Expedição, o modo roguelike da Liga de Desafios.
  *
  * O jogador monta o time ao longo da run, num mapa no estilo Slay the Spire gerado a
- * partir de uma semente, com eventos e encontros. A base serve a várias variações do
- * modo: cada variação (variant.ts, variants.ts) define as regras, o mapa, os tipos de
- * nó (nodes.ts) e os times iniciais.
+ * partir de uma semente, com eventos e encontros. As expedições são criadas pelo admin
+ * no painel (admin.ts, definition.ts) e viram variações (variant.ts) com as regras, o
+ * mapa, o tema, os tipos de nó (nodes.ts) e os times iniciais.
  *
  * Desenho completo: docs/arquitetura-expedicao.md (repo pokemon-showdown-custom).
  *
@@ -22,11 +22,12 @@ import './profile';
 // espera ela acabar, como no Desafio
 accountRenameBlockers.push(userid => getStore().listUnfinishedBattles(userid).length > 0);
 
-// A calibração da experiência leva até 1 s por variação: feita logo depois da carga,
+// A calibração da experiência leva até 1 s por expedição: feita logo depois da carga,
 // e não na primeira vitória de um jogador (fica guardada enquanto o servidor roda).
-// Com os números padrão; um ajuste no painel calcula de novo na primeira vitória.
+// Só as que podem ter runs; uma edição no painel calcula de novo na primeira vitória.
 setTimeout(() => {
 	for (const variant of listVariants()) {
+		if (variant.hidden || variant.status === 'closed') continue;
 		try {
 			expRates(resolveSettings(variant));
 		} catch (err: any) {

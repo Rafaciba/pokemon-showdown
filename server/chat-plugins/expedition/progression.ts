@@ -30,7 +30,7 @@
 import type { PRNG } from '../../../sim/prng';
 import type { EncounterKind, RunSettings } from './variant';
 import { expForLevel, expReward, levelForExp, movesLearnedBetween, MAX_LEVEL, type RunMon } from './team';
-import { legendarySpecies, levelEvolutions, randomSpeciesForLevel } from './species';
+import { legendarySpecies, levelEvolutions, randomSpeciesForLevel, type Theme } from './species';
 import { seededRandom } from './random';
 import { generateAct, reachableNodes } from './map';
 
@@ -83,14 +83,16 @@ export function opponentTeamSize(kind: EncounterKind, progress: number, prng: PR
 const sampleCache = new Map<string, string[]>();
 
 /** Espécies típicas de um nível (amostra fixa do sorteio da Pokédex, ou dos lendários, no estágio do nível). */
-function typicalSpecies(level: number, legendary = false) {
-	const key = `${legendary ? 'L' : ''}${level}`;
+function typicalSpecies(level: number, legendary = false, theme?: Theme) {
+	const key = `${legendary ? 'L' : ''}${level}:${theme ? JSON.stringify(theme) : ''}`;
 	let sample = sampleCache.get(key);
 	if (!sample) {
-		const prng = seededRandom('expedition', `typical:${key}`);
+		const prng = seededRandom('expedition', `typical:${legendary ? 'L' : ''}${level}`);
 		// Lendários sem teto de força (o nó de lendário não usa o teto)
+		const legends = legendarySpecies(theme);
 		sample = Array.from({ length: 40 }, () => (
-			legendary ? randomSpeciesForLevel(prng, level, legendarySpecies(), null) : randomSpeciesForLevel(prng, level)
+			legendary && legends.length ? randomSpeciesForLevel(prng, level, legends, null, theme) :
+			randomSpeciesForLevel(prng, level, null, undefined, theme)
 		));
 		sampleCache.set(key, sample);
 	}
@@ -174,7 +176,7 @@ function calibrationError(settings: RunSettings, paths: CalibrationStep[][], rat
 				arrivals++;
 			}
 			if (!step.count) continue;
-			const sample = typicalSpecies(step.level, step.legendary);
+			const sample = typicalSpecies(step.level, step.legendary, settings.theme);
 			const average = sample.reduce((sum, species) => (
 				sum + expReward({ species, level: step.level }, winner, step.trainer, rates.multiplier)
 			), 0) / sample.length;
@@ -213,7 +215,7 @@ const ratesCache = new Map<string, ExpRates>();
  * duas buscas se alternam algumas vezes, porque uma mexe na outra.
  */
 export function expRates(settings: RunSettings): ExpRates {
-	const key = JSON.stringify([settings.map, settings.extra.startLevel, settings.extra.levelsPerAct]);
+	const key = JSON.stringify([settings.map, settings.extra.startLevel, settings.extra.levelsPerAct, settings.theme]);
 	const cached = ratesCache.get(key);
 	if (cached) return cached;
 	const paths = calibrationPaths(settings);
@@ -257,7 +259,7 @@ export const FAINTED_EXP_SHARE = 0.5;
  * novas (golpes e evoluções) e o ganho de cada Pokémon.
  */
 export function gainExperience(
-	team: RunMon[], defeated: { species: string, level: number }[], trainer: boolean, multiplier: number
+	team: RunMon[], defeated: { species: string, level: number }[], trainer: boolean, multiplier: number, theme?: Theme
 ): { decisions: RunDecision[], gains: MonGain[] } {
 	const decisions: RunDecision[] = [];
 	const gains: MonGain[] = [];
@@ -272,7 +274,7 @@ export function gainExperience(
 		const gain: MonGain = { uid: mon.uid, exp: mon.exp - expBefore, from: before, to: mon.level, learned: [] };
 		gains.push(gain);
 		if (mon.level === before) continue;
-		const result = levelUpEffects(mon, before);
+		const result = levelUpEffects(mon, before, theme);
 		gain.learned = result.learned;
 		decisions.push(...result.decisions);
 	}
@@ -284,7 +286,9 @@ export function gainExperience(
  * entram na hora; com quatro golpes, e nas evoluções por nível, a decisão vai para a
  * fila. Usado pela experiência e pelo Rare Candy.
  */
-export function levelUpEffects(mon: RunMon, before: number): { decisions: RunDecision[], learned: string[] } {
+export function levelUpEffects(
+	mon: RunMon, before: number, theme?: Theme
+): { decisions: RunDecision[], learned: string[] } {
 	const decisions: RunDecision[] = [];
 	const learned: string[] = [];
 	for (const move of movesLearnedBetween(mon.species, before, mon.level)) {
@@ -297,8 +301,8 @@ export function levelUpEffects(mon: RunMon, before: number): { decisions: RunDec
 			decisions.push({ kind: 'learn', uid: mon.uid, move });
 		}
 	}
-	// Evolução por nível: oferecida a cada subida de nível em que for possível (como nos jogos)
-	for (const evo of levelEvolutions(mon.species)) {
+	// Evolução por nível: oferecida a cada subida de nível em que for possível (como nos jogos), só no tema
+	for (const evo of levelEvolutions(mon.species, theme)) {
 		if (evo.evoLevel! <= mon.level) decisions.push({ kind: 'evolve', uid: mon.uid, into: evo.name });
 	}
 	return { decisions, learned };

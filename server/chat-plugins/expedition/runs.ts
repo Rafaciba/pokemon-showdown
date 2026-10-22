@@ -38,10 +38,14 @@ const RUN_START_WINDOW = 10 * 60;
 
 export type RunPhase = 'starter' | 'decision' | 'map' | 'node' | 'ended';
 
-/** A variação está disponível para o usuário (administradores veem as de teste e as desligadas). */
+/**
+ * A expedição está disponível para o usuário: as abertas para todos; os rascunhos só
+ * para administradores, que os testam. Encerradas e variações escondidas do código,
+ * para ninguém.
+ */
 export function variantAvailable(variant: ExpeditionVariant, user: User) {
-	if (isAdmin(user)) return true;
-	return !variant.adminOnly && getStore().getVariantSettings(variant.id).enabled;
+	if (variant.hidden || !variant.status || variant.status === 'closed') return false;
+	return variant.status === 'open' || isAdmin(user);
 }
 
 export function runPhase(run: ExpeditionRun): RunPhase {
@@ -71,7 +75,7 @@ export function startRun(user: User, variantId: string): ExpeditionRun | RunProb
 	// Evita runs sem fim (desistir e recomeçar em loop), como no Desafio
 	const since = Math.floor(Date.now() / 1000) - RUN_START_WINDOW;
 	if (store.countRunsSince(user.id, since) >= RUN_START_LIMIT) return 'toomany';
-	const settings = resolveSettings(variant, store.getVariantSettings(variant.id).overrides);
+	const settings = resolveSettings(variant);
 	const seed = newSeed();
 	const options = variant.starterOptions(seededRandom(seed, 'starters'), settings, store.listUnlocks(user.id));
 	return store.createRun({ userid: user.id, variant: variant.id, seed, settings, pending: { kind: 'starter', options } });

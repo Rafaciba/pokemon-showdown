@@ -222,7 +222,7 @@ function typeIcon(type: string | null) {
 }
 
 /** <select> com a opção atual primeiro (o cliente clássico não preserva "selected"). */
-function selectBox(name: string, options: [string, string][], current: string) {
+export function selectBox(name: string, options: [string, string][], current: string) {
 	const sorted = [
 		...options.filter(([value]) => value === current),
 		...options.filter(([value]) => value !== current),
@@ -255,7 +255,7 @@ function statusLabel(TL: Translator, status: ChallengeStatus) {
 	return TL`Draft`;
 }
 
-function aiLevelLabel(TL: Translator, level: string) {
+export function aiLevelLabel(TL: Translator, level: string) {
 	if (level === 'random') return TL`Random (default bot)`;
 	if (level === 'easy') return TL`Easy`;
 	if (level === 'medium') return TL`Medium`;

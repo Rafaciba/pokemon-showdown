@@ -286,7 +286,7 @@ export function useItem(run: ExpeditionRun, item: string, mon: RunMon): EconomyP
 			const before = mon.level;
 			mon.level++;
 			mon.exp = Math.max(mon.exp, expForLevel(mon.level));
-			decisions = levelUpEffects(mon, before).decisions;
+			decisions = levelUpEffects(mon, before, run.settings.theme).decisions;
 		} else {
 			return 'noeffect';
 		}

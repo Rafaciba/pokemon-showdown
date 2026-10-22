@@ -139,17 +139,148 @@ describe('Expedition', () => {
 		});
 	});
 
-	describe('variants', () => {
-		it('applies only declared panel adjustments, within the limits', () => {
-			const { TEST_VARIANT } = require('../../../dist/server/chat-plugins/expedition/variants');
-			const settings = variant.resolveSettings(TEST_VARIANT, { 'floors': 99, 'weight:rest': 0, 'acts': 5, 'columns': 4.4 });
-			assert.equal(settings.map.floors, 15, 'limitado ao máximo');
-			assert.equal(settings.map.weights.rest, 0);
-			assert.equal(settings.map.columns, 4);
-			assert.equal(settings.map.acts, TEST_VARIANT.map.acts, 'acts não é ajustável nesta variação');
-			assert.equal(TEST_VARIANT.map.floors, 6, 'a variação não muda');
+	describe('expeditions created by the admin', () => {
+		let definition;
+		before(() => {
+			definition = require('../../../dist/server/chat-plugins/expedition/definition');
 		});
 
+		it('normalizes any definition to valid values', () => {
+			const def = definition.normalizeDefinition({
+				mode: 'hack', startLevel: 999, weights: { wild: -5, trainer: 'x' }, starters: { size: 7, teams: 'no' },
+				ai: { boss: ['master', 'nope'] }, bosses: { acts: [3, 'pool', -1, {}] }, theme: { gens: [1, 1, 12, '3'] },
+			});
+			assert.equal(def.mode, 'standard');
+			assert.equal(def.startLevel, 90);
+			assert.equal(def.weights.wild, 0);
+			assert.equal(def.weights.trainer, definition.DEFAULT_DEFINITION.weights.trainer);
+			assert.equal(def.starters.size, 3);
+			assert.deepEqual(def.starters.teams, [[], [], []]);
+			assert.deepEqual(def.ai.boss.slice(0, 2), ['master', 'hard']);
+			assert.deepEqual(def.bosses.acts, [3, 'pool', 'generated', 'generated']);
+			assert.deepEqual(def.theme.gens, [1]);
+			assert.deepEqual(definition.normalizeDefinition(null), definition.DEFAULT_DEFINITION);
+		});
+
+		it('turns a definition into a variant with the decided map and levels', () => {
+			const def = definition.normalizeDefinition({});
+			const built = definition.variantFromDefinition({ id: 7, name: 'A <b>', status: 'open', definition: def });
+			assert.equal(built.id, '7');
+			assert.equal(built.name(), 'A &lt;b&gt;', 'nome escapado');
+			assert.equal(built.map.acts, 3, 'Completo: 3 atos com mapa');
+			assert.equal(built.map.floors, 14, '15 andares com o chefe');
+			assert.equal(built.map.fixedFloors[-1], 'rest');
+			assert.equal(built.map.weights.trainer, 20, 'a elite conta como treinador até a etapa 7');
+			const settings = variant.resolveSettings(built);
+			assert.equal(progression.curveLevel(settings, 3, settings.map.floors), 95, 'o chefe final no teto');
+			assert.equal(built.aiLevel('trainer', 0.5, 2), 'medium');
+			assert.equal(built.aiLevel('boss', 1, 4), 'hard');
+			const custom = definition.variantFromDefinition({
+				id: 8, name: 'B', status: 'draft', definition: definition.normalizeDefinition({ acts: { mode: 'custom', count: 2 }, levelCap: 45 }),
+			});
+			assert.equal(custom.map.acts, 2);
+			assert.equal(progression.curveLevel(variant.resolveSettings(custom), 2, 14), 45);
+		});
+
+		it('draws starting teams with a different regional starter in each', () => {
+			for (let i = 0; i < 20; i++) {
+				const def = definition.normalizeDefinition({ starters: { size: 2, pool: [] }, theme: { gens: [1, 2] } });
+				const teams = definition.drawStarterTeams(random.seededRandom(`st${i}`, 'x'), def);
+				assert.equal(teams.length, 3);
+				const leads = teams.map(entry => toID(entry[0]));
+				assert.equal(new Set(leads).size, 3);
+				for (const entry of teams) {
+					assert.equal(entry.length, 2);
+					assert(entry.some(name => team.GAME_STARTERS.includes(toID(name))));
+					for (const name of entry) assert(Dex.species.get(name).gen <= 2, 'iniciais do tema');
+				}
+				assert.equal(new Set(teams.flat()).size, 6, 'sem repetir espécie');
+			}
+			const fixed = definition.normalizeDefinition({
+				starters: { mode: 'fixed', size: 2, teams: [['Charmander', 'Rattata'], ['Squirtle', 'Pidgey'], ['Bulbasaur', 'Zubat']] },
+			});
+			const built = definition.variantFromDefinition({ id: 9, name: 'C', status: 'open', definition: fixed });
+			const options = built.starterOptions(random.seededRandom('f', 'x'), variant.resolveSettings(built));
+			assert.deepEqual(options.map(entry => entry.map(mon => mon.species)), fixed.starters.teams);
+			assert(options.flat().every(mon => mon.level === 5));
+		});
+
+		it('keeps encounters and evolutions inside the theme', () => {
+			const kanto = { gens: [1], species: [] };
+			assert(species.basicSpecies(kanto).every(name => Dex.species.get(name).gen === 1));
+			assert(species.basicSpecies(kanto).includes('Pikachu'), 'sem Pichu, o Pikachu é a básica');
+			assert(!species.levelEvolutions('Golbat', kanto).length, 'Crobat é da gen 2');
+			assert.equal(species.evolveForLevel(random.seededRandom('t', 'x'), 'Zubat', 60, kanto), 'Golbat');
+			assert(species.legendarySpecies(kanto).every(name => Dex.species.get(name).gen === 1));
+			const list = { gens: [], species: ['Charmeleon', 'Eevee'] };
+			const allowed = species.themeSpecies(list);
+			assert(allowed.has('charmander') && allowed.has('charizard'), 'a linha evolutiva inteira');
+			assert(allowed.has('sylveon') && !allowed.has('pikachu'));
+			assert.equal(species.themeSpecies({ gens: [], species: [] }), null, 'sem tema = a Pokédex inteira');
+		});
+
+		it('lists what blocks opening an expedition', () => {
+			const trainers = new Map([[5, { id: 5, name: 'Brock', type: 'Rock', doubles: false, hasTeam: true }]]);
+			const messages = def => definition.definitionProblems(def, trainers).map(p => p.message);
+			const ready = definition.normalizeDefinition({ badges: { mode: 'random', ids: definition.drawBadges(random.seededRandom('b', 'x')) } });
+			assert.deepEqual(messages(ready), []);
+			assert(messages(definition.normalizeDefinition({})).some(m => m.includes('badges')), 'Completo sem insígnias');
+			const custom = { acts: { mode: 'custom', count: 1 } };
+			assert(messages(definition.normalizeDefinition({ ...custom, starters: { pool: ['Charizard', 'Bulbasaur'] } }))
+				.some(m => m.includes('regional starters')));
+			assert(messages(definition.normalizeDefinition({
+				...custom, starters: { size: 1, pool: ['Charmander', 'Squirtle', 'Bulbasaur', 'Dragonite'] },
+			})).some(m => m.includes('Too strong')));
+			assert(messages(definition.normalizeDefinition({ ...custom, bosses: { acts: [99] } })).some(m => m.includes('Trainer #')));
+			assert(messages(definition.normalizeDefinition({ ...custom, bosses: { acts: ['pool'] } })).some(m => m.includes('drawn')));
+			assert(messages(definition.normalizeDefinition({ ...custom, format: { base: 'gen1ou', rules: '' } }))
+				.some(m => m.includes('generation 3')));
+			assert(messages(definition.normalizeDefinition({ ...custom, theme: { gens: [], species: ['Bulbasaur'] } }))
+				.some(m => m.includes('too few')));
+			assert(messages(definition.normalizeDefinition({ ...custom, starters: { mode: 'fixed', size: 1, teams: [['Charmander'], ['Charmander'], ['Pidgey']] } }))
+				.some(m => m.includes('regional starter')));
+		});
+
+		it('draws 8 badges of different types and knows the league sets', () => {
+			const ids = definition.drawBadges(random.seededRandom('badges', 'x'));
+			assert.equal(ids.length, 8);
+			const { BADGES } = require('../../../dist/server/chat-plugins/gym-challenge/badge-catalog');
+			assert.equal(new Set(ids.map(id => BADGES.find(badge => badge.id === id).type)).size, 8);
+			assert(definition.badgeLeagues().some(league => league.region === 'Kanto'));
+		});
+
+		it('stores expeditions, with the test expedition as a draft, and reads the admin forms', () => {
+			const db = new store.ExpeditionStore(':memory:');
+			state.setStore(db);
+			try {
+				const [test] = db.listExpeditions();
+				assert.equal(test.name, 'Expedição de teste');
+				assert.equal(test.status, 'draft');
+				const id = db.createExpedition('Kanto', definition.normalizeDefinition({}));
+				const built = variant.getVariant(String(id));
+				assert.equal(built.status, 'draft');
+				const { makeUser } = require('../../users-utils');
+				const player = makeUser('Expedition Player');
+				assert.equal(runs.variantAvailable(built, player), false, 'rascunho: só administradores');
+				db.setExpeditionStatus(id, 'open');
+				state.invalidateExpeditions();
+				assert.equal(runs.variantAvailable(variant.getVariant(String(id)), player), true);
+				db.setExpeditionStatus(id, 'closed');
+				state.invalidateExpeditions();
+				assert.equal(runs.variantAvailable(variant.getVariant(String(id)), player), false);
+				player.destroy();
+				assert.equal(db.deleteDraftExpedition(id), false, 'só rascunhos');
+				assert.equal(db.deleteDraftExpedition(test.id), true);
+				const admin = require('../../../dist/server/chat-plugins/expedition/admin');
+				assert.deepEqual(admin.parseFields('name=A, b,desc=x=y,gena=on,genb='), { name: 'A, b', desc: 'x=y', gena: 'on', genb: '' });
+			} finally {
+				state.setStore(null);
+				db.close();
+			}
+		});
+	});
+
+	describe('variants', () => {
 		it('offers three teams of three different game starters at level 5', () => {
 			const { TEST_VARIANT } = require('../../../dist/server/chat-plugins/expedition/variants');
 			const options = TEST_VARIANT.starterOptions(random.seededRandom('s', 'starters'));
@@ -263,7 +394,7 @@ describe('Expedition', () => {
 			assert.equal(progression.curveLevel(settings, 1, settings.map.floors), 35);
 			assert.equal(progression.curveLevel({ ...settings, map: { ...settings.map, acts: 3 } }, 3, settings.map.floors), 95);
 			assert.equal(progression.curveLevel(settings, 5, settings.map.floors), 100, 'até o 100');
-			const longer = variant.resolveSettings(TEST_VARIANT, { floors: 12 });
+			const longer = { ...settings, map: { ...settings.map, floors: 20 } };
 			assert(progression.expRates(longer).multiplier < multiplier, 'mais andares, menos experiência por batalha');
 			const threeActs = { ...settings, map: { ...settings.map, acts: 3 } };
 			const rates = progression.expRates(threeActs);
@@ -276,9 +407,9 @@ describe('Expedition', () => {
 		let db, user;
 		before(() => {
 			variant.registerVariant({
-				id: 'unitteste', name: () => 'Unit', description: () => 'Unit',
+				id: 'unitteste', name: () => 'Unit', description: () => 'Unit', status: 'open',
 				rules: { battles: 'manual', progression: 'levels', attrition: 'persist', faint: 'revive', teamSize: 6 },
-				map: { ...MAP, acts: 2, floors: 3, weights: { rest: 50, item: 50 }, fixedFloors: {} }, tunables: [],
+				map: { ...MAP, acts: 2, floors: 3, weights: { rest: 50, item: 50 }, fixedFloors: {} },
 				encounters: { wild: { pokedex: 100 }, trainer: { pokedex: 100 }, boss: { pokedex: 100 } },
 				aiLevel: () => 'random',
 				unlocks: [{ when: 'win', kind: 'starter', ref: 'pikachu' }],
@@ -408,15 +539,7 @@ describe('Expedition', () => {
 			assert.equal(runs.startRun(user, 'unitteste'), 'toomany');
 		});
 
-		it('offers unlocked starters, closes runs from the panel and shows them in the profile', () => {
-			const { TEST_VARIANT } = require('../../../dist/server/chat-plugins/expedition/variants');
-			const settings = variant.resolveSettings(TEST_VARIANT);
-			assert.equal(variant.tunableValue(TEST_VARIANT, 'rare:legendary'), 10, 'padrão das chances raras');
-			const unlocked = TEST_VARIANT.starterOptions(random.seededRandom('u', 's'), settings, [{ kind: 'starter', ref: 'pikachu' }]);
-			assert(unlocked.flat().some(mon => mon.species === 'Pikachu'), 'o inicial liberado aparece');
-			const plain = TEST_VARIANT.starterOptions(random.seededRandom('u', 's'), settings, []);
-			assert(!plain.flat().some(mon => mon.species === 'Pikachu'));
-
+		it('closes runs from the panel and shows them in the profile', () => {
 			const run = runs.startRun(user, 'unitteste');
 			runs.chooseStarter(run, 0);
 			assert.deepEqual(db.listAllRuns(true).map(entry => entry.id), [run.id]);
@@ -442,9 +565,9 @@ describe('Expedition', () => {
 			assert.equal(wild.team.length, 1);
 			assert.equal(wild.aiLevel, 'random');
 			assert(wild.team[0].level <= 6);
-			const boss = encounters.generateEncounter(run, TEST_VARIANT, { ...at('boss', 6), id: 'boss' });
+			const boss = encounters.generateEncounter(run, TEST_VARIANT, { ...at('boss', 14), id: 'boss' });
 			assert.equal(boss.team.length >= 1, true);
-			assert.equal(boss.aiLevel, 'master', 'chefe no fim da run');
+			assert.equal(boss.aiLevel, 'medium', 'IA do chefe do ato 1');
 			assert(boss.trainer);
 			for (let i = 0; i < 30; i++) {
 				const trainer = encounters.generateEncounter({ ...run, seed: `t${i}` }, TEST_VARIANT, at('trainer', 3));
@@ -639,7 +762,7 @@ describe('Expedition', () => {
 			const economy = require('../../../dist/server/chat-plugins/expedition/economy');
 			const { TEST_VARIANT } = require('../../../dist/server/chat-plugins/expedition/variants');
 			const settings = variant.resolveSettings(TEST_VARIANT);
-			assert.equal(settings.extra.startMoney, 1000);
+			assert.equal(settings.extra.startMoney, 500);
 			const mon = lvl => ({ species: 'Rattata', level: lvl });
 			const trainer = { kind: 'trainer', source: 'pokedex', trainer: true, team: [mon(10), mon(12)] };
 			const wild = { kind: 'wild', source: 'pokedex', trainer: false, team: [mon(12)] };

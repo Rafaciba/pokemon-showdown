@@ -17,6 +17,10 @@
  *   um ato 1): o sorteio não olha só o nível, mas também a força da espécie no estágio
  *   sorteado, pela soma dos atributos base. Acima do teto do nível (`maxBstForLevel`),
  *   sorteia de novo. Não vale para o nó de lendário.
+ * - Tema da expedição (decisão do usuário, 2026-10-22): a Pokédex de selvagens,
+ *   treinadores e iniciais, por gerações ou por uma lista. As evoluções ficam no tema
+ *   (num tema de Kanto, Golbat não vira Crobat). Na lista, cada espécie traz a linha
+ *   evolutiva inteira, para o admin não precisar listar cada estágio.
  *
  * @license MIT
  */
@@ -46,6 +50,56 @@ function eligible(species: Species) {
 	return true;
 }
 
+/**
+ * Tema da expedição: gerações (vazio = todas) ou uma lista de espécies (com a linha
+ * evolutiva de cada uma). Com lista, as gerações não contam.
+ */
+export interface Theme {
+	gens: number[];
+	species: string[];
+}
+
+/** Linha evolutiva inteira de uma espécie (da básica às últimas evoluções). */
+export function evolutionLine(speciesName: string): Species[] {
+	let base = Dex.species.get(speciesName);
+	for (let guard = 0; base.prevo && guard < 4; guard++) base = Dex.species.get(base.prevo);
+	const line: Species[] = [];
+	const visit = (species: Species, depth: number) => {
+		if (!species.exists || depth > 4 || line.includes(species)) return;
+		line.push(species);
+		for (const evo of species.evos) visit(Dex.species.get(evo), depth + 1);
+	};
+	visit(base, 0);
+	return line;
+}
+
+const themeCache = new Map<string, Set<string> | null>();
+
+/** Espécies do tema (ids), ou null quando o tema é a Pokédex inteira. */
+export function themeSpecies(theme?: Theme | null): Set<string> | null {
+	if (!theme || (!theme.species.length && (!theme.gens.length || theme.gens.length >= 9))) return null;
+	const key = JSON.stringify(theme);
+	if (themeCache.has(key)) return themeCache.get(key)!;
+	const allowed = new Set<string>();
+	if (theme.species.length) {
+		for (const name of theme.species) {
+			for (const species of evolutionLine(name)) allowed.add(species.id);
+		}
+	} else {
+		for (const species of Dex.species.all()) {
+			if (theme.gens.includes(species.gen)) allowed.add(species.id);
+		}
+	}
+	themeCache.set(key, allowed);
+	return allowed;
+}
+
+/** A espécie está no tema. */
+export function inTheme(speciesName: string, theme?: Theme | null) {
+	const allowed = themeSpecies(theme);
+	return !allowed || allowed.has(Dex.species.get(speciesName).id);
+}
+
 let cache: { basic: string[], legendary: string[] } | null = null;
 
 function pools() {
@@ -64,31 +118,61 @@ function pools() {
 	return cache;
 }
 
-/** Espécies básicas (sem pré-evolução) que podem ser sorteadas, sem lendários. */
-export function basicSpecies(): readonly string[] {
-	return pools().basic;
+const themedCache = new Map<string, { basic: string[], legendary: string[] }>();
+
+/**
+ * Básicas e lendários de um tema. Num tema, a primeira espécie do tema em cada linha
+ * conta como básica (num tema da gen 2, Pichu é a básica do Pikachu; numa lista de
+ * linhas, a básica de cada uma).
+ */
+function themedPools(theme?: Theme | null) {
+	const allowed = themeSpecies(theme);
+	if (!allowed) return pools();
+	const key = JSON.stringify(theme);
+	let entry = themedCache.get(key);
+	if (entry) return entry;
+	const basic: string[] = [];
+	const legendary: string[] = [];
+	for (const species of Dex.species.all()) {
+		if (!eligible(species) || !allowed.has(species.id)) continue;
+		if (isLegendary(species)) {
+			legendary.push(species.name);
+			continue;
+		}
+		const prevo = species.prevo ? Dex.species.get(species.prevo) : null;
+		if (prevo && allowed.has(prevo.id) && eligible(prevo)) continue;
+		basic.push(species.name);
+	}
+	entry = { basic: basic.sort(), legendary: legendary.sort() };
+	themedCache.set(key, entry);
+	return entry;
 }
 
-/** Lendários, míticos e Ultra Beasts que podem ser sorteados. */
-export function legendarySpecies(): readonly string[] {
-	return pools().legendary;
+/** Espécies básicas que podem ser sorteadas, sem lendários (as do tema). */
+export function basicSpecies(theme?: Theme | null): readonly string[] {
+	return themedPools(theme).basic;
 }
 
-/** Evolução por nível (a que o jogador pode fazer): tem nível de evolução. */
-export function levelEvolutions(speciesName: string): Species[] {
+/** Lendários, míticos e Ultra Beasts que podem ser sorteados (os do tema). */
+export function legendarySpecies(theme?: Theme | null): readonly string[] {
+	return themedPools(theme).legendary;
+}
+
+/** Evolução por nível (a que o jogador pode fazer): tem nível de evolução e está no tema. */
+export function levelEvolutions(speciesName: string, theme?: Theme | null): Species[] {
 	const species = Dex.species.get(speciesName);
 	return species.evos.map(name => Dex.species.get(name))
-		.filter(evo => eligible(evo) && typeof evo.evoLevel === 'number');
+		.filter(evo => eligible(evo) && typeof evo.evoLevel === 'number' && inTheme(evo.name, theme));
 }
 
 /**
  * Evoluções especiais (troca, pedra, amizade e outras sem nível): as que o jogador faz
- * nos eventos "?" (decisão do usuário), e não por nível.
+ * nos eventos "?" (decisão do usuário), e não por nível. Só as do tema.
  */
-export function specialEvolutions(speciesName: string): string[] {
+export function specialEvolutions(speciesName: string, theme?: Theme | null): string[] {
 	const species = Dex.species.get(speciesName);
 	return species.evos.map(name => Dex.species.get(name))
-		.filter(evo => eligible(evo) && typeof evo.evoLevel !== 'number')
+		.filter(evo => eligible(evo) && typeof evo.evoLevel !== 'number' && inTheme(evo.name, theme))
 		.map(evo => evo.name);
 }
 
@@ -100,13 +184,14 @@ export function npcEvolutionLevel(evo: Species, previousLevel: number) {
 
 /**
  * Estágio de um NPC no nível: parte da espécie e evolui enquanto o nível permite
- * (com várias evoluções possíveis, sorteia uma).
+ * (com várias evoluções possíveis, sorteia uma; só as do tema).
  */
-export function evolveForLevel(prng: PRNG, speciesName: string, level: number): string {
+export function evolveForLevel(prng: PRNG, speciesName: string, level: number, theme?: Theme | null): string {
 	let species = Dex.species.get(speciesName);
 	let reachedAt = 0;
 	for (let guard = 0; guard < 4; guard++) {
-		const options = species.evos.map(name => Dex.species.get(name)).filter(eligible)
+		const options = species.evos.map(name => Dex.species.get(name))
+			.filter(evo => eligible(evo) && inTheme(evo.name, theme))
 			.map(evo => ({ evo, at: npcEvolutionLevel(evo, reachedAt) })).filter(({ at }) => at <= level);
 		if (!options.length) break;
 		const pick = options[prng.random(options.length)];
@@ -137,13 +222,16 @@ const STRENGTH_TRIES = 12;
 /**
  * Sorteia uma espécie básica e a leva ao estágio do nível, dentro do teto de força do
  * nível (`cap` null = sem teto). Se nenhuma das tentativas couber, fica a mais fraca.
+ * Sem `pool`, sorteia entre as básicas do tema.
  */
 export function randomSpeciesForLevel(
-	prng: PRNG, level: number, pool: readonly string[] = basicSpecies(), cap: number | null = maxBstForLevel(level)
+	prng: PRNG, level: number, pool?: readonly string[] | null, cap: number | null = maxBstForLevel(level),
+	theme?: Theme | null
 ) {
+	const options = pool?.length ? pool : basicSpecies(theme);
 	let weakest = '';
 	for (let i = 0; i < STRENGTH_TRIES; i++) {
-		const species = evolveForLevel(prng, pool[prng.random(pool.length)], level);
+		const species = evolveForLevel(prng, options[prng.random(options.length)], level, theme);
 		if (cap === null || baseStatTotal(species) <= cap) return species;
 		if (!weakest || baseStatTotal(species) < baseStatTotal(weakest)) weakest = species;
 	}

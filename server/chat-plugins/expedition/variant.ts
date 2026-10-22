@@ -1,12 +1,19 @@
 /**
- * pokemon-showdown-custom: variações da Expedição.
+ * pokemon-showdown-custom: variações da Expedição (a forma que o resto do plugin usa).
  *
- * Uma variação é programada (decisão do usuário, 2026-10-21): ela define as regras
- * (batalhas jogadas ou automáticas, progressão, desgaste e desmaio), o mapa, os tipos
- * de nó que usa e os times iniciais. Os números marcados em `tunables` podem ser
- * ajustados no painel do admin, dentro dos limites; o código continua dono da
- * variação. Cada run guarda as configurações em vigor quando começou (`RunSettings`),
- * para que um ajuste no painel não mude uma run em andamento.
+ * Desde a etapa 6 (decisão do usuário, 2026-10-22), as expedições são criadas pelo
+ * admin no painel e guardadas no banco (definition.ts transforma a definição numa
+ * variação). O código ainda pode registrar variações (`registerVariant`), escondidas
+ * dos jogadores: a de teste dos testes automáticos (variants.ts).
+ *
+ * Uma variação define as regras (batalhas, progressão, desgaste, desmaio, captura), o
+ * mapa, o tema, o formato e os times iniciais. Cada run guarda as configurações em
+ * vigor quando começou (`RunSettings`), para que uma edição no painel não mude uma
+ * run em andamento.
+ *
+ * Este arquivo roda também no processo do simulador (formats.ts): não pode depender
+ * do banco nem do servidor. As expedições do banco chegam pela fonte registrada em
+ * `setVariantSource` (index.ts, só no processo principal).
  *
  * @license MIT
  */
@@ -14,6 +21,7 @@ import type { Translator } from '../../../sim/dex-text';
 import type { PRNG } from '../../../sim/prng';
 import type { RunMon } from './team';
 import type { AILevel } from '../gym-challenge/levels';
+import type { Theme } from './species';
 
 /** Batalhas jogadas pelo jogador ou automáticas (IA contra IA). */
 export type BattleMode = 'manual' | 'auto';
@@ -24,11 +32,12 @@ export type Attrition = 'persist' | 'fullheal';
 /** Pokémon desmaiado continua no time, ou sai dele (Nuzlocke). */
 export type FaintRule = 'revive' | 'nuzlocke';
 /**
- * Captura de selvagens (decisão do usuário): "choose" = ao vencer, o jogador escolhe
- * se fica com o Pokémon (o padrão); "none" = sem captura. Guardadas para variações
- * futuras: com Poké Bola da mochila, e com chance de captura como nos jogos.
+ * Captura de selvagens (decisões do usuário): "choose" = ao vencer, o jogador escolhe
+ * se fica com o Pokémon (o padrão); "ball" = captura certa, gastando uma Poké Bola da
+ * mochila; "chance" = com chance, pela taxa de captura da espécie e a bola (etapa 8);
+ * "none" = sem captura.
  */
-export type CaptureRule = 'choose' | 'none';
+export type CaptureRule = 'choose' | 'ball' | 'chance' | 'none';
 
 export interface VariantRules {
 	battles: BattleMode;
@@ -39,6 +48,12 @@ export interface VariantRules {
 	capture?: CaptureRule;
 	/** Tamanho máximo do time. */
 	teamSize: number;
+	/** Computador no PokéCenter (etapa 8). */
+	computer?: boolean;
+	/** Chance de um selvagem ser shiny: 1 em `shinyOdds` (etapa 8; 0 = nunca). */
+	shinyOdds?: number;
+	/** Modo Completo: insígnias, agravantes e ato especial (etapa 9). */
+	complete?: boolean;
 }
 
 export interface MapSettings {
@@ -78,8 +93,7 @@ export interface MapSettings {
 /**
  * Formato das batalhas: formato base e regras na sintaxe do PS. Padrão (decisão do
  * usuário): o do Desafio de Ginásios, individual, Pokédex completa da gen 9, com
- * Megaevolução e sem Tera, Z-moves e Dynamax. Variações futuras podem usar formatos
- * temáticos de uma geração ou liberar Tera e Dynamax.
+ * Megaevolução e sem Tera, Z-moves e Dynamax.
  */
 export interface FormatSpec {
 	base: string;
@@ -93,9 +107,8 @@ export const DEFAULT_FORMAT: FormatSpec = {
 /** Tipos de encontro com batalha. */
 export type EncounterKind = 'wild' | 'trainer' | 'boss' | 'legendary';
 /**
- * De onde vêm os adversários (decisão do usuário: as três coexistem, e cada variação
- * escolhe): sorteados da Pokédex, treinadores do banco do Desafio de Ginásios
- * (ajustados ao nível do andar) ou listas próprias da variação.
+ * De onde vêm os adversários: sorteados da Pokédex (do tema), treinadores do banco do
+ * Desafio de Ginásios (ajustados ao nível do andar) ou listas próprias da variação.
  */
 export type OpponentSource = 'pokedex' | 'gym' | 'pool';
 
@@ -108,9 +121,9 @@ export interface VariantPool {
 }
 
 /**
- * Regra de desbloqueio (decisão do usuário: só a estrutura nesta etapa; o que libera
- * cada coisa fica para as variações de verdade): ao vencer a run, o jogador ganha o
- * desbloqueio, que fica na conta e vale nas próximas runs.
+ * Regra de desbloqueio: ao vencer a run, o jogador ganha o desbloqueio, que fica na
+ * conta e vale nas próximas runs. O que cada expedição libera vem na etapa 9 (iniciais
+ * shiny do modo Completo).
  */
 export interface UnlockRule {
 	when: 'win';
@@ -119,7 +132,7 @@ export interface UnlockRule {
 	ref: string;
 }
 
-/** Configurações em vigor numa run (as da variação com os ajustes do painel). */
+/** Configurações em vigor numa run. */
 export interface RunSettings {
 	rules: VariantRules;
 	map: MapSettings;
@@ -132,35 +145,34 @@ export interface RunSettings {
 	format: FormatSpec;
 	/** Chance de cada fonte, por tipo de encontro. */
 	encounters: Partial<Record<EncounterKind, Partial<Record<OpponentSource, number>>>>;
+	/** Tema: a Pokédex dos sorteios e das evoluções (sem tema = a Pokédex inteira). */
+	theme?: Theme;
 }
 
-/**
- * Número ajustável no painel. A chave aponta para o campo: "acts", "floors",
- * "columns", "paths", "teamSize", "weight:<tipo de nó>", "rare:<tipo de nó>" ou
- * "extra:<nome>".
- */
-export interface Tunable {
-	key: string;
-	min: number;
-	max: number;
-}
+/** Situação de uma expedição do banco: rascunho (só administradores testam), aberta ou encerrada. */
+export type ExpeditionStatus = 'draft' | 'open' | 'closed';
 
 export interface ExpeditionVariant {
-	/** Identificador (letras minúsculas e números): vai no id das páginas. */
+	/** Identificador (letras minúsculas e números): vai no id das páginas e do formato. */
 	id: string;
 	name(TL: Translator): string;
 	description(TL: Translator): string;
-	/** Só administradores veem e jogam (variações de teste). */
-	adminOnly?: boolean;
+	/** Expedição do banco: rascunho, aberta ou encerrada. Sem isso, é uma variação do código. */
+	status?: ExpeditionStatus;
+	/** Variação do código escondida: nunca listada nem jogável (fixture dos testes). */
+	hidden?: boolean;
 	rules: VariantRules;
 	map: MapSettings;
 	extra?: Record<string, number>;
-	tunables: Tunable[];
 	format?: FormatSpec;
 	encounters: Partial<Record<EncounterKind, Partial<Record<OpponentSource, number>>>>;
 	pool?: VariantPool;
-	/** Nível de IA dos adversários por tipo de encontro e progresso da run (0 = início, 1 = fim). */
-	aiLevel(kind: EncounterKind, progress: number): AILevel;
+	theme?: Theme;
+	/**
+	 * Nível de IA dos adversários por tipo de encontro, progresso da run (0 = início,
+	 * 1 = fim) e ato.
+	 */
+	aiLevel(kind: EncounterKind, progress: number, act: number): AILevel;
 	/** Batalhas automáticas: IA que joga pelo jogador. */
 	autoAILevel?: AILevel;
 	/** Desbloqueios que a variação dá (ver UnlockRule). */
@@ -172,41 +184,42 @@ export interface ExpeditionVariant {
 	starterOptions(prng: PRNG, settings: RunSettings, unlocked?: { kind: string, ref: string }[]): RunMon[][];
 }
 
+/** De onde vêm as expedições do banco (registrada pelo index.ts, no processo principal). */
+export interface VariantSource {
+	get(id: string): ExpeditionVariant | null;
+	list(): ExpeditionVariant[];
+}
+
 const registry = new Map<string, ExpeditionVariant>();
+let source: VariantSource | null = null;
 
 export function registerVariant(variant: ExpeditionVariant) {
 	if (!/^[a-z0-9]+$/.test(variant.id)) throw new Error(`Expedition variant id inválido: ${variant.id}`);
 	registry.set(variant.id, variant);
 }
 
-export function getVariant(id: string): ExpeditionVariant | null {
-	return registry.get(id) || null;
+export function setVariantSource(next: VariantSource | null) {
+	source = next;
 }
 
-export function listVariants(): ExpeditionVariant[] {
+/** Variação pelo id: as do código primeiro, depois as do banco. */
+export function getVariant(id: string): ExpeditionVariant | null {
+	return registry.get(id) || source?.get(id) || null;
+}
+
+/** Variações registradas pelo código (com as escondidas). */
+export function listCodeVariants(): ExpeditionVariant[] {
 	return [...registry.values()];
 }
 
-function clamp(value: number, min: number, max: number) {
-	return Math.min(max, Math.max(min, value));
+/** Variações do código (com as escondidas) e expedições do banco. */
+export function listVariants(): ExpeditionVariant[] {
+	return [...registry.values(), ...source?.list() || []];
 }
 
-/** Valor atual de um número ajustável (sem ajuste: o da variação). */
-export function tunableValue(variant: ExpeditionVariant, key: string): number | null {
-	if (key.startsWith('weight:')) return variant.map.weights[key.slice(7)] ?? 0;
-	if (key.startsWith('rare:')) return variant.map.rareNodes?.[key.slice(5)] ?? 0;
-	if (key.startsWith('extra:')) return variant.extra?.[key.slice(6)] ?? null;
-	if (key === 'teamSize') return variant.rules.teamSize;
-	if (key === 'acts' || key === 'floors' || key === 'columns' || key === 'paths') return variant.map[key];
-	return null;
-}
-
-/**
- * Configurações em vigor: as da variação com os ajustes do painel. Só valem chaves
- * declaradas em `tunables`, arredondadas e limitadas ao mínimo e ao máximo.
- */
-export function resolveSettings(variant: ExpeditionVariant, overrides: Record<string, number> = {}): RunSettings {
-	const settings: RunSettings = {
+/** Configurações em vigor numa run nova (cópia, para a run guardar). */
+export function resolveSettings(variant: ExpeditionVariant): RunSettings {
+	return {
 		rules: { ...variant.rules },
 		map: {
 			...variant.map, weights: { ...variant.map.weights }, fixedFloors: { ...variant.map.fixedFloors },
@@ -217,23 +230,6 @@ export function resolveSettings(variant: ExpeditionVariant, overrides: Record<st
 		extra: { startLevel: 5, levelsPerAct: 30, bossLegendaryChance: 0, startMoney: 0, ...variant.extra },
 		format: { ...(variant.format || DEFAULT_FORMAT) },
 		encounters: JSON.parse(JSON.stringify(variant.encounters)),
+		...(variant.theme ? { theme: { gens: [...variant.theme.gens], species: [...variant.theme.species] } } : {}),
 	};
-	for (const tunable of variant.tunables) {
-		const raw = overrides[tunable.key];
-		if (typeof raw !== 'number' || !Number.isFinite(raw)) continue;
-		const value = clamp(Math.round(raw), tunable.min, tunable.max);
-		const { key } = tunable;
-		if (key.startsWith('weight:')) {
-			settings.map.weights[key.slice(7)] = value;
-		} else if (key.startsWith('rare:')) {
-			settings.map.rareNodes = { ...settings.map.rareNodes, [key.slice(5)]: value };
-		} else if (key.startsWith('extra:')) {
-			settings.extra[key.slice(6)] = value;
-		} else if (key === 'teamSize') {
-			settings.rules.teamSize = value;
-		} else if (key === 'acts' || key === 'floors' || key === 'columns' || key === 'paths') {
-			settings.map[key] = value;
-		}
-	}
-	return settings;
 }

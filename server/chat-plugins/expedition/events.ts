@@ -140,7 +140,9 @@ registerEvent({
 	setup(run, node, prng) {
 		const offers: { uid: string, from: string, into: string }[] = [];
 		for (const mon of run.team) {
-			for (const evo of specialEvolutions(mon.species)) offers.push({ uid: mon.uid, from: mon.species, into: evo });
+			for (const evo of specialEvolutions(mon.species, run.settings.theme)) {
+				offers.push({ uid: mon.uid, from: mon.species, into: evo });
+			}
 		}
 		if (!offers.length) return null;
 		prng.shuffle(offers);
@@ -189,7 +191,7 @@ registerEvent({
 		const size = Math.min(6, opponentTeamSize('trainer', progress, prng) + 1);
 		const species: string[] = [];
 		for (let guard = 0; species.length < size && guard < 40; guard++) {
-			const pick = randomSpeciesForLevel(prng, level);
+			const pick = randomSpeciesForLevel(prng, level, null, undefined, run.settings.theme);
 			if (!species.includes(pick)) species.push(pick);
 		}
 		const items = HELD_ITEMS.filter(name => Dex.items.get(name).exists);
@@ -289,7 +291,8 @@ registerEvent({
 	weight: 10,
 	setup(run, node, prng) {
 		const level = levelAt(run, node, -2);
-		const mon = createMon(prng, randomSpeciesForLevel(prng, level), level, `g${run.act}-${node.id}`);
+		const species = randomSpeciesForLevel(prng, level, null, undefined, run.settings.theme);
+		const mon = createMon(prng, species, level, `g${run.act}-${node.id}`);
 		return { mon };
 	},
 	title: TL => TL`A gift`,
@@ -322,11 +325,12 @@ registerEvent({
 	weight: 15,
 	setup(run, node, prng) {
 		const level = levelAt(run, node);
-		const bugs = basicSpecies().filter(name => Dex.species.get(name).types.includes('Bug'));
+		// Sem Bug no tema, o sorteio usa as básicas do tema
+		const bugs = basicSpecies(run.settings.theme).filter(name => Dex.species.get(name).types.includes('Bug'));
 		const count = 1 + prng.random(2);
 		const species: string[] = [];
 		for (let guard = 0; species.length < count && guard < 20; guard++) {
-			const pick = randomSpeciesForLevel(prng, level, bugs);
+			const pick = randomSpeciesForLevel(prng, level, bugs, undefined, run.settings.theme);
 			if (!species.includes(pick)) species.push(pick);
 		}
 		return { berry: BERRIES[prng.random(BERRIES.length)], species, level };
@@ -396,7 +400,8 @@ registerEvent({
 	weight: 10,
 	setup(run, node, prng) {
 		const level = levelAt(run, node, -1);
-		const mon = createMon(prng, randomSpeciesForLevel(prng, level), level, `i${run.act}-${node.id}`);
+		const species = randomSpeciesForLevel(prng, level, null, undefined, run.settings.theme);
+		const mon = createMon(prng, species, level, `i${run.act}-${node.id}`);
 		return { mon };
 	},
 	title: TL => TL`Injured Pokémon`,

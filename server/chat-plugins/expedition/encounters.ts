@@ -20,7 +20,8 @@ import { isTrainerSprite } from '../gym-challenge/trainer-sprites';
 import { seededRandom, weightedPick } from './random';
 import { createMon, type RunMon } from './team';
 import {
-	baseStatTotal, evolveForLevel, isLegendary, legendarySpecies, maxBstForLevel, randomSpeciesForLevel,
+	baseStatTotal, evolveForLevel, inTheme, isLegendary, legendarySpecies, maxBstForLevel, randomSpeciesForLevel,
+	type Theme,
 } from './species';
 import { nodeProgress, opponentLevel, opponentTeamSize } from './progression';
 import type { EncounterKind, ExpeditionVariant, OpponentSource } from './variant';
@@ -77,12 +78,12 @@ function pickClass(prng: PRNG, classes: [string, string][]) {
 	return { name, avatar: isTrainerSprite(avatar) ? avatar : '' };
 }
 
-/** Time sorteado: espécies diferentes, no estágio do nível, com golpes do nível. */
-function randomTeam(prng: PRNG, size: number, level: number, pool?: readonly string[]): RunMon[] {
+/** Time sorteado: espécies diferentes (do tema), no estágio do nível, com golpes do nível. */
+function randomTeam(prng: PRNG, size: number, level: number, pool?: readonly string[], theme?: Theme): RunMon[] {
 	const team: RunMon[] = [];
 	const used = new Set<string>();
 	for (let guard = 0; team.length < size && guard < size * 20; guard++) {
-		const species = randomSpeciesForLevel(prng, level, pool);
+		const species = randomSpeciesForLevel(prng, level, pool, undefined, theme);
 		if (used.has(species)) continue;
 		used.add(species);
 		team.push(createMon(prng, species, level, `o${team.length}`));
@@ -90,8 +91,8 @@ function randomTeam(prng: PRNG, size: number, level: number, pool?: readonly str
 	return team;
 }
 
-/** Treinador do banco do Desafio: o time dele (ou parte), no nível do andar. Null se não houver. */
-function gymTrainer(prng: PRNG, size: number, level: number, allowLegendary: boolean) {
+/** Treinador do banco do Desafio: o time dele (ou parte, só os do tema), no nível do andar. Null se não houver. */
+function gymTrainer(prng: PRNG, size: number, level: number, allowLegendary: boolean, theme?: Theme) {
 	let trainers;
 	try {
 		trainers = getGymStore().listTrainers().filter(trainer => !trainer.doubles && trainer.team);
@@ -100,7 +101,8 @@ function gymTrainer(prng: PRNG, size: number, level: number, allowLegendary: boo
 	}
 	// Só os Pokémon dentro do teto de força do nível (species.ts); sem nenhum, o treinador fica de fora
 	const cap = maxBstForLevel(level);
-	const fitting = (team: string) => (Teams.unpack(team) || []).filter(set => baseStatTotal(set.species) <= cap);
+	const fitting = (team: string) => (Teams.unpack(team) || [])
+		.filter(set => baseStatTotal(set.species) <= cap && inTheme(set.species, theme));
 	const candidates = trainers.filter(trainer => {
 		const sets = Teams.unpack(trainer.team) || [];
 		return fitting(trainer.team).length &&
@@ -126,7 +128,7 @@ export function encounterFromSpec(run: ExpeditionRun, variant: ExpeditionVariant
 	const prng = seededRandom(run.seed, `eventbattle:${run.act}:${node.id}`);
 	const team = spec.species.map((species, i) => createMon(prng, species, spec.level, `o${i}`));
 	const progress = nodeProgress(run.settings, run.act, node.floor);
-	const aiLevel = spec.ai === 'hard' ? 'hard' : variant.aiLevel(spec.kind, progress);
+	const aiLevel = spec.ai === 'hard' ? 'hard' : variant.aiLevel(spec.kind, progress, run.act);
 	const avatar = spec.kind === 'wild' ? WILD_AVATAR : isTrainerSprite(spec.avatar) ? spec.avatar : '';
 	return {
 		kind: spec.kind, source: 'pokedex', name: spec.name, avatar, team, packed: packTeam(team), aiLevel,
@@ -142,38 +144,41 @@ export function generateEncounter(run: ExpeditionRun, variant: ExpeditionVariant
 	const progress = nodeProgress(settings, run.act, node.floor);
 	const level = opponentLevel(settings, run.act, node.floor, prng, kind);
 	const size = opponentTeamSize(kind, progress, prng);
-	const aiLevel = variant.aiLevel(kind, progress);
+	const aiLevel = variant.aiLevel(kind, progress, run.act);
 	const pool = variant.pool;
+	const theme = settings.theme;
 	let source: OpponentSource = weightedPick(prng, settings.encounters[kind] || {}) || 'pokedex';
 	if (source === 'pool' && !pool) source = 'pokedex';
 	const base = { kind, aiLevel, doubles: false, trainer: kind === 'trainer' || kind === 'boss' };
 
-	if (kind === 'legendary') {
-		const species = evolveForLevel(prng, legendarySpecies()[prng.random(legendarySpecies().length)], level);
+	const legends = legendarySpecies(theme);
+	if (kind === 'legendary' && legends.length) {
+		const species = evolveForLevel(prng, legends[prng.random(legends.length)], level, theme);
 		const team = [createMon(prng, species, level, 'o0')];
 		return { ...base, source: 'pokedex', name: `Wild ${species}`, avatar: WILD_AVATAR, team, packed: packTeam(team) };
 	}
-	if (kind === 'wild') {
-		const team = randomTeam(prng, 1, level, source === 'pool' ? pool!.species : undefined);
+	// Tema sem lendários (o painel não deixa abrir assim): o nó vira um selvagem comum
+	if (kind === 'wild' || kind === 'legendary') {
+		const team = randomTeam(prng, 1, level, source === 'pool' ? pool!.species : undefined, theme);
 		const species = team[0].species;
 		return { ...base, source: source === 'gym' ? 'pokedex' : source, name: `Wild ${species}`, avatar: WILD_AVATAR, team,
 			packed: packTeam(team) };
 	}
 	if (source === 'gym') {
-		const trainer = gymTrainer(prng, size, level, kind === 'boss');
+		const trainer = gymTrainer(prng, size, level, kind === 'boss', theme);
 		if (trainer) return { ...base, source, ...trainer };
 		source = 'pokedex';
 	}
 	if (source === 'pool' && pool!.trainers.length) {
 		const entry = pool!.trainers[prng.random(pool!.trainers.length)];
-		const team = randomTeam(prng, Math.min(size, entry.species.length), level, entry.species);
+		const team = randomTeam(prng, Math.min(size, entry.species.length), level, entry.species, theme);
 		return { ...base, source, name: entry.name, avatar: isTrainerSprite(entry.avatar) ? entry.avatar : '', team,
 			packed: packTeam(team) };
 	}
-	const team = randomTeam(prng, size, level, source === 'pool' ? pool!.species : undefined);
+	const team = randomTeam(prng, size, level, source === 'pool' ? pool!.species : undefined, theme);
 	// O chefe às vezes tem um lendário (decisão do usuário: pode ter, mas não é comum)
-	if (kind === 'boss' && prng.random(100) < (settings.extra.bossLegendaryChance || 0)) {
-		const species = evolveForLevel(prng, legendarySpecies()[prng.random(legendarySpecies().length)], level);
+	if (kind === 'boss' && legends.length && prng.random(100) < (settings.extra.bossLegendaryChance || 0)) {
+		const species = evolveForLevel(prng, legends[prng.random(legends.length)], level, theme);
 		team[team.length - 1] = createMon(prng, species, level, `o${team.length - 1}`);
 	}
 	const who = pickClass(prng, kind === 'boss' ? BOSS_CLASSES : TRAINER_CLASSES);

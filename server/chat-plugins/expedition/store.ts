@@ -2,7 +2,8 @@
  * pokemon-showdown-custom: persistência da Expedição.
  *
  * SQLite próprio (node:sqlite) em databases/expedition.db, como o Desafio de Ginásios.
- * LGPD: guarda o id do jogador nas runs e nos desbloqueios, e nenhum IP. Tudo do
+ * Guarda as expedições criadas pelo admin (etapa 6), as runs, as batalhas e os
+ * desbloqueios. LGPD: guarda o id do jogador nas runs e nos desbloqueios, e nenhum IP. Tudo do
  * jogador é apagado junto com a conta (deleteUserData) e passa para o nome novo numa
  * troca de nome (renameUser).
  *
@@ -13,7 +14,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { RunMon } from './team';
 import type { MonGain, RunDecision } from './progression';
-import type { RunSettings } from './variant';
+import type { ExpeditionStatus, RunSettings } from './variant';
+import { normalizeDefinition, type ExpeditionDefinition, type StoredExpedition } from './definition';
+import { TEST_DEFINITION } from './variants';
 
 export const DEFAULT_DB_PATH = 'databases/expedition.db';
 
@@ -81,7 +84,12 @@ export interface Unlock {
 	unlockedAt: number;
 }
 
-const MIGRATIONS: string[] = [
+/** Passo de migração: SQL, ou uma função para o que o SQL sozinho não faz. */
+type Migration = string | ((db: DatabaseSync) => void);
+
+const now = () => Math.floor(Date.now() / 1000);
+
+const MIGRATIONS: Migration[] = [
 	// 1: runs, desbloqueios e ajustes das variações (painel)
 	`
 	CREATE TABLE runs (
@@ -146,10 +154,42 @@ const MIGRATIONS: string[] = [
 	ALTER TABLE runs ADD COLUMN money INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE runs ADD COLUMN node_state TEXT NOT NULL DEFAULT '{}';
 	`,
+	// 5: expedições criadas pelo admin (etapa 6). A expedição de teste do código vira o
+	// rascunho "Expedição de teste", e as runs dela passam para o id novo. Os ajustes das
+	// variações (ligar, desligar e números) deixam de existir: a situação da expedição
+	// (rascunho, aberta, encerrada) e a definição fazem esse papel.
+	(db: DatabaseSync) => {
+		db.exec(`
+			CREATE TABLE expeditions (
+				id           INTEGER PRIMARY KEY,
+				name         TEXT NOT NULL,
+				status       TEXT NOT NULL CHECK (status IN ('draft', 'open', 'closed')),
+				definition   TEXT NOT NULL,
+				created_at   INTEGER NOT NULL,
+				updated_at   INTEGER NOT NULL
+			) STRICT;
+			CREATE UNIQUE INDEX expeditions_name ON expeditions (name COLLATE NOCASE);
+			DROP TABLE variant_settings;
+		`);
+		const result = db.prepare(`
+			INSERT INTO expeditions (name, status, definition, created_at, updated_at) VALUES (?, 'draft', ?, ?, ?)
+		`).run('Expedição de teste', JSON.stringify(TEST_DEFINITION), now(), now());
+		db.prepare(`UPDATE runs SET variant = ? WHERE variant = 'teste'`).run(String(result.lastInsertRowid));
+	},
 ];
 
 type Row = Record<string, any>;
-const now = () => Math.floor(Date.now() / 1000);
+
+function toExpedition(row: Row): StoredExpedition & { createdAt: number, updatedAt: number } {
+	let raw: unknown = {};
+	try {
+		raw = JSON.parse(row.definition);
+	} catch {}
+	return {
+		id: row.id, name: row.name, status: row.status, definition: normalizeDefinition(raw),
+		createdAt: row.created_at, updatedAt: row.updated_at,
+	};
+}
 
 function toRun(row: Row): ExpeditionRun {
 	return {
@@ -178,7 +218,9 @@ export class ExpeditionStore {
 		const { user_version: current } = this.db.prepare('PRAGMA user_version').get() as { user_version: number };
 		for (let version = current; version < MIGRATIONS.length; version++) {
 			this.transaction(() => {
-				this.db.exec(MIGRATIONS[version]);
+				const migration = MIGRATIONS[version];
+				if (typeof migration === 'string') this.db.exec(migration);
+				else migration(this.db);
 				this.db.exec(`PRAGMA user_version = ${version + 1}`);
 			});
 		}
@@ -328,19 +370,49 @@ export class ExpeditionStore {
 		return !!this.db.prepare('SELECT 1 FROM unlocks WHERE userid = ? AND kind = ? AND ref = ?').get(userid, kind, ref);
 	}
 
-	// --- Ajustes das variações (painel; etapa 4) -----------------------------------------
+	// --- Expedições (painel; etapa 6) -----------------------------------------------------
 
-	getVariantSettings(variant: string): { enabled: boolean, overrides: Record<string, number> } {
-		const row = this.db.prepare('SELECT * FROM variant_settings WHERE variant = ?').get(variant) as Row | undefined;
-		return row ? { enabled: row.enabled === 1, overrides: JSON.parse(row.overrides) } : { enabled: true, overrides: {} };
+	listExpeditions(): (StoredExpedition & { createdAt: number, updatedAt: number })[] {
+		return (this.db.prepare('SELECT * FROM expeditions ORDER BY name COLLATE NOCASE').all() as Row[]).map(toExpedition);
 	}
 
-	setVariantSettings(variant: string, enabled: boolean, overrides: Record<string, number>) {
-		this.db.prepare(`
-			INSERT INTO variant_settings (variant, enabled, overrides, updated_at) VALUES (?, ?, ?, ?)
-			ON CONFLICT (variant) DO UPDATE SET enabled = excluded.enabled, overrides = excluded.overrides,
-				updated_at = excluded.updated_at
-		`).run(variant, enabled ? 1 : 0, JSON.stringify(overrides), now());
+	getExpedition(id: number): (StoredExpedition & { createdAt: number, updatedAt: number }) | null {
+		const row = this.db.prepare('SELECT * FROM expeditions WHERE id = ?').get(id) as Row | undefined;
+		return row ? toExpedition(row) : null;
+	}
+
+	/** Nova expedição (rascunho). */
+	createExpedition(name: string, definition: ExpeditionDefinition): number {
+		const result = this.db.prepare(`
+			INSERT INTO expeditions (name, status, definition, created_at, updated_at) VALUES (?, 'draft', ?, ?, ?)
+		`).run(name, JSON.stringify(definition), now(), now());
+		return Number(result.lastInsertRowid);
+	}
+
+	updateExpedition(id: number, name: string, definition: ExpeditionDefinition) {
+		this.db.prepare('UPDATE expeditions SET name = ?, definition = ?, updated_at = ? WHERE id = ?')
+			.run(name, JSON.stringify(definition), now(), id);
+	}
+
+	setExpeditionStatus(id: number, status: ExpeditionStatus) {
+		this.db.prepare('UPDATE expeditions SET status = ?, updated_at = ? WHERE id = ?').run(status, now(), id);
+	}
+
+	/** Apaga um rascunho sem runs (com runs, ele fica: elas são o histórico). */
+	deleteDraftExpedition(id: number): boolean {
+		if (this.countRuns(String(id))) return false;
+		return this.db.prepare(`DELETE FROM expeditions WHERE id = ? AND status = 'draft'`).run(id).changes > 0;
+	}
+
+	/** Runs de uma expedição (todas as situações): com alguma, as insígnias ficam travadas. */
+	countRuns(variant: string): number {
+		return Number((this.db.prepare('SELECT count(*) AS n FROM runs WHERE variant = ?').get(variant) as Row).n);
+	}
+
+	/** Ids das runs em andamento de uma expedição (encerradas junto com ela). */
+	listActiveRunIds(variant: string): number[] {
+		return (this.db.prepare(`SELECT id FROM runs WHERE variant = ? AND status = 'active' ORDER BY id`)
+			.all(variant) as Row[]).map(row => row.id);
 	}
 
 	// --- Conta -------------------------------------------------------------------------

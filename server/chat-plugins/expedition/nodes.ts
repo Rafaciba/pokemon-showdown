@@ -22,6 +22,7 @@ import { buyItem, consumable, consumableDescription, itemDisplay, shopStock, tmM
 import { moveDescription } from './tooltips';
 import { getEvent, pickEvent } from './events';
 import './events-world';
+import './events-rocket';
 import { seededRandom } from './random';
 
 export interface NodeChoice {
@@ -195,6 +196,8 @@ registerNodeType({
 		if (!offered || offered.disabled) return null;
 		const outcome = event.choose({ ...context, data: run.nodeState.data }, choice);
 		if (outcome === null || typeof outcome === 'string') return outcome;
+		// O evento continua (novas escolhas), sem resultado ainda
+		if ('stay' in outcome) return false;
 		if ('battle' in outcome) {
 			// A batalha fica no estado do nó; a vitória termina o nó (battles.ts)
 			run.nodeState = { ...run.nodeState, battle: outcome.battle, reward: outcome.reward || null };

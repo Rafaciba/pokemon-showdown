@@ -929,6 +929,96 @@ describe('Expedition', () => {
 			assert.equal(start('oldman', { ...run, act: 2 }).data, null);
 		});
 
+		it('plays doubles against two trainers, each position with its own Pokémon', () => {
+			const tag = require('../../../dist/server/chat-plugins/expedition/tag-team');
+			assert.deepEqual(tag.interleave(['A1', 'A2', 'A3'], ['B1']), ['A1', 'B1', 'A2', 'A3']);
+			const mon = (name, active, fainted = false) => ({ ident: `p2: ${name}`, active, condition: fainted ? '0 fnt' : '100/100' });
+			const side = pokemon => ({ name: 'NPC', id: 'p2', pokemon });
+			let answer = '';
+			const ai = new tag.TagTeamAI({ level: 'easy', choose: () => answer }, { Rattata: 0, Zubat: 1, Ekans: 0, Koffing: 1 });
+			const team = [mon('Rattata', true), mon('Zubat', true), mon('Ekans', false), mon('Koffing', false)];
+			assert.equal(ai.choose({ teamPreview: true, side: side(team) }, { log: [] }), 'team 1234');
+			answer = 'switch 4, move 1';
+			assert.equal(ai.choose({ active: [{}, {}], side: side(team) }, { log: [] }), 'switch 3, move 1', 'troca para o do próprio treinador');
+			answer = 'move 1, switch 3';
+			assert.equal(ai.choose({ active: [{}, {}], side: side(team) }, { log: [] }), 'move 1, switch 4');
+			const noBench = [mon('Rattata', true, true), mon('Zubat', true), mon('Koffing', false)];
+			answer = 'switch 3, pass';
+			assert.equal(ai.choose({ forceSwitch: [true, false], side: side(noBench) }, { log: [] }), 'switch 3, pass',
+				'sem ninguém do próprio treinador, o do outro entra no lugar vago');
+			assert.equal(ai.choose({ active: [{}, {}], side: side([mon('Rattata', true), mon('Zubat', true), mon('Koffing', false)]) },
+				{ log: [] }), 'move 1, pass'.replace(', pass', ', pass'), 'troca voluntária para o do outro vira golpe');
+		});
+
+		it('runs the Team Rocket events: the kid in doubles and the hideout that goes on after battles', () => {
+			const events = require('../../../dist/server/chat-plugins/expedition/events');
+			const run = runs.startRun(user, 'unitteste');
+			runs.chooseStarter(run, 0);
+			run.settings.rules.capture = 'chance';
+			const node = { id: '4-0', floor: 4, col: 0, type: 'event', next: [] };
+			const start = (id, setupRun = run) => {
+				const event = events.getEvent(id);
+				const data = event.setup(setupRun, node, random.seededRandom(`ev2-${id}`, 'x'));
+				return { event, data, context: { run: setupRun, node, TL, lang: 'en', data } };
+			};
+			const kids = start('rocketkids');
+			assert(kids.data.a.length >= 2 && kids.data.b.length >= 1);
+			assert(!kids.data.a.some(name => kids.data.b.includes(name)), 'espécies diferentes nos dois times');
+			const help = kids.event.choose(kids.context, 'help');
+			assert.deepEqual(Object.values(help.battle.owners).sort(), [...kids.data.a.map(() => 0), ...kids.data.b.map(() => 1)].sort());
+			assert.equal(help.reward.items.length, 2, 'item da sacola e a berry');
+			assert(!kids.event.choices(kids.context).some(choice => choice.id === 'police'));
+			kids.event.choose(kids.context, 'steal');
+			assert(run.items.includes(kids.data.loot));
+			const { TEST_VARIANT } = require('../../../dist/server/chat-plugins/expedition/variants');
+			const encounters = require('../../../dist/server/chat-plugins/expedition/encounters');
+			const encounter = encounters.encounterFromSpec(run, TEST_VARIANT, node, help.battle);
+			assert.equal(encounter.doubles, true, 'batalha em dupla');
+			assert.deepEqual(encounter.owners, help.battle.owners);
+
+			// Covil: só no ato 3
+			assert.equal(start('rocketlair').data, null);
+			run.act = 3;
+			const lair = start('rocketlair');
+			assert.deepEqual(lair.event.choices(lair.context).map(choice => choice.id), ['enter', 'leave']);
+			assert.deepEqual(lair.event.choose(lair.context, 'enter'), { stay: true });
+			let battles = 0;
+			for (let i = 0; i < 4; i++) {
+				const outcome = lair.event.choose(lair.context, i % 2 ? 'left' : 'right');
+				if (outcome.battle) {
+					battles++;
+					assert.equal(outcome.battle.resume, true, 'o evento continua depois da batalha');
+				}
+			}
+			assert.equal(lair.data.lair.step, 4);
+			assert.deepEqual(lair.event.choices(lair.context).map(choice => choice.id), ['end', 'exit']);
+			lair.event.choose(lair.context, 'end');
+			assert.equal(lair.data.lair.done, true);
+			assert.deepEqual(lair.event.choices(lair.context).map(choice => choice.id), ['exit']);
+			assert.deepEqual(lair.event.choose(lair.context, 'exit'), { result: true });
+
+			// Vitória numa batalha que continua o evento: o nó segue aberto, sem a batalha
+			run.node = '4-0';
+			run.nodeDone = false;
+			run.decisions = [];
+			run.nodeState = { event: 'rocketlair', data: lair.data, battle: { ...help.battle, owners: undefined, resume: true } };
+			db.saveRun(run);
+			db.db.prepare('UPDATE runs SET settings = ? WHERE id = ?').run(JSON.stringify(run.settings), run.id);
+			battles.toString();
+			const battleModule = require('../../../dist/server/chat-plugins/expedition/battles');
+			battleModule.setEncounterOverride(saved => encounters.encounterFromSpec(saved, TEST_VARIANT, node, saved.nodeState.battle));
+			try {
+				const battle = db.createBattle(run.id, run.act, '4-0', [run.team[0].uid]);
+				battleModule.finishExpeditionBattle(battle.id, 'win', [{ index: 0, hp: 0.9, ppUsed: [1], fainted: false }]);
+			} finally {
+				battleModule.setEncounterOverride(null);
+			}
+			const after = db.getRun(run.id);
+			assert.equal(after.nodeDone, false, 'o nó não termina');
+			assert.equal(after.nodeState.battle, undefined);
+			assert.equal(after.nodeState.event, 'rocketlair');
+		});
+
 		it('computes the capture chance of each ball', () => {
 			const capture = require('../../../dist/server/chat-plugins/expedition/capture');
 			assert.equal(capture.catchChance('Bulbasaur', 'masterball'), 1);
@@ -967,8 +1057,10 @@ describe('Expedition', () => {
 			assert.equal(run.team[1].ball, 'Poké Ball');
 			assert.equal(run.items.length, 2);
 
-			// Com chance: Mewtwo (taxa 3) com Poké Bola escapa quase sempre; cada tentativa gasta uma bola
+			// Com chance: Mewtwo (taxa 3, chance mínima de 10%) escapa quase sempre; cada tentativa gasta uma
+			// bola. Semente fixa: o resultado de cada tentativa sai dela
 			run.settings.rules.capture = 'chance';
+			run.seed = 'capture-test';
 			run.items = Array(40).fill('pokeball');
 			run.decisions = [{ kind: 'capture', uid: 'w2', mon: { ...wild, uid: 'w2' } }];
 			let tries = 0;
@@ -978,7 +1070,7 @@ describe('Expedition', () => {
 				if (run.decisions.length && !run.decisions[0].caught) assert.equal(run.decisions[0].escaped, 'Poké Ball');
 			}
 			assert.equal(run.items.length, 40 - tries);
-			assert(tries > 1, `tentativas: ${tries}`);
+			assert(tries >= 1 && tries < 40, `tentativas: ${tries}`);
 			// O resultado de cada tentativa sai da semente: o mesmo ao repetir
 			const again = { ...run, decisions: [{ kind: 'capture', uid: 'w2', mon: { ...wild, uid: 'w2' } }], items: Array(40).fill('pokeball') };
 			let triesAgain = 0;

@@ -31,6 +31,7 @@ import { healMon, type RunMon } from './team';
 import { battlePrize } from './economy';
 import { eliteReward } from './items';
 import { ballIdByName } from './capture';
+import { TagTeamAI } from './tag-team';
 import { seededRandom } from './random';
 import type { ExpeditionBattle, ExpeditionRun } from './store';
 
@@ -100,7 +101,8 @@ function openBattleRoom(user: User, run: ExpeditionRun, encounter: Encounter, ba
 		inputLog: team ? undefined : battle.inputLog!,
 		npc: {
 			name: encounter.name, team: encounter.packed, avatar: encounter.avatar || undefined,
-			ai: createAI(encounter.aiLevel),
+			// Dois treinadores em dupla: cada posição só com os Pokémon do seu treinador
+			ai: encounter.owners ? new TagTeamAI(createAI(encounter.aiLevel), encounter.owners) : createAI(encounter.aiLevel),
 			// Estado do time do jogador (HP e PP), aplicado pelo formato no começo da batalha
 			playerData: team ? {
 				expedition: { p1: playerTeam.map(mon => ({ hp: mon.hp, ppUsed: mon.ppUsed, status: mon.status || '' })) },
@@ -284,7 +286,13 @@ export function finishExpeditionBattle(battleId: number, result: NpcBattleResult
 	if (run.settings.rules.attrition === 'fullheal') {
 		for (const mon of run.team) healMon(mon);
 	}
-	battleCallbacks.completeNode(run);
+	// Evento que continua depois da vitória (Covil Rocket): o nó segue aberto, no evento
+	if (run.nodeState?.battle?.resume) {
+		const { battle: finished, reward: given, ...rest } = run.nodeState;
+		run.nodeState = rest;
+	} else {
+		battleCallbacks.completeNode(run);
+	}
 	store.saveRun(run);
 	battleCallbacks.refresh(run.userid, run.variant);
 	announceResult(battle.roomid, run);

@@ -47,6 +47,8 @@ export interface Encounter {
 	doubles: boolean;
 	/** Bônus de experiência de treinador (1,5 vez). */
 	trainer: boolean;
+	/** Dois treinadores em dupla: o dono (0 ou 1) de cada espécie (tag-team.ts). */
+	owners?: Record<string, number>;
 }
 
 /** Classes de treinador dos encontros sorteados (nome na batalha e sprite oficial). */
@@ -144,11 +146,11 @@ export function encounterFromSpec(run: ExpeditionRun, variant: ExpeditionVariant
 	const prng = seededRandom(run.seed, `eventbattle:${run.act}:${node.id}`);
 	const team = spec.species.map((species, i) => createMon(prng, species, spec.level, `o${i}`));
 	const progress = nodeProgress(run.settings, run.act, node.floor);
-	const aiLevel = spec.ai === 'hard' ? 'hard' : variant.aiLevel(spec.kind, progress, run.act);
+	const aiLevel = spec.ai === 'hard' ? 'hard' : variant.aiLevel(spec.ai === 'boss' ? 'boss' : spec.kind, progress, run.act);
 	const avatar = spec.kind === 'wild' ? WILD_AVATAR : isTrainerSprite(spec.avatar) ? spec.avatar : '';
 	return {
 		kind: spec.kind, source: 'pokedex', name: spec.name, avatar, team, packed: packTeam(team), aiLevel,
-		doubles: false, trainer: spec.kind === 'trainer',
+		doubles: !!spec.owners, trainer: spec.kind === 'trainer', ...(spec.owners ? { owners: spec.owners } : {}),
 	} as Encounter;
 }
 

@@ -42,10 +42,17 @@ export interface EventBattle {
 	level: number;
 	name: string;
 	avatar: string;
-	/** Nível de IA: o da variação para o tipo, ou um fixo. */
-	ai: 'variant' | 'hard';
+	/** Nível de IA: o da variação para o tipo (ou o dos chefes do ato), ou um fixo. */
+	ai: 'variant' | 'boss' | 'hard';
 	/** Selvagens que não podem ser capturados depois (o grupo da caverna). */
 	noCapture?: boolean;
+	/**
+	 * Batalha em dupla contra dois treinadores (tag-team.ts): `species` vem intercalada, e
+	 * `owners` diz de qual treinador (0 ou 1) é cada espécie.
+	 */
+	owners?: Record<string, number>;
+	/** O evento continua depois da vitória (o Covil Rocket), em vez de terminar o nó. */
+	resume?: boolean;
 }
 
 /** Recompensa de uma batalha de evento, entregue na vitória. */
@@ -71,8 +78,11 @@ export interface EventChoice {
 	move?: string;
 }
 
-/** O que uma escolha fez: o resultado direto, ou uma batalha (com a recompensa da vitória). */
-export type EventOutcome = { result: true } | { battle: EventBattle, reward?: EventReward };
+/**
+ * O que uma escolha fez: o resultado direto, uma batalha (com a recompensa da vitória) ou
+ * `stay`, quando o evento continua com novas escolhas (o Covil Rocket).
+ */
+export type EventOutcome = { result: true } | { battle: EventBattle, reward?: EventReward } | { stay: true };
 
 export interface ExpeditionEvent {
 	id: string;

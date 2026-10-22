@@ -113,8 +113,8 @@ export interface RunSettings {
 	map: MapSettings;
 	/**
 	 * Números próprios da variação. A base usa: startLevel (nível inicial), levelsPerAct
-	 * (níveis da curva por ato, progression.ts) e bossLegendaryChance (% de o chefe ter
-	 * um lendário).
+	 * (níveis da curva por ato, progression.ts), bossLegendaryChance (% de o chefe ter
+	 * um lendário) e startMoney (dinheiro inicial, economy.ts).
 	 */
 	extra: Record<string, number>;
 	format: FormatSpec;
@@ -196,7 +196,7 @@ export function resolveSettings(variant: ExpeditionVariant, overrides: Record<st
 			lateTypes: [...variant.map.lateTypes || []], maxPerAct: { ...variant.map.maxPerAct },
 			rareNodes: { ...variant.map.rareNodes },
 		},
-		extra: { startLevel: 5, levelsPerAct: 30, bossLegendaryChance: 0, ...variant.extra },
+		extra: { startLevel: 5, levelsPerAct: 30, bossLegendaryChance: 0, startMoney: 0, ...variant.extra },
 		format: { ...(variant.format || DEFAULT_FORMAT) },
 		encounters: JSON.parse(JSON.stringify(variant.encounters)),
 	};

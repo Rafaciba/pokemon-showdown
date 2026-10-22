@@ -553,6 +553,75 @@ describe('Expedition', () => {
 			assert.deepEqual(run.items, ['Leftovers', view.choices[1].item]);
 		});
 
+		it('pays for trainer battles and sells items in the shop', () => {
+			const economy = require('../../../dist/server/chat-plugins/expedition/economy');
+			const { TEST_VARIANT } = require('../../../dist/server/chat-plugins/expedition/variants');
+			const settings = variant.resolveSettings(TEST_VARIANT);
+			assert.equal(settings.extra.startMoney, 1000);
+			const mon = lvl => ({ species: 'Rattata', level: lvl });
+			const trainer = { kind: 'trainer', source: 'pokedex', trainer: true, team: [mon(10), mon(12)] };
+			const wild = { kind: 'wild', source: 'pokedex', trainer: false, team: [mon(12)] };
+			const boss = { kind: 'boss', source: 'pokedex', trainer: true, team: [mon(12)] };
+			assert.equal(economy.battlePrize(wild, settings), 0, 'selvagem não paga');
+			assert(economy.battlePrize(trainer, settings) > 0);
+			assert(economy.battlePrize(boss, settings) > economy.battlePrize(trainer, settings));
+
+			const run = runs.startRun(user, 'unitteste');
+			runs.chooseStarter(run, 0);
+			const stock = economy.shopStock(run, '2-1');
+			assert.deepEqual(economy.shopStock(run, '2-1'), stock, 'o mesmo estoque ao voltar');
+			assert(stock.some(entry => entry.item === 'potion' && !entry.single));
+			assert.equal(stock.filter(entry => entry.group === 'held').length, 3);
+			assert(stock.some(entry => entry.item === 'rarecandy' && entry.single));
+			run.money = 300;
+			assert.equal(economy.buyItem(run, '2-1', 'superpotion'), 'nomoney');
+			assert.equal(economy.buyItem(run, '2-1', 'potion'), null);
+			assert.equal(run.money, 100);
+			assert.deepEqual(run.items, ['potion']);
+			run.money = 20000;
+			assert.equal(economy.buyItem(run, '2-1', 'rarecandy'), null);
+			assert.equal(economy.buyItem(run, '2-1', 'rarecandy'), 'soldout', 'uma unidade só');
+			assert.equal(economy.buyItem(run, '2-1', 'nada'), 'badchoice');
+		});
+
+		it('uses bag items outside battles: potions, revive, status, Rare Candy and TMs', () => {
+			const economy = require('../../../dist/server/chat-plugins/expedition/economy');
+			const run = runs.startRun(user, 'unitteste');
+			runs.chooseStarter(run, 0);
+			const mon = run.team[0];
+			run.items = ['potion', 'revive', 'antidote', 'rarecandy'];
+			assert.equal(runs.useBagItem(run, 'potion', mon.uid), 'noeffect', 'HP cheio');
+			assert.equal(economy.itemApplies('potion', mon), false);
+			assert.equal(economy.itemApplies('rarecandy', mon), true);
+			mon.hp = 0.2;
+			assert.equal(runs.useBagItem(run, 'potion', mon.uid), null);
+			assert(mon.hp > 0.2);
+			assert.equal(runs.useBagItem(run, 'revive', mon.uid), 'noeffect', 'não desmaiou');
+			mon.fainted = true;
+			mon.hp = 0;
+			assert.equal(runs.useBagItem(run, 'revive', mon.uid), null);
+			assert.deepEqual([mon.fainted, mon.hp], [false, 0.5]);
+			mon.status = 'brn';
+			assert.equal(runs.useBagItem(run, 'antidote', mon.uid), 'noeffect', 'antídoto não cura queimadura');
+			mon.status = 'tox';
+			assert.equal(runs.useBagItem(run, 'antidote', mon.uid), null);
+			assert.equal(mon.status, '');
+			const level = mon.level;
+			assert.equal(runs.useBagItem(run, 'rarecandy', mon.uid), null);
+			assert.equal(mon.level, level + 1);
+			assert.deepEqual(run.items, []);
+			assert.equal(runs.useBagItem(run, 'potion', mon.uid), 'noitem');
+
+			// TM: só quem aprende; com quatro golpes, a decisão vai para a fila
+			const tm = economy.tmMovesFor(mon).find(move => !mon.moves.includes(move));
+			mon.moves = ['tackle', 'growl', 'vinewhip', 'leechseed'];
+			run.items = [`tm:${tm}`, 'tm:surf'];
+			assert.equal(runs.useBagItem(run, 'tm:surf', mon.uid), 'badtarget', 'Bulbasaur não aprende Surf');
+			assert.equal(runs.useBagItem(run, `tm:${tm}`, mon.uid), null);
+			assert.deepEqual(run.decisions[run.decisions.length - 1], { kind: 'learn', uid: mon.uid, move: tm });
+			assert.equal(runs.useBagItem(run, 'tm:surf', mon.uid), 'decisions', 'decida primeiro');
+		});
+
 		it('hides test variants from players and gives up runs', () => {
 			assert.equal(runs.startRun(user, 'teste'), 'disabled', 'a variação de teste é só para administradores');
 			assert.equal(runs.startRun(user, 'nope'), 'novariant');

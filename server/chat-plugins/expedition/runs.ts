@@ -25,10 +25,12 @@ import { battleCallbacks, currentEncounter, forfeitOpenBattle, hasOpenBattle, st
 import { evolveMon } from './progression';
 import type { ExpeditionRun } from './store';
 import type { Translator } from '../../../sim/dex-text';
+import type { TextLanguage } from '../../../sim/dex-data';
+import { isHeldItem, useItem, type EconomyProblem } from './economy';
 
 export type RunProblem =
 	'novariant' | 'disabled' | 'active' | 'norun' | 'nostarter' | 'badchoice' | 'unreachable' | 'nodeopen' | 'nonode' |
-	'decisions' | 'nodecision' | 'nobattle' | 'teamfull' | 'inbattle' | 'noitem';
+	'decisions' | 'nodecision' | 'nobattle' | 'teamfull' | 'inbattle' | 'noitem' | EconomyProblem;
 
 export type RunPhase = 'starter' | 'decision' | 'map' | 'node' | 'ended';
 
@@ -74,6 +76,7 @@ export function chooseStarter(run: ExpeditionRun, index: number): RunProblem | n
 	if (!team) return 'badchoice';
 	run.team = team.slice(0, run.settings.rules.teamSize);
 	run.pending = null;
+	run.money = run.settings.extra.startMoney || 0;
 	getStore().saveRun(run);
 	return null;
 }
@@ -88,6 +91,7 @@ export function enterNode(run: ExpeditionRun, nodeId: string): RunProblem | null
 	run.node = nodeId;
 	run.nodeDone = false;
 	run.lastBattle = null;
+	run.nodeState = {};
 	run.path.push(`${run.act}:${nodeId}`);
 	getStore().saveRun(run);
 	return null;
@@ -110,7 +114,9 @@ export function completeNode(run: ExpeditionRun) {
 }
 
 /** O que o nó atual mostra (null fora de um nó). */
-export function currentNodeView(run: ExpeditionRun, TL: Translator): { type: string, view: NodeView } | null {
+export function currentNodeView(
+	run: ExpeditionRun, TL: Translator, lang: TextLanguage = 'en'
+): { type: string, view: NodeView } | null {
 	if (runPhase(run) !== 'node') return null;
 	const node = findNode(currentMap(run), run.node!);
 	const type = node && getNodeType(node.type);
@@ -134,7 +140,7 @@ export function currentNodeView(run: ExpeditionRun, TL: Translator): { type: str
 		return { type: type.id, view: { text, choices: [{ id: 'battle', label }] } };
 	}
 	if (!type.view) return null;
-	return { type: type.id, view: type.view({ run, node, TL }) };
+	return { type: type.id, view: type.view({ run, node, TL, lang }) };
 }
 
 export function chooseInNode(run: ExpeditionRun, choice: string, TL: Translator, user: User): RunProblem | null {
@@ -147,8 +153,9 @@ export function chooseInNode(run: ExpeditionRun, choice: string, TL: Translator,
 		if (choice !== 'battle') return 'badchoice';
 		return startOrResumeBattle(user, run) ? null : 'nobattle';
 	}
-	const done = type.choose?.({ run, node, TL }, choice) ?? null;
+	const done = type.choose?.({ run, node, TL, lang: 'en' }, choice) ?? null;
 	if (done === null) return 'badchoice';
+	if (typeof done === 'string') return done as RunProblem;
 	if (done) completeNode(run);
 	getStore().saveRun(run);
 	return null;
@@ -224,11 +231,29 @@ export function setHeldItem(run: ExpeditionRun, uid: string, item: string): RunP
 	if (!mon) return 'badchoice';
 	const id = toID(item);
 	if (id === toID(mon.item)) return null;
-	const index = id ? run.items.findIndex(entry => toID(entry) === id) : -1;
+	// Só itens de segurar (os de uso e as TMs são usados pela mochila)
+	const index = id ? run.items.findIndex(entry => toID(entry) === id && isHeldItem(entry)) : -1;
 	if (id && index < 0) return 'noitem';
 	if (index >= 0) run.items.splice(index, 1);
 	if (mon.item) run.items.push(mon.item);
 	mon.item = id ? Dex.items.get(id).name : '';
+	getStore().saveRun(run);
+	return null;
+}
+
+/**
+ * Usa um item da mochila num Pokémon (decisão do usuário: só fora da batalha). Rare
+ * Candy e TM com quatro golpes já conhecidos põem decisões na fila.
+ */
+export function useBagItem(run: ExpeditionRun, item: string, uid: string): RunProblem | null {
+	const phase = runPhase(run);
+	if (phase !== 'map' && phase !== 'node') return phase === 'decision' ? 'decisions' : 'norun';
+	if (hasOpenBattle(run)) return 'inbattle';
+	const mon = run.team.find(entry => entry.uid === uid);
+	if (!mon) return 'badchoice';
+	const result = useItem(run, item, mon);
+	if (typeof result === 'string') return result;
+	run.decisions.push(...result);
 	getStore().saveRun(run);
 	return null;
 }

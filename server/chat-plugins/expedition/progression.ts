@@ -98,7 +98,7 @@ function typicalSpecies(level: number, legendary = false) {
 }
 
 /** Nó de um caminho da calibração: o que a vitória vale para um Pokémon do nível dado. */
-interface CalibrationStep {
+export interface CalibrationStep {
 	level: number;
 	/** Adversários esperados (média) e se são de treinador. */
 	count: number;
@@ -112,7 +112,7 @@ interface CalibrationStep {
 const CALIBRATION_PATHS = 24;
 
 /** Caminhos ao acaso em mapas gerados com a configuração da variação (o "jogador médio"). */
-function calibrationPaths(settings: RunSettings): CalibrationStep[][] {
+export function calibrationPaths(settings: RunSettings): CalibrationStep[][] {
 	const paths: CalibrationStep[][] = [];
 	for (let i = 0; i < CALIBRATION_PATHS; i++) {
 		const seed = `calibration:${i}`;
@@ -264,22 +264,36 @@ export function gainExperience(
 		const gain: MonGain = { uid: mon.uid, exp: mon.exp - expBefore, from: before, to: mon.level, learned: [] };
 		gains.push(gain);
 		if (mon.level === before) continue;
-		for (const move of movesLearnedBetween(mon.species, before, mon.level)) {
-			if (mon.moves.includes(move)) continue;
-			if (mon.moves.length < 4) {
-				mon.moves.push(move);
-				mon.ppUsed.push(0);
-				gain.learned.push(move);
-			} else {
-				decisions.push({ kind: 'learn', uid: mon.uid, move });
-			}
-		}
-		// Evolução por nível: oferecida a cada subida de nível em que for possível (como nos jogos)
-		for (const evo of levelEvolutions(mon.species)) {
-			if (evo.evoLevel! <= mon.level) decisions.push({ kind: 'evolve', uid: mon.uid, into: evo.name });
-		}
+		const result = levelUpEffects(mon, before);
+		gain.learned = result.learned;
+		decisions.push(...result.decisions);
 	}
 	return { decisions, gains };
+}
+
+/**
+ * Efeitos de uma subida de nível (de `before` ao nível atual): golpes novos com espaço
+ * entram na hora; com quatro golpes, e nas evoluções por nível, a decisão vai para a
+ * fila. Usado pela experiência e pelo Rare Candy.
+ */
+export function levelUpEffects(mon: RunMon, before: number): { decisions: RunDecision[], learned: string[] } {
+	const decisions: RunDecision[] = [];
+	const learned: string[] = [];
+	for (const move of movesLearnedBetween(mon.species, before, mon.level)) {
+		if (mon.moves.includes(move)) continue;
+		if (mon.moves.length < 4) {
+			mon.moves.push(move);
+			mon.ppUsed.push(0);
+			learned.push(move);
+		} else {
+			decisions.push({ kind: 'learn', uid: mon.uid, move });
+		}
+	}
+	// Evolução por nível: oferecida a cada subida de nível em que for possível (como nos jogos)
+	for (const evo of levelEvolutions(mon.species)) {
+		if (evo.evoLevel! <= mon.level) decisions.push({ kind: 'evolve', uid: mon.uid, into: evo.name });
+	}
+	return { decisions, learned };
 }
 
 /** Evolui um Pokémon: espécie nova, a habilidade do mesmo espaço e o HP proporcional mantido. */

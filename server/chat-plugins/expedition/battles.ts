@@ -28,6 +28,7 @@ import { generateEncounter, type Encounter } from './encounters';
 import { EXPEDITION_STATE_LINE, expeditionFormatId, PERSISTENT_STATUSES, type MonFinalState } from './formats';
 import { expRates, gainExperience, nuzlockeBonus } from './progression';
 import { healMon, type RunMon } from './team';
+import { battlePrize } from './economy';
 import type { ExpeditionBattle, ExpeditionRun } from './store';
 
 /** Estado final de cada batalha, recebido do simulador logo antes do fim. */
@@ -252,7 +253,10 @@ export function finishExpeditionBattle(battleId: number, result: NpcBattleResult
 		if (nuzlocke) multiplier *= nuzlockeBonus(run.team.length, run.settings.rules.teamSize);
 		const { decisions, gains } = gainExperience(run.team, defeated, encounter.trainer, multiplier);
 		run.decisions.push(...decisions);
-		run.lastBattle = { opponent: encounter.name, result, gains };
+		// Dinheiro: só contra treinadores e o chefe, como nos jogos (economy.ts)
+		const money = battlePrize(encounter, run.settings);
+		run.money += money;
+		run.lastBattle = { opponent: encounter.name, result, gains, money };
 		// Captura: depois das decisões do time, o jogador escolhe se fica com o selvagem
 		const wild = encounter.kind === 'wild' || encounter.kind === 'legendary';
 		const mon = wild && run.settings.rules.capture === 'choose' ? capturedMon(run, encounter) : null;

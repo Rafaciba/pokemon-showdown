@@ -23,9 +23,10 @@ import type { RunMon } from './team';
 const STATS = [['hp', 'HP'], ['atk', 'Atk'], ['def', 'Def'], ['spa', 'SpA'], ['spd', 'SpD'], ['spe', 'Spe']] as const;
 type StatID = typeof STATS[number][0];
 
-/** Elemento com tooltip: o conteúdo fica escondido e aparece no hover. */
-export function withTip(trigger: string, body: string) {
-	return `<span class="exp-tip">${trigger}<span class="exp-tip-body">${body}</span></span>`;
+/** Elemento com tooltip: o conteúdo fica escondido e aparece no hover (`block`: ocupa a largura toda). */
+export function withTip(trigger: string, body: string, block = false) {
+	const style = block ? ' style="display: block"' : '';
+	return `<span class="exp-tip"${style}>${trigger}<span class="exp-tip-body">${body}</span></span>`;
 }
 
 /** Atributos no nível, com IVs e natureza (sem EVs), pelas fórmulas dos jogos. */

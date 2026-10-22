@@ -58,8 +58,10 @@ export const TEST_VARIANT: ExpeditionVariant = {
 		{ key: 'rare:legendary', min: 0, max: 100 },
 		{ key: 'extra:levelsPerAct', min: 10, max: 50 },
 		{ key: 'extra:bossLegendaryChance', min: 0, max: 100 },
+		{ key: 'extra:startMoney', min: 0, max: 10000 },
 	],
-	extra: { startLevel: STARTER_LEVEL, levelsPerAct: 30, bossLegendaryChance: 20 },
+	// Dinheiro inicial: escolha nossa (cinco Potions)
+	extra: { startLevel: STARTER_LEVEL, levelsPerAct: 30, bossLegendaryChance: 20, startMoney: 1000 },
 	encounters: {
 		wild: { pokedex: 70, pool: 30 },
 		trainer: { pokedex: 50, gym: 25, pool: 25 },

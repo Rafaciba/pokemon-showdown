@@ -15,6 +15,7 @@
  *   /expedicao evoluir <variação>,<espécie>  evolui para a espécie, ou "nao" (adia)
  *   /expedicao capturar <variação>,<keep | uid de quem sai | nao>  selvagem vencido
  *   /expedicao item <variação>,<uid>,<item>  dá um item da mochila (vazio: guarda o atual)
+ *   /expedicao usar <variação>,<item>,<uid>  usa um item da mochila (poção, TM...) num Pokémon
  *   /expedicao desistir <variação>      encerra a run (fica no histórico)
  *
  * Só contas registradas jogam.
@@ -27,13 +28,14 @@ import type { TextLanguage } from '../../../sim/dex-data';
 import { monTooltip, moveDescription, moveLine, moveTooltip, statsTable, withTip } from './tooltips';
 import { getStore } from './state';
 import { getVariant, listVariants } from './variant';
-import { getNodeType } from './nodes';
+import { getNodeType, type NodeChoice } from './nodes';
 import { BOSS_NODE, reachableNodes, type ActMap } from './map';
 import {
 	abandonRun, chooseInNode, chooseStarter, currentMap, currentNodeView, decideCapture, decideEvolve, decideLearn,
-	enterNode, runPhase, setHeldItem, startRun, variantAvailable, visitedNodes, type RunProblem,
+	enterNode, runPhase, setHeldItem, startRun, useBagItem, variantAvailable, visitedNodes, type RunProblem,
 } from './runs';
 import { currentEncounter, hasOpenBattle } from './battles';
+import { consumable, consumableDescription, isHeldItem, itemApplies, itemDisplay, tmMove } from './economy';
 import { trainerSpriteImg } from '../gym-challenge/trainer-sprites';
 import type { ExpeditionRun } from './store';
 import { expForLevel, MAX_LEVEL, type RunMon } from './team';
@@ -62,6 +64,10 @@ function problemText(TL: Translator, problem: RunProblem) {
 	case 'teamfull': return TL`Your team is full: choose who leaves.`;
 	case 'inbattle': return TL`Finish the battle first.`;
 	case 'noitem': return TL`That item is not in your bag.`;
+	case 'nomoney': return TL`You don't have enough money.`;
+	case 'soldout': return TL`That item is sold out.`;
+	case 'noeffect': return TL`It won't have any effect.`;
+	case 'badtarget': return TL`That Pokémon can't learn this move.`;
 	default: return TL`You are not in a node.`;
 	}
 }
@@ -89,9 +95,34 @@ function hpBar(mon: RunMon) {
 	return bar(mon.hp, color);
 }
 
+/** Ícone e nome de um item: do PS (psicon) ou do nosso catálogo (ícone oficial em sprites/itemicons). */
 function itemLabel(item: string) {
-	const name = Utils.escapeHTML(Dex.items.get(item).name || item);
-	return `<psicon item="${name}" /> ${name}`;
+	const display = itemDisplay(item);
+	const name = Utils.escapeHTML(display.name);
+	if (display.psItem) return `<psicon item="${Utils.escapeHTML(display.psItem)}" /> ${name}`;
+	const src = `https://${Config.routes.client}/sprites/itemicons/${display.icon}.png`;
+	return `<img src="${src}" width="24" height="24" alt="" style="vertical-align: middle" /> ${name}`;
+}
+
+/** Descrição de um item (tooltip): o nosso texto (itens de uso), o golpe (TM) ou o texto do PS. */
+function itemDescription(TL: Translator, lang: TextLanguage, item: string) {
+	const usable = consumable(toID(item));
+	const move = tmMove(item);
+	const name = Utils.escapeHTML(itemDisplay(item).name);
+	if (move) return moveTooltip(move, lang);
+	const text = usable ? consumableDescription(TL, usable) :
+		Dex.text.get(Dex.items.get(item), lang).desc || Dex.text.get(Dex.items.get(item), lang).shortDesc || '';
+	return `<strong>${name}</strong><br />${Utils.escapeHTML(text)}`;
+}
+
+/** Item com o tooltip da descrição. */
+function itemWithTip(TL: Translator, lang: TextLanguage, item: string, suffix = '') {
+	return withTip(`${itemLabel(item)}${suffix}`, itemDescription(TL, lang, item));
+}
+
+/** Dinheiro com separador de milhar no idioma do jogador. */
+function formatMoney(value: number, lang: TextLanguage) {
+	return `${value.toLocaleString((lang as string) === 'pt' ? 'pt-BR' : 'en-US')} \u20BD`;
 }
 
 /** Cores dos selos de status (fora da batalha, o CSS das batalhas do PS não vale). */
@@ -107,10 +138,13 @@ function statusBadge(mon: RunMon) {
 }
 
 /** Item que o Pokémon segura; na run, com a troca pela mochila. */
-function itemCell(TL: Translator, mon: RunMon, manage: { run: ExpeditionRun, variantId: string } | null) {
-	const current = mon.item ? itemLabel(mon.item) : `<small>${TL`No item`}</small>`;
+function itemCell(
+	TL: Translator, lang: TextLanguage, mon: RunMon, manage: { run: ExpeditionRun, variantId: string } | null
+) {
+	const current = mon.item ? itemWithTip(TL, lang, mon.item) : `<small>${TL`No item`}</small>`;
 	if (!manage) return current;
-	const bag = [...new Set(manage.run.items.map(item => toID(item)))].filter(id => id !== toID(mon.item));
+	const bag = [...new Set(manage.run.items.filter(isHeldItem).map(item => toID(item)))]
+		.filter(id => id !== toID(mon.item));
 	if (!bag.length && !mon.item) return current;
 	const options = (mon.item ? [`<option value="">${TL`Put it in the bag`}</option>`] : []).concat(bag.map(id => (
 		`<option value="${id}">${Utils.escapeHTML(Dex.items.get(id).name)}</option>`
@@ -134,7 +168,7 @@ function monLine(
 	const moves = mon.moves.map(id => Utils.escapeHTML(Dex.moves.get(id).name)).join(', ');
 	const state = mon.fainted ? `<strong>${TL`Fainted`}</strong>` : `${hpBar(mon)} ${TL`HP ${hp}%`}${statusBadge(mon)}`;
 	return `<tr><td>${monName(TL, lang, mon)}</td>` +
-		`<td>${TL`Lv. ${level}`}<br />${expBar(TL, mon)}</td><td>${state}</td><td>${itemCell(TL, mon, manage)}</td>` +
+		`<td>${TL`Lv. ${level}`}<br />${expBar(TL, mon)}</td><td>${state}</td><td>${itemCell(TL, lang, mon, manage)}</td>` +
 		`<td><small>${moves}</small></td></tr>`;
 }
 
@@ -151,13 +185,62 @@ function teamTable(
 }
 
 /** Mochila da run: os itens guardados. */
-function bagSection(TL: Translator, run: ExpeditionRun) {
+/**
+ * Mochila da run: os itens guardados. Os de uso (poções, Rare Candy, TMs) têm o "usar
+ * em" (fora da batalha); os de segurar vão aos Pokémon pela coluna Item do time.
+ */
+function bagSection(TL: Translator, lang: TextLanguage, run: ExpeditionRun, variantId: string, canUse: boolean) {
 	if (!run.items.length) return '';
 	const counts = new Map<string, number>();
 	for (const item of run.items) counts.set(item, (counts.get(item) || 0) + 1);
-	const list = [...counts].map(([item, count]) => `${itemLabel(item)}${count > 1 ? ` &times;${count}` : ''}`);
-	return `<h3>${TL`Bag`}</h3><p>${list.join(' &middot; ')}</p>` +
-		`<p><small>${TL`Give items to your Pokémon in the Held item column of your team.`}</small></p>`;
+	const held: string[] = [];
+	const usable: string[] = [];
+	for (const [item, count] of counts) {
+		const label = itemWithTip(TL, lang, item, count > 1 ? ` &times;${count}` : '');
+		const usableItem = consumable(item);
+		const move = tmMove(item);
+		if (isHeldItem(item) || (!usableItem && !move) || usableItem?.effect.kind === 'ball') {
+			held.push(label);
+			continue;
+		}
+		// Só os Pokémon em quem o item faz efeito agora
+		const targets = run.team.filter(mon => itemApplies(item, mon));
+		const options = targets.map(mon => `<option value="${mon.uid}">${Utils.escapeHTML(mon.species)}</option>`).join('');
+		let form = '';
+		if (canUse && targets.length) {
+			form = ` <form data-submitsend="/expedicao usar ${variantId},${item},{uid}" style="display: inline">` +
+				`<select name="uid">${options}</select> <button class="button" type="submit">${TL`Use`}</button></form>`;
+		} else if (canUse) {
+			form = ` <small>${TL`No Pokémon can use it right now.`}</small>`;
+		}
+		usable.push(`<tr><td>${label}</td><td>${form}</td></tr>`);
+	}
+	let buf = `<h3>${TL`Bag`}</h3>`;
+	if (usable.length) buf += `<table>${usable.join('')}</table>`;
+	if (held.length) {
+		buf += `<p>${held.join(' &middot; ')}</p>` +
+			`<p><small>${TL`Give items to your Pokémon in the Held item column of your team.`}</small></p>`;
+	}
+	return buf;
+}
+
+/** Loja: tabela por grupo (cura, itens de segurar, TMs e Rare Candy), com preço e compra. */
+function shopTable(TL: Translator, lang: TextLanguage, choices: NodeChoice[], variantId: string) {
+	const groups: [string, string][] = [
+		['healing', TL`Healing`], ['held', TL`Items to hold`], ['special', TL`TMs and Rare Candy`],
+	];
+	let buf = '';
+	for (const [group, title] of groups) {
+		const rows = choices.filter(choice => choice.group === group).map(choice => {
+			const price = choice.price!;
+			const button = `<button class="button" name="send" value="/expedicao escolha ${variantId},` +
+				`${Utils.escapeHTML(choice.id)}"${choice.disabled ? ' disabled' : ''}>${TL`Buy`}</button>`;
+			return `<tr><td>${itemWithTip(TL, lang, choice.item!)}</td><td><small>${Utils.escapeHTML(choice.detail || '')}</small></td>` +
+				`<td style="text-align: right; white-space: nowrap"><strong>${price}</strong> \u20BD</td><td>${button}</td></tr>`;
+		}).join('');
+		if (rows) buf += `<h4 style="margin: 8px 0 2px">${title}</h4><table>${rows}</table>`;
+	}
+	return buf;
 }
 
 const CELL = 'width: 56px; height: 44px; text-align: center; vertical-align: middle; padding: 0';
@@ -294,8 +377,10 @@ function lastBattleSection(TL: Translator, run: ExpeditionRun) {
 			`<td>${TL`+${exp} Exp.`}${fainted}</td><td>${levelText}<br />${expBar(TL, mon)}</td>` +
 			`<td><small>${learned}</small></td></tr>`;
 	}).join('');
+	const money = last.money || 0;
+	const prize = money ? `<p>${TL`You received ${money} \u20BD.`}</p>` : '';
 	return `${BOX}<h3 style="margin-top: 0">${TL`Victory against ${opponent}!`}</h3>` +
-		(rows ? `<table>${rows}</table>` : '') + `</div>`;
+		(rows ? `<table>${rows}</table>` : '') + prize + `</div>`;
 }
 
 /** Captura do selvagem vencido: ficar com ele (com vaga, ou trocando por alguém do time) ou não. */
@@ -340,19 +425,27 @@ function decisionSection(TL: Translator, lang: TextLanguage, run: ExpeditionRun,
 		const move = Utils.escapeHTML(Dex.moves.get(decision.move).name);
 		// O golpe novo com a descrição completa; os atributos do Pokémon (físico ou especial pesa
 		// na escolha); cada golpe conhecido com tooltip
+		// Duas colunas: à esquerda, o golpe novo e os quatro conhecidos (2 × 2, cada um com
+		// tooltip); à direita, os atributos, sem quebrar
+		const forget = (slot: number) => {
+			const id = mon.moves[slot];
+			if (!id) return '<td></td>';
+			return `<td style="padding: 2px; width: 50%">` + withTip(
+				`<button class="button" name="send" value="/expedicao aprender ${variantId},${slot}" ` +
+				`style="width: 100%; text-align: left; white-space: nowrap">${TL`Forget`} ${moveLine(id)}</button>`,
+				moveTooltip(id, lang), true
+			) + `</td>`;
+		};
 		return `${BOX}<h3 style="margin-top: 0">${TL`New move`}</h3>` +
 			`<p>${icon} ${TL`${species} wants to learn ${move}, but already knows four moves. Forget which one?`}</p>` +
-			`<table><tr><td style="vertical-align: top; padding-right: 16px">` +
-			`<p>${moveLine(decision.move)}<br />${moveDescription(decision.move, lang, true)}</p></td>` +
-			`<td style="vertical-align: top"><small><strong>${TL`Stats of ${species}`}</strong></small>` +
-			`${statsTable(mon)}</td></tr></table><p>` +
-			mon.moves.map((id, slot) => withTip(
-				`<button class="button" name="send" value="/expedicao aprender ${variantId},${slot}" style="margin: 2px">` +
-				`${TL`Forget`} ${moveLine(id)}</button>`,
-				moveTooltip(id, lang)
-			)).join(' ') +
-			`</p><p><button class="button" name="send" value="/expedicao aprender ${variantId},nao">` +
-			`${TL`Don't learn ${move}`}</button></p>${left}</div>`;
+			`<table style="border-collapse: collapse"><tr><td style="vertical-align: top; width: 600px; padding-right: 24px">` +
+			`<p style="margin-top: 0">${moveLine(decision.move)}<br />${moveDescription(decision.move, lang, true)}</p>` +
+			`<table style="border-collapse: collapse; width: 100%"><tr>${forget(0)}${forget(1)}</tr>` +
+			`<tr>${forget(2)}${forget(3)}</tr></table>` +
+			`<p><button class="button" name="send" value="/expedicao aprender ${variantId},nao">` +
+			`${TL`Don't learn ${move}`}</button></p>${left}</td>` +
+			`<td style="vertical-align: top; white-space: nowrap"><small><strong>${TL`Stats of ${species}`}</strong></small>` +
+			`${statsTable(mon)}</td></tr></table></div>`;
 	}
 	const options = run.decisions.filter(entry => entry.kind === 'evolve' && entry.uid === mon.uid);
 	return `${BOX}<h3 style="margin-top: 0">${TL`Evolution`}</h3>` +
@@ -416,24 +509,32 @@ function runSection(TL: Translator, lang: TextLanguage, run: ExpeditionRun, vari
 	const act = run.act;
 	const acts = run.settings.map.acts;
 	let buf = '';
-	const node = currentNodeView(run, TL);
+	const node = currentNodeView(run, TL, lang);
+	buf += `<p><strong>${TL`Money:`}</strong> ${formatMoney(run.money, lang)}</p>`;
 	buf += lastBattleSection(TL, run);
 	if (phase === 'decision') {
 		buf += decisionSection(TL, lang, run, variantId);
 	} else if (node) {
 		const type = getNodeType(node.type)!;
+		const priced = node.view.choices.filter(choice => choice.price !== undefined);
+		const plain = node.view.choices.filter(choice => choice.price === undefined);
 		buf += `${BOX}<h3 style="margin-top: 0">${type.icon} ${type.label(TL)}</h3>` +
-			`<p>${encounterIcons(run)} ${Utils.escapeHTML(node.view.text)}</p><p>` + node.view.choices.map(choice => (
-			`<button class="button" name="send" value="/expedicao escolha ${variantId},${Utils.escapeHTML(choice.id)}">` +
-			`${choice.item ? `<psicon item="${Utils.escapeHTML(choice.item)}" /> ` : ''}${Utils.escapeHTML(choice.label)}</button>`
-		)).join(' ') + `</p></div>`;
+			`<p>${encounterIcons(run)} ${Utils.escapeHTML(node.view.text)}</p>` +
+			(priced.length ? shopTable(TL, lang, priced, variantId) : '') + `<p>` + plain.map(choice => {
+			const button = `<button class="button" name="send" value="/expedicao escolha ${variantId},` +
+				`${Utils.escapeHTML(choice.id)}">${choice.item ? `${itemLabel(choice.item)}` : Utils.escapeHTML(choice.label)}` +
+				`</button>`;
+				// Opções com item (nó de item): tooltip com a descrição
+			return choice.item ? withTip(button, itemDescription(TL, lang, choice.item)) : button;
+		}).join(' ') + `</p></div>`;
 	} else {
 		buf += `<p>${TL`Choose the next node on the map.`}</p>`;
 	}
 	buf += `<h3>${TL`Act ${act} of ${acts}`}</h3>` + mapHtml(TL, run, map, variantId) + legend(TL, run);
 	// Itens só fora de batalha (com uma batalha aberta, o time já foi enviado)
 	const manage = hasOpenBattle(run) ? null : { run, variantId };
-	buf += `<h3>${TL`Your team`}</h3>` + teamTable(TL, lang, run.team, manage) + bagSection(TL, run);
+	buf += `<h3>${TL`Your team`}</h3>` + teamTable(TL, lang, run.team, manage) +
+		bagSection(TL, lang, run, variantId, !!manage && (phase === 'map' || phase === 'node'));
 	buf += `<details><summary>${TL`Give up`}</summary>` +
 		`<p>${TL`The expedition ends and stays in your history. You can start a new one.`}</p>` +
 		`<p><button class="button" name="send" value="/expedicao desistir ${variantId}">${TL`Confirm`}</button></p></details>`;
@@ -546,6 +647,13 @@ export const commands: Chat.ChatCommands = {
 			const [variantId, choice] = target.split(',');
 			const id = (choice || '').trim();
 			const problem = decideCapture(requireRun(this, user, variantId), toID(id) === 'nao' ? null : id);
+			if (problem) throw new Chat.ErrorMessage(problemText(this.TL, problem));
+			return refresh(this, variantId);
+		},
+
+		usar(target, room, user) {
+			const [variantId, item, uid] = target.split(',');
+			const problem = useBagItem(requireRun(this, user, variantId), (item || '').trim(), (uid || '').trim());
 			if (problem) throw new Chat.ErrorMessage(problemText(this.TL, problem));
 			return refresh(this, variantId);
 		},

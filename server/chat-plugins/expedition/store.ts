@@ -47,7 +47,11 @@ export interface ExpeditionRun {
 	 * Última batalha (adversário, resultado e experiência ganha): na vitória, mostrada até
 	 * o próximo nó; na derrota, no resumo da run encerrada.
 	 */
-	lastBattle: { opponent: string, result: BattleResult, gains: MonGain[] } | null;
+	lastBattle: { opponent: string, result: BattleResult, gains: MonGain[], money?: number } | null;
+	/** Dinheiro da run (ganho contra treinadores, gasto na loja). */
+	money: number;
+	/** Estado do nó atual (ex.: o que já foi comprado na loja); limpo ao entrar noutro nó. */
+	nodeState: AnyObject;
 	/** Configurações em vigor quando a run começou. */
 	settings: RunSettings;
 	startedAt: number;
@@ -137,6 +141,11 @@ const MIGRATIONS: string[] = [
 	`
 	ALTER TABLE runs ADD COLUMN last_battle TEXT;
 	`,
+	// 4: dinheiro da run e estado do nó atual (etapa 3, loja e eventos)
+	`
+	ALTER TABLE runs ADD COLUMN money INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE runs ADD COLUMN node_state TEXT NOT NULL DEFAULT '{}';
+	`,
 ];
 
 type Row = Record<string, any>;
@@ -148,6 +157,7 @@ function toRun(row: Row): ExpeditionRun {
 		node: row.node, nodeDone: row.node_done === 1, path: JSON.parse(row.path), team: JSON.parse(row.team),
 		items: JSON.parse(row.items), pending: row.pending ? JSON.parse(row.pending) : null,
 		decisions: JSON.parse(row.decisions || '[]'), lastBattle: row.last_battle ? JSON.parse(row.last_battle) : null,
+		money: row.money || 0, nodeState: JSON.parse(row.node_state || '{}'),
 		settings: JSON.parse(row.settings), startedAt: row.started_at, endedAt: row.ended_at,
 	};
 }
@@ -226,11 +236,12 @@ export class ExpeditionStore {
 	saveRun(run: ExpeditionRun) {
 		this.db.prepare(`
 			UPDATE runs SET status = ?, act = ?, node = ?, node_done = ?, path = ?, team = ?, items = ?, pending = ?,
-				decisions = ?, last_battle = ?, ended_at = ?
+				decisions = ?, last_battle = ?, money = ?, node_state = ?, ended_at = ?
 			WHERE id = ?
 		`).run(run.status, run.act, run.node, run.nodeDone ? 1 : 0, JSON.stringify(run.path), JSON.stringify(run.team),
 			JSON.stringify(run.items), run.pending ? JSON.stringify(run.pending) : null, JSON.stringify(run.decisions),
-			run.lastBattle ? JSON.stringify(run.lastBattle) : null, run.endedAt, run.id);
+			run.lastBattle ? JSON.stringify(run.lastBattle) : null, run.money, JSON.stringify(run.nodeState || {}), run.endedAt,
+			run.id);
 	}
 
 	/** Runs em andamento de um jogador com batalha sem resultado (para retomar). */

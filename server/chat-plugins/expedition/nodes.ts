@@ -13,10 +13,13 @@
  * @license MIT
  */
 import type { Translator } from '../../../sim/dex-text';
+import type { TextLanguage } from '../../../sim/dex-data';
 import type { MapNode } from './map';
 import type { ExpeditionRun } from './store';
 import { healMon } from './team';
 import { MEGA_STONE_CHANCE, pickItems, pickMegaStone } from './items';
+import { buyItem, consumable, consumableDescription, itemDisplay, shopStock, tmMove } from './economy';
+import { moveDescription } from './tooltips';
 import { seededRandom } from './random';
 
 export interface NodeChoice {
@@ -24,6 +27,11 @@ export interface NodeChoice {
 	label: string;
 	/** Item mostrado no botão (ícone). */
 	item?: string;
+	/** Loja: preço, grupo, descrição e se a compra está indisponível (sem dinheiro ou esgotado). */
+	price?: number;
+	group?: string;
+	detail?: string;
+	disabled?: boolean;
 }
 
 export interface NodeView {
@@ -36,6 +44,8 @@ export interface NodeContext {
 	run: ExpeditionRun;
 	node: MapNode;
 	TL: Translator;
+	/** Idioma dos textos do jogo (descrições de itens e golpes). */
+	lang: TextLanguage;
 }
 
 export interface NodeType {
@@ -48,9 +58,10 @@ export interface NodeType {
 	view?(context: NodeContext): NodeView;
 	/**
 	 * Aplica a escolha à run (que é gravada depois). Devolve true se o nó terminou,
-	 * false se continua aberto, ou null se a escolha não existe.
+	 * false se continua aberto, null se a escolha não existe, ou o código de um problema
+	 * (ex.: "nomoney" na loja), que a página mostra.
 	 */
-	choose?(context: NodeContext, choice: string): boolean | null;
+	choose?(context: NodeContext, choice: string): boolean | null | string;
 }
 
 const registry = new Map<string, NodeType>();
@@ -109,16 +120,52 @@ registerNodeType({
 	},
 });
 
-registerNodeType(placeholder('shop', '\u{1F6D2}', TL => TL`Shop`));
+/** Descrição de um item da loja: item de uso (nosso texto), TM (o golpe) ou item de segurar (texto do PS). */
+function shopDetail(context: NodeContext, entry: string) {
+	const usable = consumable(toID(entry));
+	if (usable) return consumableDescription(context.TL, usable);
+	const move = tmMove(entry);
+	if (move) return moveDescription(move, context.lang);
+	return Dex.text.get(Dex.items.get(entry), context.lang).shortDesc || '';
+}
+
+registerNodeType({
+	id: 'shop',
+	icon: '\u{1F6D2}',
+	// Nome pedido pelo usuário (antes "Loja"); o id continua "shop"
+	label: TL => TL`PokéMart`,
+	view(context) {
+		const { run, node, TL } = context;
+		const bought: string[] = run.nodeState.bought || [];
+		const choices = shopStock(run, node.id).map(entry => {
+			const soldOut = entry.single && bought.includes(entry.item);
+			return {
+				id: `buy:${toID(entry.item)}`, label: itemDisplay(entry.item).name, item: entry.item, price: entry.price,
+				group: entry.group, detail: shopDetail(context, entry.item), disabled: soldOut || run.money < entry.price,
+			};
+		});
+		return {
+			text: TL`Buy what you need: the items go to your bag.`,
+			choices: [...choices, { id: 'leave', label: TL`Leave the PokéMart` }],
+		};
+	},
+	choose(context, choice) {
+		if (choice === 'leave') return true;
+		if (!choice.startsWith('buy:')) return null;
+		// A compra não termina o nó: o jogador continua na loja
+		return buyItem(context.run, context.node.id, choice.slice(4)) || false;
+	},
+});
 registerNodeType(placeholder('event', '\u{2753}', TL => TL`Event`));
 
 registerNodeType({
 	id: 'rest',
-	icon: '\u{1F525}',
-	label: TL => TL`Rest`,
+	icon: '\u{1F3E5}',
+	// Nome pedido pelo usuário (antes "Descanso"); o id continua "rest"
+	label: TL => TL`PokéCenter`,
 	view: ({ TL }) => ({
-		text: TL`A safe place to rest: your whole team recovers HP and PP, and fainted Pokémon come back.`,
-		choices: [{ id: 'rest', label: TL`Rest` }],
+		text: TL`At the PokéCenter, your whole team recovers HP, PP and status, and fainted Pokémon come back.`,
+		choices: [{ id: 'rest', label: TL`Heal your team` }],
 	}),
 	choose({ run }, choice) {
 		if (choice !== 'rest') return null;

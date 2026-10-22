@@ -24,6 +24,7 @@ import { getEvent, pickEvent } from './events';
 import './events-world';
 import './events-rocket';
 import { seededRandom } from './random';
+import { FEWER_ITEMS, hasPenalty } from './difficulty';
 
 export interface NodeChoice {
 	id: string;
@@ -87,6 +88,9 @@ registerNodeType({ id: 'wild', icon: '\u{1F33F}', label: TL => TL`Wild Pokémon`
 registerNodeType({ id: 'trainer', icon: '\u{1F9E2}', label: TL => TL`Trainer`, encounter: true });
 // Elite (etapa 7): treinador forte, com recompensa melhor (battles.ts → eliteReward)
 registerNodeType({ id: 'elite', icon: '\u{2694}\u{FE0F}', label: TL => TL`Elite trainer`, encounter: true });
+// Ato especial do modo Completo (etapa 9): a Elite 4 em dupla e o Campeão
+registerNodeType({ id: 'elitefour', icon: '\u{1F396}\u{FE0F}', label: TL => TL`Elite Four`, encounter: true });
+registerNodeType({ id: 'champion', icon: '\u{1F3C6}', label: TL => TL`Champion`, encounter: true });
 registerNodeType({ id: 'boss', icon: '\u{1F451}', label: TL => TL`Boss`, encounter: true });
 registerNodeType({ id: 'legendary', icon: '\u{2728}', label: TL => TL`Legendary Pokémon`, encounter: true });
 /** Chance (%) de uma Master Ball no nó de item, nas expedições com captura por bola (decisão do usuário). */
@@ -100,7 +104,8 @@ export const MASTER_BALL_CHANCE = 5;
  */
 function nodeItems({ run, node }: NodeContext) {
 	const prng = seededRandom(run.seed, `item:${run.act}:${node.id}`);
-	const items = pickItems(prng, 3);
+	// Agravante 2 do modo Completo: 2 opções em vez de 3
+	const items = pickItems(prng, hasPenalty(run.settings, FEWER_ITEMS) ? 2 : 3);
 	if (prng.random(100) < MEGA_STONE_CHANCE) {
 		const stone = pickMegaStone(prng, run.team);
 		if (stone) items[items.length - 1] = stone;

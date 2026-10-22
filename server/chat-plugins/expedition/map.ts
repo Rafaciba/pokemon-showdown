@@ -52,7 +52,26 @@ function forbiddenOn(map: MapSettings, type: string, floor: number) {
 	return (map.forbiddenFloors?.[type] || []).some(entry => entry === floor || entry === floor - map.floors);
 }
 
+/** Andares do ato especial (sem o Campeão). */
+export const SPECIAL_ACT_FLOORS = 3;
+
+/**
+ * Ato especial do modo Completo (decisão do usuário, como o ato do Coração do Slay the
+ * Spire): um caminho único com PokéCenter, PokéMart e a Elite 4 em dupla; o Campeão no fim.
+ */
+export function specialAct(act: number, map: MapSettings): ActMap {
+	const col = Math.floor((Math.max(1, map.columns) - 1) / 2);
+	const types = ['rest', 'shop', 'elitefour'];
+	const nodes: MapNode[] = types.map((type, floor) => ({
+		id: nodeId(floor, col), floor, col, type,
+		next: [floor < types.length - 1 ? nodeId(floor + 1, col) : BOSS_NODE],
+	}));
+	nodes.push({ id: BOSS_NODE, floor: SPECIAL_ACT_FLOORS, col, type: 'champion', next: [] });
+	return { act, floors: SPECIAL_ACT_FLOORS, columns: Math.max(1, map.columns), nodes, boss: BOSS_NODE };
+}
+
 export function generateAct(seed: string, act: number, map: MapSettings): ActMap {
+	if (map.special && act > map.acts) return specialAct(act, map);
 	const prng = seededRandom(seed, `act${act}`);
 	const floors = Math.max(1, map.floors);
 	const columns = Math.max(1, map.columns);

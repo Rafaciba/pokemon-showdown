@@ -28,15 +28,17 @@ import type { Translator } from '../../../sim/dex-text';
 import type { TextLanguage } from '../../../sim/dex-data';
 import { monTooltip, moveDescription, moveLine, moveTooltip, statsTable, withTip } from './tooltips';
 import { getStore } from './state';
-import { getVariant, listVariants } from './variant';
+import { getVariant, listVariants, type ExpeditionVariant } from './variant';
 import { getNodeType, type NodeChoice } from './nodes';
 import { BOSS_NODE, reachableNodes, type ActMap } from './map';
 import {
 	abandonRun, chooseInNode, chooseStarter, currentMap, currentNodeView, decideCapture, decideEvolve, decideLearn,
+	decideSpecial, ALL_BADGES,
 	enterNode, runPhase, setHeldItem, startRun, useBagItem, usesBalls, variantAvailable, visitedNodes, BOX_SIZE,
 	type RunProblem,
 } from './runs';
 import { ballIdByName, ballsInBag, catchChance } from './capture';
+import { getBadge, badgeIcon } from '../gym-challenge/badges';
 import type { RunDecision } from './progression';
 import { currentEncounter, hasOpenBattle } from './battles';
 import { renderAdminPage } from './admin';
@@ -379,8 +381,10 @@ function mapHtml(TL: Translator, run: ExpeditionRun, map: ActMap, variantId: str
 }
 
 function legend(TL: Translator, run: ExpeditionRun) {
-	const types = [...Object.keys(run.settings.map.weights), ...Object.values(run.settings.map.fixedFloors),
-		...Object.keys(run.settings.map.rareNodes || {}), run.settings.map.bossType];
+	// Ato especial: os tipos do caminho único
+	const types = run.act > run.settings.map.acts ? ['rest', 'shop', 'elitefour', 'champion'] :
+		[...Object.keys(run.settings.map.weights), ...Object.values(run.settings.map.fixedFloors),
+			...Object.keys(run.settings.map.rareNodes || {}), run.settings.map.bossType];
 	return `<p style="text-align: center">` + [...new Set(types)].map(id => {
 		const type = getNodeType(id);
 		return type ? `<span style="font-size: 20px">${type.icon}</span> ${type.label(TL)}` : '';
@@ -472,6 +476,79 @@ function captureSection(
 	}
 	return buf + `<button class="button" name="send" value="${command('nao')}">` +
 		`${decision.caught ? TL`Release it` : TL`Let it go`}</button></p>${left}</div>`;
+}
+
+/** Insígnias do modo Completo: as ganhas inteiras, as que faltam apagadas. */
+export function badgeRow(earned: string[], badges: { id: string, type: string }[], size = 32) {
+	return badges.map(spec => {
+		const badge = getBadge(spec.id);
+		if (!badge) return '';
+		const icon = badgeIcon({ name: badge.name, image: badge.image }, badge.type, size);
+		return earned.includes(spec.id) ? icon : `<span style="opacity: 0.2">${icon}</span>`;
+	}).join(' ');
+}
+
+/**
+ * Começo da run. No modo Completo (etapa 9): as insígnias do jogador, o nível de
+ * dificuldade (de 0 até o número de insígnias, o mais alto selecionado) e, depois de vencer
+ * o Campeão, os iniciais shiny (ligados por padrão).
+ */
+function startSection(TL: Translator, user: User, variant: ExpeditionVariant) {
+	const config = variant.completeConfig;
+	const button = (command: string) => `<button class="button" name="send" value="${command}">` +
+		`<strong>${TL`Start expedition`}</strong></button>`;
+	if (!config) return `<p>${button(`/expedicao iniciar ${variant.id}`)}</p>`;
+	const store = getStore();
+	const earned = store.getBadges(user.id, variant.id);
+	const count = Math.min(ALL_BADGES, earned.length);
+	let buf = `<h3>${TL`Badges`} (${count}/${ALL_BADGES})</h3><p>${badgeRow(earned, config.badges)}</p>`;
+	buf += `<p><small>${TL`Each run at your highest difficulty fights for a badge you still lack, drawn at the start: its gym leader is the boss of the last act. Each badge adds a penalty to the next runs. With all 8, beating the last act opens the special act.`}</small></p>`;
+	const levels = Array.from({ length: count + 1 }, (_, i) => count - i).map(level => {
+		const label = level === count && count < ALL_BADGES ? TL`Difficulty ${level} (fights for a badge)` : TL`Difficulty ${level}`;
+		return `<option value="${level}">${label}</option>`;
+	}).join('');
+	const shiny = store.hasUnlock(user.id, 'shiny', 'starters', variant.id);
+	const shinyField = shiny ? ` <select name="shiny"><option value="yes">${TL`Shiny starters`}</option>` +
+		`<option value="no">${TL`Regular starters`}</option></select>` : '<input type="hidden" name="shiny" value="no" />';
+	buf += `<form data-submitsend="/expedicao iniciar ${variant.id},{level},{shiny}"><p>` +
+		`<select name="level">${levels}</select>${shinyField} <button class="button" type="submit">` +
+		`<strong>${TL`Start expedition`}</strong></button></p></form>`;
+	buf += difficultyList(TL, count);
+	return buf;
+}
+
+/** Lista dos agravantes (os que valem até o nível dado aparecem em destaque). */
+function difficultyList(TL: Translator, upTo: number) {
+	const penalties = [
+		TL`Trainers, elites and bosses pay 25% less.`,
+		TL`Item nodes offer 2 items instead of 3.`,
+		TL`Half the chance of a PokéCenter in the middle of the act.`,
+		TL`The computer plays one level smarter.`,
+		TL`Trainers and elites have one more Pokémon.`,
+		TL`The PokéMart is 25% more expensive.`,
+		TL`Opponents are 2 levels higher.`,
+		TL`Bosses have 6 Pokémon, 2 more levels and the Master AI.`,
+	];
+	return `<details><summary>${TL`Difficulty penalties (they add up)`}</summary><ol>` +
+		penalties.map((text, i) => `<li${i < upTo ? ' style="font-weight: bold"' : ''}>${text}</li>`).join('') + `</ol></details>`;
+}
+
+/** Modo Completo na run: o nível de dificuldade e a insígnia em disputa. */
+function completeHeader(TL: Translator, run: ExpeditionRun) {
+	const complete = run.settings.complete;
+	if (!complete) return '';
+	const level = complete.level;
+	let badge: string;
+	if (complete.badge) {
+		const info = getBadge(complete.badge.id);
+		const name = Utils.escapeHTML(info?.name || complete.badge.id);
+		badge = (info ? badgeIcon({ name: info.name, image: info.image }, info.type, 24) + ' ' : '') +
+			TL`Badge in play: ${name}`;
+	} else {
+		badge = complete.allBadges ? TL`You have all 8 badges: the special act awaits after the last act.` :
+			TL`No badge in play (below your highest difficulty).`;
+	}
+	return `<p><strong>${TL`Difficulty ${level}`}</strong> &middot; ${badge}</p>`;
 }
 
 /** Computador no PokéCenter: guardar Pokémon do time e pegar os guardados. */
@@ -576,6 +653,17 @@ function endedSummary(TL: Translator, lang: TextLanguage, run: ExpeditionRun) {
 		const floor = run.node === BOSS_NODE ? TL`the boss` : TL`floor ${number}`;
 		buf += `<p>${TL`You reached ${floor} of act ${act} of ${acts}.`}</p>`;
 	}
+	// Modo Completo: a insígnia ganha (no chefe do último ato) e os iniciais shiny (no Campeão)
+	const complete = run.settings.complete;
+	if (run.status === 'won' && complete?.badge) {
+		const badge = getBadge(complete.badge.id);
+		const name = Utils.escapeHTML(badge?.name || complete.badge.id);
+		buf += `<p>${badge ? badgeIcon({ name: badge.name, image: badge.image }, badge.type, 40) : ''} ` +
+			`<strong>${TL`You earned the ${name}!`}</strong></p>`;
+	}
+	if (run.status === 'won' && run.act > run.settings.map.acts) {
+		buf += `<p><strong>${TL`You defeated the Champion! The shiny versions of the starting teams are now unlocked in this expedition.`}</strong></p>`;
+	}
 	// Desbloqueios que a vitória deu (valem nas próximas runs)
 	const rules = getVariant(run.variant)?.unlocks || [];
 	const unlocks = run.status === 'won' ? rules.filter(rule => rule.when === 'win') : [];
@@ -590,7 +678,7 @@ function endedSummary(TL: Translator, lang: TextLanguage, run: ExpeditionRun) {
 function runSection(TL: Translator, lang: TextLanguage, run: ExpeditionRun, variantId: string) {
 	const phase = runPhase(run);
 	if (phase === 'starter' && run.pending?.kind === 'starter') {
-		let buf = `<h3>${TL`Choose your starting team`}</h3>`;
+		let buf = completeHeader(TL, run) + `<h3>${TL`Choose your starting team`}</h3>`;
 		run.pending.options.forEach((team, index) => {
 			const number = index + 1;
 			buf += `<h4>${TL`Team ${number}`}</h4>` + teamTable(TL, lang, team) +
@@ -604,10 +692,15 @@ function runSection(TL: Translator, lang: TextLanguage, run: ExpeditionRun, vari
 	const acts = run.settings.map.acts;
 	let buf = '';
 	const node = currentNodeView(run, TL, lang);
-	buf += `<p><strong>${TL`Money:`}</strong> ${formatMoney(run.money, lang)}</p>`;
+	buf += completeHeader(TL, run) + `<p><strong>${TL`Money:`}</strong> ${formatMoney(run.money, lang)}</p>`;
 	buf += lastBattleSection(TL, run);
 	if (phase === 'decision') {
 		buf += decisionSection(TL, lang, run, variantId);
+	} else if (phase === 'special') {
+		buf += `${BOX}<h3 style="margin-top: 0">${TL`You have all 8 badges!`}</h3>` +
+			`<p>${TL`You can end the expedition here as the winner, or face the special act: a PokéCenter, a PokéMart, two members of the Elite Four in a doubles battle and the Champion. If you go on, only a win against the Champion counts.`}</p>` +
+			`<p><button class="button" name="send" value="/expedicao especial ${variantId},sim"><strong>${TL`Go to the special act`}</strong></button> ` +
+			`<button class="button" name="send" value="/expedicao especial ${variantId},nao">${TL`End as the winner`}</button></p></div>`;
 	} else if (node) {
 		const type = getNodeType(node.type)!;
 		const priced = node.view.choices.filter(choice => choice.price !== undefined);
@@ -688,8 +781,7 @@ export const pages: Chat.PageTable = {
 				// Resultado da última expedição desta variação
 				const last = getStore().listRuns(user.id, 10).find(entry => entry.variant === variant.id);
 				return buf + (last ? endedSummary(this.TL, lang, last) : '') + `<p>${variant.description(this.TL)}</p>` +
-					`<p><button class="button" name="send" value="/expedicao iniciar ${variant.id}">` +
-					`<strong>${this.TL`Start expedition`}</strong></button></p></div>`;
+					startSection(this.TL, user, variant) + `</div>`;
 			}
 			return buf + runSection(this.TL, lang, run, variant.id) + `</div>`;
 		},
@@ -718,9 +810,19 @@ export const commands: Chat.ChatCommands = {
 
 		iniciar(target, room, user) {
 			if (!isPlayer(user)) throw new Chat.ErrorMessage(this.TL`Log in to take part in the Expedition.`);
-			const result = startRun(user, toID(target));
+			// Modo Completo: nível de dificuldade e iniciais shiny (opcionais)
+			const [variantId, rawLevel, rawShiny] = target.split(',').map(part => part.trim());
+			const level = /^\d+$/.test(rawLevel || '') ? Number(rawLevel) : undefined;
+			const result = startRun(user, toID(variantId), { level, shiny: rawShiny !== 'no' });
 			if (typeof result === 'string') throw new Chat.ErrorMessage(problemText(this.TL, result));
-			return refresh(this, target);
+			return refresh(this, variantId);
+		},
+
+		especial(target, room, user) {
+			const [variantId, choice] = target.split(',');
+			const problem = decideSpecial(requireRun(this, user, variantId), toID(choice) === 'sim');
+			if (problem) throw new Chat.ErrorMessage(problemText(this.TL, problem));
+			return refresh(this, variantId);
 		},
 
 		inicial(target, room, user) {

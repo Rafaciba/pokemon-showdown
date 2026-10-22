@@ -19,8 +19,8 @@
  *   - insígnias do modo Completo: 8 de tipos diferentes, escolhidas ou sorteadas,
  *     travadas depois da primeira run.
  *
- * Partes que só passam a valer na etapa 9: insígnias, agravantes e ato especial. O
- * editor avisa disso.
+ * O modo Completo (insígnias, agravantes, ato especial) é aplicado na run por runs.ts,
+ * difficulty.ts e encounters.ts (etapa 9).
  *
  * Funções puras (sem banco nem estado do servidor), que rodam também no processo do
  * simulador. Os problemas são mensagens em inglês marcadas com TLkey, com {0}, {1}...
@@ -464,6 +464,14 @@ export function definitionProblems(def: ExpeditionDefinition, trainers: Map<numb
 		} else if (new Set(badges.map(badge => badge!.type)).size !== BADGE_COUNT) {
 			problems.push(problem(TLkey`The badges need to be of different types.`));
 		}
+		// Líder escolhido a dedo: precisa ter o tipo da insígnia (decisão do usuário)
+		def.badges.leaders.forEach((leader, i) => {
+			const badge = badges[i];
+			const trainer = typeof leader === 'number' ? trainers.get(leader) : null;
+			if (badge?.type && trainer && trainer.type !== badge.type) {
+				problems.push(problem(TLkey`The leader of the {0} needs to be of the {1} type.`, badge.name, badge.type));
+			}
+		});
 	}
 	return problems;
 }
@@ -514,6 +522,7 @@ export function variantFromDefinition(expedition: StoredExpedition): ExpeditionV
 			lateTypes: ['legendary'],
 			rareNodes: { legendary: def.legendaryChance },
 			bossType: 'boss',
+			special: def.acts.mode === 'complete',
 		},
 		extra: {
 			startLevel: def.startLevel, levelsPerAct: (def.levelCap - def.startLevel) / acts, bossLegendaryChance: 0,
@@ -523,6 +532,16 @@ export function variantFromDefinition(expedition: StoredExpedition): ExpeditionV
 		encounters: { wild: { pokedex: 100 }, trainer: { pokedex: 100 }, boss: { pokedex: 100 }, legendary: { pokedex: 100 } },
 		theme: { gens: [...def.theme.gens], species: [...def.theme.species] },
 		bosses: { acts: [...def.bosses.acts], pool: [...def.bosses.pool] },
+		...(def.acts.mode === 'complete' ? {
+			completeConfig: {
+				badges: def.badges.ids.map((id, i) => {
+					const badge = BADGES.find(entry => entry.id === id);
+					return { id, type: badge?.type || '', leaderName: badge?.leaders[0] || '', leader: def.badges.leaders[i] };
+				}).filter(badge => badge.type),
+				elite: [...def.bosses.elite],
+				champion: def.bosses.champion,
+			},
+		} : {}),
 		aiLevel(kind, progress, act) {
 			const i = index(act);
 			if (kind === 'wild') return def.ai.wild[i];

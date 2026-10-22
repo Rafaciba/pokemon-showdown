@@ -32,6 +32,7 @@ import { HELD_ITEMS } from './items';
 import { expForLevel, MAX_LEVEL, type RunMon } from './team';
 import { monStats } from './tooltips';
 import { seededRandom } from './random';
+import { hasPenalty, LESS_MONEY, PRICIER_MART, roundMoney } from './difficulty';
 
 export type ConsumableEffect =
 	{ kind: 'heal', hp: number | 'full', status?: boolean } |
@@ -202,9 +203,12 @@ export function battlePrize(encounter: Encounter, settings: RunSettings) {
 	if (!encounter.trainer) return 0;
 	const last = encounter.team[encounter.team.length - 1];
 	if (!last) return 0;
-	const base = encounter.kind === 'boss' ? PAYOUT_BASE.boss : encounter.kind === 'elite' ? PAYOUT_BASE.elite :
+	const boss = encounter.kind === 'boss' || encounter.kind === 'elitefour' || encounter.kind === 'champion';
+	const base = boss ? PAYOUT_BASE.boss : encounter.kind === 'elite' ? PAYOUT_BASE.elite :
 		encounter.source === 'gym' ? PAYOUT_BASE.gym : PAYOUT_BASE.trainer;
-	return Math.round(base * last.level * moneyMultiplier(settings) / 10) * 10;
+	// Agravante 1 do modo Completo: 25% a menos
+	const penalty = hasPenalty(settings, LESS_MONEY) ? 0.75 : 1;
+	return roundMoney(base * last.level * moneyMultiplier(settings) * penalty);
 }
 
 // --- Loja ----------------------------------------------------------------------------
@@ -250,16 +254,18 @@ export function shopStock(run: ExpeditionRun, nodeId: string): ShopEntry[] {
 	const staples = SHOP_STAPLES.filter(id => rules.faint !== 'nuzlocke' || !REVIVE_ITEMS.includes(id));
 	// Captura por bola: as bolas de sempre (decisão do usuário: mais chances de conseguir bolas)
 	if (rules.capture === 'ball' || rules.capture === 'chance') staples.push(...SHOP_BALLS);
+	// Agravante 6 do modo Completo: 25% mais caro
+	const price = (value: number) => (hasPenalty(run.settings, PRICIER_MART) ? roundMoney(value * 1.25) : value);
 	const stock: ShopEntry[] = staples.map(id => ({
-		item: id, price: itemPrice(id), single: false, group: 'healing',
+		item: id, price: price(itemPrice(id)), single: false, group: 'healing',
 	}));
 	const held = HELD_ITEMS.filter(name => Dex.items.get(name).exists);
 	prng.shuffle(held);
-	for (const name of held.slice(0, 3)) stock.push({ item: name, price: itemPrice(name), single: true, group: 'held' });
+	for (const name of held.slice(0, 3)) stock.push({ item: name, price: price(itemPrice(name)), single: true, group: 'held' });
 	for (const move of pickTMs(prng, run.team, 2)) {
-		stock.push({ item: `${TM_PREFIX}${move}`, price: TM_PRICE, single: true, group: 'special' });
+		stock.push({ item: `${TM_PREFIX}${move}`, price: price(TM_PRICE), single: true, group: 'special' });
 	}
-	stock.push({ item: 'rarecandy', price: itemPrice('rarecandy'), single: true, group: 'special' });
+	stock.push({ item: 'rarecandy', price: price(itemPrice('rarecandy')), single: true, group: 'special' });
 	return stock;
 }
 

@@ -16,6 +16,7 @@ import { profileSections } from '../gym-challenge/player';
 import { getStore } from './state';
 import { getVariant } from './variant';
 import { runProgress, runStatusLabel, teamIcons } from './admin';
+import { badgeRow } from './pages';
 import type { ExpeditionRun } from './store';
 
 const RECENT_RUNS = 10;
@@ -34,6 +35,7 @@ function unlockLabel(TL: Translator, kind: string, ref: string) {
 		const item = Dex.items.get(ref).name || ref;
 		return TL`Item: ${item}`;
 	}
+	if (kind === 'shiny') return TL`Shiny starters`;
 	const variant = variantName(TL, ref);
 	return TL`Expedition: ${variant}`;
 }
@@ -54,6 +56,23 @@ export function expeditionProfile(TL: Translator, userid: ID) {
 			`<td>${count(list, 'lost')}</td><td>${count(list, 'abandoned')}</td><td>${count(list, 'closed')}</td></tr>`;
 	}
 	buf += `</table></div>`;
+
+	// Conquistas (decisão do usuário): as expedições vencidas e quantas vezes
+	const wins = [...byVariant].map(([id, list]) => [id, count(list, 'won')] as [string, number]).filter(([, n]) => n > 0);
+	buf += `<h3>${TL`Achievements`}</h3>`;
+	buf += wins.length ? `<p>${wins.map(([id, n]) => `&#127942; ${variantName(TL, id)} &times;${n}`).join(' &middot; ')}</p>` :
+		`<p><em>${TL`No expeditions completed yet.`}</em></p>`;
+
+	// Insígnias do modo Completo, por expedição
+	const progress = store.listProgress(userid).filter(entry => entry.badges.length);
+	if (progress.length) {
+		buf += `<h3>${TL`Badges`}</h3>` + progress.map(entry => {
+			const config = getVariant(entry.variant)?.completeConfig;
+			const badges = config?.badges || entry.badges.map(id => ({ id, type: '' }));
+			const total = entry.badges.length;
+			return `<p>${variantName(TL, entry.variant)} (${total}/8)<br />${badgeRow(entry.badges, badges, 28)}</p>`;
+		}).join('');
+	}
 
 	const active = runs.filter(run => run.status === 'active');
 	if (active.length) {
@@ -76,7 +95,10 @@ export function expeditionProfile(TL: Translator, userid: ID) {
 
 	const unlocks = store.listUnlocks(userid);
 	buf += `<h3>${TL`Unlocks`}</h3>`;
-	buf += unlocks.length ? `<p>${unlocks.map(entry => unlockLabel(TL, entry.kind, entry.ref)).join(' &middot; ')}</p>` :
+	buf += unlocks.length ? `<p>${unlocks.map(entry => {
+		const label = unlockLabel(TL, entry.kind, entry.ref);
+		return entry.variant ? `${label} (${variantName(TL, entry.variant)})` : label;
+	}).join(' &middot; ')}</p>` :
 		`<p><em>${TL`Nothing unlocked yet.`}</em></p>`;
 	return buf;
 }

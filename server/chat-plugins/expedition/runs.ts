@@ -28,6 +28,7 @@ import type { Translator } from '../../../sim/dex-text';
 import type { TextLanguage } from '../../../sim/dex-data';
 import { isHeldItem, useItem, type EconomyProblem } from './economy';
 import { DEFAULT_BALL, getBall, rollCapture, withBall } from './capture';
+import { FEWER_CENTERS, hasPenalty } from './difficulty';
 
 export type RunProblem =
 	'novariant' | 'disabled' | 'active' | 'norun' | 'nostarter' | 'badchoice' | 'unreachable' | 'nodeopen' | 'nonode' |
@@ -51,7 +52,10 @@ export function usesBalls(run: ExpeditionRun) {
 export const RUN_START_LIMIT = 5;
 const RUN_START_WINDOW = 10 * 60;
 
-export type RunPhase = 'starter' | 'decision' | 'map' | 'node' | 'ended';
+export type RunPhase = 'starter' | 'decision' | 'special' | 'map' | 'node' | 'ended';
+
+/** Insígnias do modo Completo (decisão do usuário: sempre 8). */
+export const ALL_BADGES = 8;
 
 /**
  * A expedição está disponível para o usuário: as abertas para todos; os rascunhos só
@@ -67,6 +71,7 @@ export function runPhase(run: ExpeditionRun): RunPhase {
 	if (run.status !== 'active') return 'ended';
 	if (run.pending?.kind === 'starter') return 'starter';
 	if (run.decisions.length) return 'decision';
+	if (run.pending?.kind === 'special') return 'special';
 	return run.node && !run.nodeDone ? 'node' : 'map';
 }
 
@@ -81,7 +86,33 @@ export function visitedNodes(run: ExpeditionRun): string[] {
 	return run.path.filter(step => step.startsWith(prefix)).map(step => step.slice(prefix.length));
 }
 
-export function startRun(user: User, variantId: string): ExpeditionRun | RunProblem {
+/** Escolhas do começo da run no modo Completo. */
+export interface StartOptions {
+	/** Nível de dificuldade (padrão: o máximo, o número de insígnias). */
+	level?: number;
+	/** Iniciais shiny, se liberados (padrão: sim). */
+	shiny?: boolean;
+}
+
+/**
+ * Modo Completo (etapa 9, decisões do usuário): o nível escolhido (até o número de
+ * insígnias), a insígnia em disputa (sorteada entre as que faltam, só no nível máximo) e
+ * se o jogador começou com as 8 (o que abre o ato especial).
+ */
+function completeSettings(variant: ExpeditionVariant, userid: string, seed: string, options: StartOptions) {
+	const config = variant.completeConfig;
+	if (!config) return undefined;
+	const earned = getStore().getBadges(userid, variant.id);
+	const max = Math.min(ALL_BADGES, earned.length);
+	const level = Number.isInteger(options.level) ? Math.max(0, Math.min(max, options.level!)) : max;
+	const allBadges = earned.length >= ALL_BADGES;
+	const missing = config.badges.filter(badge => !earned.includes(badge.id));
+	const prng = seededRandom(seed, 'badge');
+	const badge = !allBadges && level === max && missing.length ? missing[prng.random(missing.length)] : null;
+	return { ...config, level, badge, allBadges };
+}
+
+export function startRun(user: User, variantId: string, startOptions: StartOptions = {}): ExpeditionRun | RunProblem {
 	const variant = getVariant(variantId);
 	if (!variant) return 'novariant';
 	if (!variantAvailable(variant, user)) return 'disabled';
@@ -92,7 +123,19 @@ export function startRun(user: User, variantId: string): ExpeditionRun | RunProb
 	if (store.countRunsSince(user.id, since) >= RUN_START_LIMIT) return 'toomany';
 	const settings = resolveSettings(variant);
 	const seed = newSeed();
-	const options = variant.starterOptions(seededRandom(seed, 'starters'), settings, store.listUnlocks(user.id));
+	const complete = completeSettings(variant, user.id, seed, startOptions);
+	if (complete) {
+		settings.complete = complete;
+		// Agravante 3: menos PokéCenter no meio do ato
+		if (hasPenalty(settings, FEWER_CENTERS) && settings.map.weights.rest) {
+			settings.map.weights.rest = Math.max(1, Math.round(settings.map.weights.rest / 2));
+		}
+	}
+	let options = variant.starterOptions(seededRandom(seed, 'starters'), settings, store.listUnlocks(user.id));
+	// Iniciais shiny: liberados ao vencer o Campeão daquela expedição (decisão do usuário)
+	if (startOptions.shiny !== false && store.hasUnlock(user.id, 'shiny', 'starters', variant.id)) {
+		options = options.map(team => team.map(mon => ({ ...mon, shiny: true })));
+	}
 	return store.createRun({ userid: user.id, variant: variant.id, seed, settings, pending: { kind: 'starter', options } });
 }
 
@@ -129,24 +172,54 @@ export function enterNode(run: ExpeditionRun, nodeId: string): RunProblem | null
 	return null;
 }
 
-/** Nó atual terminado: no chefe, passa para o próximo ato ou vence a run (a run é gravada por quem chama). */
+/** Run vencida: golpes e evoluções pendentes não têm mais efeito; desbloqueios da variação. */
+function winRun(run: ExpeditionRun) {
+	run.status = 'won';
+	run.endedAt = Math.floor(Date.now() / 1000);
+	run.decisions = [];
+	run.pending = null;
+	for (const rule of getVariant(run.variant)?.unlocks || []) {
+		if (rule.when === 'win') getStore().addUnlock(run.userid, rule.kind, rule.ref, run.variant);
+	}
+}
+
+/**
+ * Nó atual terminado: no chefe, passa para o próximo ato ou vence a run (a run é gravada
+ * por quem chama). Modo Completo: o chefe do último ato dá a insígnia em disputa; quem
+ * começou com as 8 escolhe entre encerrar como vencedor e seguir ao ato especial; vencer o
+ * Campeão (ato especial) libera os iniciais shiny da expedição.
+ */
 export function completeNode(run: ExpeditionRun) {
 	run.nodeDone = true;
 	if (run.node !== currentMap(run).boss) return;
-	if (run.act < run.settings.map.acts) {
+	const acts = run.settings.map.acts;
+	const complete = run.settings.complete;
+	if (run.act === acts && complete?.badge) getStore().addBadge(run.userid, run.variant, complete.badge.id);
+	if (run.act < acts) {
+		run.act++;
+		run.node = null;
+		run.nodeDone = false;
+	} else if (run.act === acts && complete?.allBadges && run.settings.map.special) {
+		run.pending = { kind: 'special' };
+	} else {
+		if (run.act > acts) getStore().addUnlock(run.userid, 'shiny', 'starters', run.variant);
+		winRun(run);
+	}
+}
+
+/** Depois do último ato, com as 8 insígnias: `go` = seguir ao ato especial; senão, encerrar como vencedor. */
+export function decideSpecial(run: ExpeditionRun, go: boolean): RunProblem | null {
+	if (runPhase(run) !== 'special') return 'nodecision';
+	if (go) {
+		run.pending = null;
 		run.act++;
 		run.node = null;
 		run.nodeDone = false;
 	} else {
-		// Run vencida: golpes e evoluções pendentes não têm mais efeito
-		run.status = 'won';
-		run.endedAt = Math.floor(Date.now() / 1000);
-		run.decisions = [];
-		// Desbloqueios da variação, que valem nas próximas runs
-		for (const rule of getVariant(run.variant)?.unlocks || []) {
-			if (rule.when === 'win') getStore().addUnlock(run.userid, rule.kind, rule.ref);
-		}
+		winRun(run);
 	}
+	getStore().saveRun(run);
+	return null;
 }
 
 /** O que o nó atual mostra (null fora de um nó). */

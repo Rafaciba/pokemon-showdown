@@ -21,10 +21,13 @@ import { TEST_DEFINITION } from './variants';
 export const DEFAULT_DB_PATH = 'databases/expedition.db';
 
 export type RunStatus = 'active' | 'won' | 'lost' | 'abandoned' | 'closed';
-export type UnlockKind = 'starter' | 'item' | 'variant';
+export type UnlockKind = 'starter' | 'item' | 'variant' | 'shiny';
 
 /** Escolha que a run espera antes de seguir (por enquanto, o time inicial). */
-export type RunPending = { kind: 'starter', options: RunMon[][] };
+export type RunPending =
+	{ kind: 'starter', options: RunMon[][] } |
+	/** Modo Completo: venceu o último ato com as 8 insígnias; encerrar como vencedor ou seguir ao ato especial. */
+	{ kind: 'special' };
 
 export interface ExpeditionRun {
 	id: number;
@@ -81,6 +84,8 @@ export interface ExpeditionBattle {
 }
 
 export interface Unlock {
+	/** Expedição do desbloqueio ('' = de todas). */
+	variant: string;
 	kind: UnlockKind;
 	ref: string;
 	unlockedAt: number;
@@ -181,6 +186,28 @@ const MIGRATIONS: Migration[] = [
 	// 6: Computador da run (etapa 8)
 	`
 	ALTER TABLE runs ADD COLUMN box TEXT NOT NULL DEFAULT '[]';
+	`,
+	// 7: modo Completo (etapa 9): insígnias por jogador e expedição; desbloqueios por
+	// expedição (os antigos ficam valendo para todas, com variant '')
+	`
+	CREATE TABLE progress (
+		userid       TEXT NOT NULL,
+		variant      TEXT NOT NULL,
+		badges       TEXT NOT NULL DEFAULT '[]',
+		updated_at   INTEGER NOT NULL,
+		PRIMARY KEY (userid, variant)
+	) STRICT, WITHOUT ROWID;
+	CREATE TABLE unlocks_new (
+		userid       TEXT NOT NULL,
+		variant      TEXT NOT NULL DEFAULT '',
+		kind         TEXT NOT NULL CHECK (kind IN ('starter', 'item', 'variant', 'shiny')),
+		ref          TEXT NOT NULL,
+		unlocked_at  INTEGER NOT NULL,
+		PRIMARY KEY (userid, variant, kind, ref)
+	) STRICT, WITHOUT ROWID;
+	INSERT INTO unlocks_new (userid, variant, kind, ref, unlocked_at) SELECT userid, '', kind, ref, unlocked_at FROM unlocks;
+	DROP TABLE unlocks;
+	ALTER TABLE unlocks_new RENAME TO unlocks;
 	`,
 ];
 
@@ -360,20 +387,47 @@ export class ExpeditionStore {
 
 	// --- Desbloqueios ------------------------------------------------------------------
 
-	addUnlock(userid: string, kind: UnlockKind, ref: string) {
-		this.db.prepare('INSERT OR IGNORE INTO unlocks (userid, kind, ref, unlocked_at) VALUES (?, ?, ?, ?)')
-			.run(userid, kind, ref, now());
+	/** Desbloqueio do jogador (`variant` '' = vale para todas as expedições). */
+	addUnlock(userid: string, kind: UnlockKind, ref: string, variant = '') {
+		this.db.prepare('INSERT OR IGNORE INTO unlocks (userid, variant, kind, ref, unlocked_at) VALUES (?, ?, ?, ?, ?)')
+			.run(userid, variant, kind, ref, now());
 	}
 
 	listUnlocks(userid: string, kind?: UnlockKind): Unlock[] {
 		const rows = (kind ?
 			this.db.prepare('SELECT * FROM unlocks WHERE userid = ? AND kind = ? ORDER BY unlocked_at').all(userid, kind) :
 			this.db.prepare('SELECT * FROM unlocks WHERE userid = ? ORDER BY unlocked_at').all(userid)) as Row[];
-		return rows.map(row => ({ kind: row.kind, ref: row.ref, unlockedAt: row.unlocked_at }));
+		return rows.map(row => ({ variant: row.variant, kind: row.kind, ref: row.ref, unlockedAt: row.unlocked_at }));
 	}
 
-	hasUnlock(userid: string, kind: UnlockKind, ref: string) {
-		return !!this.db.prepare('SELECT 1 FROM unlocks WHERE userid = ? AND kind = ? AND ref = ?').get(userid, kind, ref);
+	/** O jogador tem o desbloqueio (o da expedição ou um de todas). */
+	hasUnlock(userid: string, kind: UnlockKind, ref: string, variant = '') {
+		return !!this.db.prepare(`SELECT 1 FROM unlocks WHERE userid = ? AND kind = ? AND ref = ? AND variant IN ('', ?)`)
+			.get(userid, kind, ref, variant);
+	}
+
+	// --- Insígnias do modo Completo (etapa 9) --------------------------------------------
+
+	getBadges(userid: string, variant: string): string[] {
+		const row = this.db.prepare('SELECT badges FROM progress WHERE userid = ? AND variant = ?').get(userid, variant) as
+			Row | undefined;
+		return row ? JSON.parse(row.badges) : [];
+	}
+
+	addBadge(userid: string, variant: string, badge: string) {
+		const badges = this.getBadges(userid, variant);
+		if (badges.includes(badge)) return;
+		badges.push(badge);
+		this.db.prepare(`
+			INSERT INTO progress (userid, variant, badges, updated_at) VALUES (?, ?, ?, ?)
+			ON CONFLICT (userid, variant) DO UPDATE SET badges = excluded.badges, updated_at = excluded.updated_at
+		`).run(userid, variant, JSON.stringify(badges), now());
+	}
+
+	/** Insígnias do jogador em todas as expedições (perfil). */
+	listProgress(userid: string): { variant: string, badges: string[] }[] {
+		return (this.db.prepare('SELECT variant, badges FROM progress WHERE userid = ? ORDER BY variant').all(userid) as Row[])
+			.map(row => ({ variant: row.variant, badges: JSON.parse(row.badges) }));
 	}
 
 	// --- Expedições (painel; etapa 6) -----------------------------------------------------
@@ -429,6 +483,7 @@ export class ExpeditionStore {
 			this.db.prepare('DELETE FROM battles WHERE run_id IN (SELECT id FROM runs WHERE userid = ?)').run(userid);
 			this.db.prepare('DELETE FROM runs WHERE userid = ?').run(userid);
 			this.db.prepare('DELETE FROM unlocks WHERE userid = ?').run(userid);
+			this.db.prepare('DELETE FROM progress WHERE userid = ?').run(userid);
 		});
 	}
 
@@ -445,6 +500,11 @@ export class ExpeditionStore {
 			// Um desbloqueio que o nome novo já tenha fica só uma vez
 			this.db.prepare('UPDATE OR IGNORE unlocks SET userid = ? WHERE userid = ?').run(newid, oldid);
 			this.db.prepare('DELETE FROM unlocks WHERE userid = ?').run(oldid);
+			// Insígnias: as do nome antigo somam-se às do nome novo
+			for (const entry of this.listProgress(oldid)) {
+				for (const badge of entry.badges) this.addBadge(newid, entry.variant, badge);
+			}
+			this.db.prepare('DELETE FROM progress WHERE userid = ?').run(oldid);
 		});
 	}
 }

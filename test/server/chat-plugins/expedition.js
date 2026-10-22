@@ -557,7 +557,7 @@ describe('Expedition', () => {
 			assert.equal(saved.status, 'won');
 			assert(saved.path.length > 4 && saved.path[0].startsWith('1:'));
 			assert.equal(db.getActiveRun(user.id, 'unitteste'), null);
-			assert(db.hasUnlock(user.id, 'starter', 'pikachu'), 'vencer dá o desbloqueio da variação');
+			assert(db.hasUnlock(user.id, 'starter', 'pikachu', 'unitteste'), 'vencer dá o desbloqueio da variação');
 			assert.equal(typeof runs.startRun(user, 'unitteste'), 'object', 'depois de terminar, pode começar outra');
 		});
 
@@ -1017,6 +1017,145 @@ describe('Expedition', () => {
 			assert.equal(after.nodeDone, false, 'o nó não termina');
 			assert.equal(after.nodeState.battle, undefined);
 			assert.equal(after.nodeState.event, 'rocketlair');
+		});
+
+		it('plays the Complete mode: badges, difficulty, the special act and shiny starters', () => {
+			const definition = require('../../../dist/server/chat-plugins/expedition/definition');
+			const encounters = require('../../../dist/server/chat-plugins/expedition/encounters');
+			const economy = require('../../../dist/server/chat-plugins/expedition/economy');
+			const { BADGES } = require('../../../dist/server/chat-plugins/gym-challenge/badge-catalog');
+			const ids = definition.drawBadges(random.seededRandom('complete', 'x'));
+			const badges = ids.map(id => {
+				const badge = BADGES.find(entry => entry.id === id);
+				return { id, type: badge.type, leaderName: badge.leaders[0], leader: 'generated' };
+			});
+			if (!variant.getVariant('unitcomplete')) {
+				variant.registerVariant({
+					id: 'unitcomplete', name: () => 'Complete', description: () => 'Complete', status: 'open',
+					rules: { battles: 'manual', progression: 'levels', attrition: 'persist', faint: 'revive', teamSize: 6, complete: true },
+					map: { ...MAP, acts: 1, floors: 3, weights: { rest: 50, item: 50 }, fixedFloors: {}, special: true },
+					encounters: { wild: { pokedex: 100 }, trainer: { pokedex: 100 }, boss: { pokedex: 100 } },
+					completeConfig: { badges, elite: ['generated', 'generated'], champion: 'generated' },
+					aiLevel: () => 'easy',
+					starterOptions: prng => [0, 1, 2].map(i => [team.createMon(prng, 'Bulbasaur', 5, `c${i}`)]),
+				});
+			}
+			const all = variant.getVariant('unitcomplete');
+			// O teste começa várias runs seguidas: o limite de runs novas não conta as anteriores
+			const fresh = () => db.db.prepare('UPDATE runs SET started_at = 0').run();
+
+			// Sem insígnias: nível 0, disputa uma insígnia
+			let run = (fresh(), runs.startRun(user, 'unitcomplete'));
+			assert.equal(run.settings.complete.level, 0);
+			assert(ids.includes(run.settings.complete.badge.id));
+			assert.equal(run.settings.complete.allBadges, false);
+			runs.chooseStarter(run, 0);
+			// O chefe do último ato é o líder da insígnia, só com Pokémon do tipo dela
+			const boss = encounters.generateEncounter(run, all, { id: 'boss', floor: 3, col: 0, type: 'boss', next: [] });
+			assert(boss.team.every(mon => Dex.species.get(mon.species).types.includes(run.settings.complete.badge.type)),
+				'time do tipo da insígnia');
+			assert(/^Leader /.test(boss.name));
+			// Vencer o chefe do último ato dá a insígnia e vence a run (sem as 8, sem ato especial)
+			run.node = 'boss';
+			runs.completeNode(run);
+			db.saveRun(run);
+			assert.equal(run.status, 'won');
+			assert.deepEqual(db.getBadges(user.id, 'unitcomplete'), [run.settings.complete.badge.id]);
+
+			// Abaixo do nível máximo, sem insígnia em disputa
+			for (const id of ids.slice(0, 3)) db.addBadge(user.id, 'unitcomplete', id);
+			run = (fresh(), runs.startRun(user, 'unitcomplete', { level: 1 }));
+			assert.equal(run.settings.complete.level, 1);
+			assert.equal(run.settings.complete.badge, null);
+			runs.abandonRun(user, run);
+			run = (fresh(), runs.startRun(user, 'unitcomplete', { level: 99 }));
+			assert.equal(run.settings.complete.level, db.getBadges(user.id, 'unitcomplete').length, 'no máximo o número de insígnias');
+			assert(!db.getBadges(user.id, 'unitcomplete').includes(run.settings.complete.badge.id), 'só as que faltam');
+			runs.abandonRun(user, run);
+
+			// Agravantes
+			const settingsAt = level => ({ ...run.settings, complete: { ...run.settings.complete, level } });
+			const trainer = { kind: 'trainer', source: 'pokedex', trainer: true, team: [{ species: 'Rattata', level: 20 }] };
+			assert.equal(economy.battlePrize(trainer, settingsAt(1)), Math.round(economy.battlePrize(trainer, settingsAt(0)) * 0.75 / 10) * 10);
+			const shop = level => economy.shopStock({ seed: 's', act: 1, team: [], settings: settingsAt(level) }, '3-0')
+				.find(entry => entry.item === 'potion').price;
+			assert.equal(shop(6), 250, 'PokéMart 25% mais caro');
+			assert.equal(shop(5), 200);
+			const nodes = require('../../../dist/server/chat-plugins/expedition/nodes');
+			const itemCount = level => nodes.getNodeType('item').view({
+				run: { seed: 'i', act: 1, team: [], settings: settingsAt(level) }, node: { id: '2-0' }, TL,
+			}).choices.length;
+			assert.equal(itemCount(1), 3);
+			assert.equal(itemCount(2), 2, 'uma opção a menos no nó de item');
+			const strong = { ...run, settings: settingsAt(8) };
+			const weak = { ...run, settings: settingsAt(0) };
+			const at = { id: '1-0', floor: 1, col: 0, type: 'trainer', next: [] };
+			const strongTrainer = encounters.generateEncounter(strong, all, at);
+			const weakTrainer = encounters.generateEncounter(weak, all, at);
+			assert.equal(strongTrainer.team[0].level, weakTrainer.team[0].level + 2, '+2 níveis');
+			assert.equal(strongTrainer.aiLevel, 'medium', 'IA um nível acima');
+			assert.equal(strongTrainer.team.length, Math.min(6, weakTrainer.team.length + 1), 'um Pokémon a mais');
+			const strongBoss = encounters.generateEncounter({ ...strong, settings: { ...strong.settings, complete: { ...strong.settings.complete, badge: null } } },
+				all, { id: 'boss', floor: 3, col: 0, type: 'boss', next: [] });
+			assert.equal(strongBoss.team.length, 6);
+			assert.equal(strongBoss.aiLevel, 'master');
+
+			// Com as 8: sem insígnia em disputa; vencer o último ato abre o ato especial
+			for (const id of ids) db.addBadge(user.id, 'unitcomplete', id);
+			run = (fresh(), runs.startRun(user, 'unitcomplete'));
+			assert.equal(run.settings.complete.allBadges, true);
+			assert.equal(run.settings.complete.badge, null);
+			runs.chooseStarter(run, 0);
+			run.node = 'boss';
+			runs.completeNode(run);
+			db.saveRun(run);
+			assert.equal(runs.runPhase(run), 'special');
+			assert.equal(runs.decideSpecial(run, true), null);
+			assert.equal(run.act, 2);
+			const special = runs.currentMap(run);
+			assert.deepEqual(special.nodes.map(node => node.type), ['rest', 'shop', 'elitefour', 'champion']);
+			const elite = encounters.generateEncounter(run, all, special.nodes[2]);
+			assert.equal(elite.doubles, true);
+			assert.equal(elite.team.length, 6);
+			assert(elite.team.every(mon => mon.level === 100));
+			// Difícil; no nível 8 (o padrão de quem tem as 8), o agravante 4 sobe para a Mestre
+			assert.equal(elite.aiLevel, 'master');
+			assert.equal(encounters.generateEncounter({ ...run, settings: settingsAt(0) }, all, special.nodes[2]).aiLevel, 'hard');
+			assert.deepEqual(Object.values(elite.owners).sort(), [0, 0, 0, 1, 1, 1]);
+			const champion = encounters.generateEncounter(run, all, special.nodes[3]);
+			assert.equal(champion.team.length, 6);
+			assert.equal(champion.aiLevel, 'master');
+			// Vencer o Campeão vence a run e libera os iniciais shiny daquela expedição
+			run.node = 'boss';
+			runs.completeNode(run);
+			db.saveRun(run);
+			assert.equal(run.status, 'won');
+			assert(db.hasUnlock(user.id, 'shiny', 'starters', 'unitcomplete'));
+			assert(!db.hasUnlock(user.id, 'shiny', 'starters', 'unitteste'), 'só naquela expedição');
+			run = (fresh(), runs.startRun(user, 'unitcomplete'));
+			assert(run.pending.options.flat().every(mon => mon.shiny), 'iniciais shiny');
+			runs.abandonRun(user, run);
+			run = (fresh(), runs.startRun(user, 'unitcomplete', { shiny: false }));
+			assert(!run.pending.options.flat().some(mon => mon.shiny));
+			runs.abandonRun(user, run);
+
+			// Quem prefere encerrar como vencedor
+			const other = runs.startRun(makeUser('Expedition Other'), 'unitcomplete');
+			assert.equal(other.settings.complete.allBadges, false);
+
+			// Troca de nome e exclusão levam as insígnias
+			db.renameUser(user.id, 'badgename');
+			assert.equal(db.getBadges('badgename', 'unitcomplete').length, 8);
+			db.deleteUserData('badgename');
+			assert.equal(db.getBadges('badgename', 'unitcomplete').length, 0);
+
+			// O líder escolhido precisa ter o tipo da insígnia
+			const trainers = new Map([[5, { id: 5, name: 'Brock', type: 'Rock', doubles: false, hasTeam: true }]]);
+			const nonRock = ids.findIndex(id => BADGES.find(entry => entry.id === id).type !== 'Rock');
+			const leaders = Array(8).fill('generated');
+			leaders[nonRock] = 5;
+			const problems = definition.definitionProblems(definition.normalizeDefinition({ badges: { mode: 'chosen', ids, leaders } }), trainers);
+			assert(problems.some(p => p.message.startsWith('The leader of the')));
 		});
 
 		it('computes the capture chance of each ball', () => {

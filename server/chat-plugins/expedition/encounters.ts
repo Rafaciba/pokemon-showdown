@@ -23,15 +23,20 @@ import { isTrainerSprite } from '../gym-challenge/trainer-sprites';
 import { seededRandom, weightedPick } from './random';
 import { createMon, type RunMon } from './team';
 import {
-	baseStatTotal, evolveForLevel, inTheme, isLegendary, legendarySpecies, maxBstForLevel, randomSpeciesForLevel,
+	baseStatTotal, basicSpecies, evolveForLevel, inTheme, isLegendary, legendarySpecies, maxBstForLevel,
+	randomSpeciesForLevel,
 	type Theme,
 } from './species';
 import { nodeProgress, opponentLevel, opponentTeamSize } from './progression';
-import type { EncounterKind, ExpeditionVariant, OpponentSource } from './variant';
+import type { BadgeSpec, BossSlot, EncounterKind, ExpeditionVariant, OpponentSource } from './variant';
 import type { ExpeditionRun } from './store';
 import type { MapNode } from './map';
 import type { EventBattle } from './events';
-import { bankBoss } from './bank';
+import { bankBoss, type BankBoss } from './bank';
+import {
+	HIGHER_LEVELS, hasPenalty, raiseAI, SMARTER_AI, STRONGER_BOSSES, STRONGER_TRAINERS,
+} from './difficulty';
+import { interleave } from './tag-team';
 
 export interface Encounter {
 	kind: EncounterKind;
@@ -97,7 +102,7 @@ function pickClass(prng: PRNG, classes: [string, string][]) {
 }
 
 /** Time sorteado: espécies diferentes (do tema), no estágio do nível, com golpes do nível. */
-function randomTeam(prng: PRNG, size: number, level: number, pool?: readonly string[], theme?: Theme): RunMon[] {
+function randomTeam(prng: PRNG, size: number, level: number, pool?: readonly string[] | null, theme?: Theme): RunMon[] {
 	const team: RunMon[] = [];
 	const used = new Set<string>();
 	for (let guard = 0; team.length < size && guard < size * 20; guard++) {
@@ -144,14 +149,129 @@ function gymTrainer(prng: PRNG, size: number, level: number, allowLegendary: boo
  */
 export function encounterFromSpec(run: ExpeditionRun, variant: ExpeditionVariant, node: MapNode, spec: EventBattle) {
 	const prng = seededRandom(run.seed, `eventbattle:${run.act}:${node.id}`);
-	const team = spec.species.map((species, i) => createMon(prng, species, spec.level, `o${i}`));
+	// Agravantes 7 (+2 níveis) e 4 (IA um nível acima) valem também nas batalhas de evento
+	const level = Math.min(100, spec.level + (hasPenalty(run.settings, HIGHER_LEVELS) ? 2 : 0));
+	const team = spec.species.map((species, i) => createMon(prng, species, level, `o${i}`));
 	const progress = nodeProgress(run.settings, run.act, node.floor);
-	const aiLevel = spec.ai === 'hard' ? 'hard' : variant.aiLevel(spec.ai === 'boss' ? 'boss' : spec.kind, progress, run.act);
+	let aiLevel: AILevel = spec.ai === 'hard' ? 'hard' :
+		variant.aiLevel(spec.ai === 'boss' ? 'boss' : spec.kind, progress, run.act);
+	if (hasPenalty(run.settings, SMARTER_AI)) aiLevel = raiseAI(aiLevel);
 	const avatar = spec.kind === 'wild' ? WILD_AVATAR : isTrainerSprite(spec.avatar) ? spec.avatar : '';
 	return {
 		kind: spec.kind, source: 'pokedex', name: spec.name, avatar, team, packed: packTeam(team), aiLevel,
 		doubles: !!spec.owners, trainer: spec.kind === 'trainer', ...(spec.owners ? { owners: spec.owners } : {}),
 	} as Encounter;
+}
+
+/** Nível dos chefes do ato especial (decisão do usuário). */
+export const SPECIAL_ACT_LEVEL = 100;
+
+/** Treinador do banco pelo id (null se saiu do banco). */
+function bankTrainer(id: number) {
+	try {
+		return getGymStore().getTrainer(id);
+	} catch {
+		return null;
+	}
+}
+
+/** Treinador de um lugar de chefe: escolhido, sorteado da seleção (do tipo, se dado) ou null (gerado). */
+function slotTrainer(run: ExpeditionRun, prng: PRNG, slot: BossSlot, type?: string) {
+	if (typeof slot === 'number') return bankTrainer(slot);
+	if (slot !== 'pool') return null;
+	const pool = (run.settings.bosses?.pool || []).map(bankTrainer)
+		.filter(trainer => trainer?.team && !trainer.doubles && (!type || trainer.type === type));
+	return pool.length ? pool[prng.random(pool.length)] : null;
+}
+
+/** Espécies básicas do tema de um tipo (sem nenhuma, as do tema). */
+function typedPool(run: ExpeditionRun, type: string) {
+	const typed = basicSpecies(run.settings.theme).filter(name => Dex.species.get(name).types.includes(type));
+	return typed.length ? typed : null;
+}
+
+/**
+ * Time sorteado só com um tipo: algumas evoluções perdem o tipo (Eevee vira Vaporeon),
+ * então só fica quem continua do tipo no estágio do nível. Sem espécies do tipo no tema,
+ * o time sai do tema inteiro.
+ */
+function typedTeam(prng: PRNG, run: ExpeditionRun, size: number, level: number, type: string, avoid: string[] = []) {
+	const pool = (typedPool(run, type) || []).filter(name => !avoid.includes(name));
+	if (!pool.length) return randomTeam(prng, size, level, null, run.settings.theme);
+	const team: RunMon[] = [];
+	for (let guard = 0; team.length < size && guard < size * 30; guard++) {
+		const species = randomSpeciesForLevel(prng, level, pool, undefined, run.settings.theme);
+		if (!Dex.species.get(species).types.includes(type) || avoid.includes(species)) continue;
+		if (team.some(mon => mon.species === species)) continue;
+		team.push(createMon(prng, species, level, `o${team.length}`));
+	}
+	return team.length ? team : randomTeam(prng, size, level, pool, run.settings.theme);
+}
+
+/**
+ * Líder da insígnia em disputa (chefe do último ato no modo Completo; decisão do usuário):
+ * o treinador escolhido, um da seleção com o tipo da insígnia ou um time gerado do tema
+ * só com Pokémon do tipo.
+ */
+function leaderBoss(run: ExpeditionRun, prng: PRNG, badge: BadgeSpec, size: number, level: number): BankBoss {
+	const trainer = slotTrainer(run, prng, badge.leader, badge.type);
+	const boss = trainer ? bankBoss(prng, trainer, size, level, run.settings.theme) : null;
+	if (boss) return boss;
+	const team = typedTeam(prng, run, size, level, badge.type);
+	const avatar = toID(badge.leaderName);
+	return {
+		name: badge.leaderName ? `Leader ${badge.leaderName}` : 'Gym Leader',
+		avatar: isTrainerSprite(avatar) ? avatar : pickClass(prng, BOSS_CLASSES).avatar, team, packed: packTeam(team),
+	};
+}
+
+/** Membro da Elite 4 (3 Pokémon, nível 100): do banco ou gerado com um tipo sorteado do tema. */
+function eliteMember(run: ExpeditionRun, prng: PRNG, slot: BossSlot, avoid: string[]): BankBoss {
+	const trainer = slotTrainer(run, prng, slot);
+	const boss = trainer ? bankBoss(prng, trainer, 3, SPECIAL_ACT_LEVEL, run.settings.theme) : null;
+	if (boss && !boss.team.some(mon => avoid.includes(mon.species))) return boss;
+	const types = [...new Set(basicSpecies(run.settings.theme).flatMap(name => Dex.species.get(name).types))];
+	const type = types[prng.random(types.length)];
+	const team = typedTeam(prng, run, 3, SPECIAL_ACT_LEVEL, type, avoid).filter(mon => !avoid.includes(mon.species));
+	return { name: 'Elite Four', avatar: pickClass(prng, BOSS_CLASSES).avatar, team, packed: packTeam(team) };
+}
+
+/**
+ * Ato especial: a Elite 4 (dois treinadores em dupla, IA Difícil, tag-team.ts) e o
+ * Campeão (6 Pokémon, IA Mestre), todos no nível 100.
+ */
+function specialEncounter(run: ExpeditionRun, kind: 'elitefour' | 'champion', prng: PRNG): Encounter {
+	const complete = run.settings.complete!;
+	const smarter = hasPenalty(run.settings, SMARTER_AI);
+	if (kind === 'champion') {
+		const trainer = slotTrainer(run, prng, complete.champion);
+		const boss = (trainer ? bankBoss(prng, trainer, 6, SPECIAL_ACT_LEVEL, run.settings.theme) : null) || (() => {
+			const team = randomTeam(prng, 6, SPECIAL_ACT_LEVEL, null, run.settings.theme);
+			return { name: 'Champion', avatar: pickClass(prng, BOSS_CLASSES).avatar, team, packed: packTeam(team) };
+		})();
+		return {
+			kind, source: trainer ? 'gym' : 'pokedex', ...boss, avatar: isTrainerSprite(boss.avatar) ? boss.avatar : '',
+			aiLevel: 'master', doubles: false, trainer: true,
+		};
+	}
+	const first = eliteMember(run, prng, complete.elite[0] ?? 'generated', []);
+	const second = eliteMember(run, prng, complete.elite[1] ?? 'generated', first.team.map(mon => mon.species));
+	const owners: Record<string, number> = {};
+	for (const mon of first.team) owners[mon.species] = 0;
+	for (const mon of second.team) owners[mon.species] = 1;
+	const sets = (packed: string) => Teams.unpack(packed) || [];
+	const firstSets = sets(first.packed);
+	const secondSets = sets(second.packed);
+	const order = interleave(first.team.map(mon => mon.species), second.team.map(mon => mon.species));
+	const allSets = [...firstSets, ...secondSets];
+	const allMons = [...first.team, ...second.team];
+	const name = first.name === second.name ? first.name : `${first.name} & ${second.name}`;
+	return {
+		kind, source: 'gym', name, avatar: isTrainerSprite(first.avatar) ? first.avatar : '',
+		team: order.map(species => allMons.find(mon => mon.species === species)!),
+		packed: Teams.pack(order.map(species => allSets.find(set => set.species === species)!)),
+		aiLevel: smarter ? raiseAI('hard') : 'hard', doubles: true, trainer: true, owners,
+	};
 }
 
 /** Treinador do banco escolhido para o chefe do ato (ou sorteado da seleção); null = gerado. */
@@ -165,19 +285,35 @@ function bossTrainerId(run: ExpeditionRun, prng: PRNG): number | null {
 
 export function generateEncounter(run: ExpeditionRun, variant: ExpeditionVariant, node: MapNode): Encounter | null {
 	const kind = node.type as EncounterKind;
-	if (!['wild', 'trainer', 'elite', 'boss', 'legendary'].includes(kind)) return null;
+	if (!['wild', 'trainer', 'elite', 'boss', 'legendary', 'elitefour', 'champion'].includes(kind)) return null;
 	const prng = seededRandom(run.seed, `encounter:${run.act}:${node.id}`);
 	const settings = run.settings;
+	if (kind === 'elitefour' || kind === 'champion') return specialEncounter(run, kind, prng);
 	const progress = nodeProgress(settings, run.act, node.floor);
-	const level = opponentLevel(settings, run.act, node.floor, prng, kind);
-	const size = opponentTeamSize(kind, progress, prng, run.act);
-	const aiLevel = variant.aiLevel(kind, progress, run.act);
+	let level = opponentLevel(settings, run.act, node.floor, prng, kind);
+	let size = opponentTeamSize(kind, progress, prng, run.act);
+	let aiLevel = variant.aiLevel(kind, progress, run.act);
+	// Agravantes do modo Completo (difficulty.ts)
+	const strongBoss = kind === 'boss' && hasPenalty(settings, STRONGER_BOSSES);
+	if (hasPenalty(settings, HIGHER_LEVELS)) level += 2;
+	if (strongBoss) level += 2;
+	level = Math.min(100, level);
+	if ((kind === 'trainer' || kind === 'elite') && hasPenalty(settings, STRONGER_TRAINERS)) size = Math.min(6, size + 1);
+	if (strongBoss) size = 6;
+	if (hasPenalty(settings, SMARTER_AI)) aiLevel = raiseAI(aiLevel);
+	if (strongBoss) aiLevel = 'master';
 	const pool = variant.pool;
 	const theme = settings.theme;
 	let source: OpponentSource = weightedPick(prng, settings.encounters[kind] || {}) || 'pokedex';
 	if (source === 'pool' && !pool) source = 'pokedex';
 	const base = { kind, aiLevel, doubles: false, trainer: kind === 'trainer' || kind === 'elite' || kind === 'boss' };
 
+	// Modo Completo: o chefe do último ato é o líder da insígnia em disputa
+	const badge = settings.complete?.badge;
+	if (kind === 'boss' && badge && run.act === settings.map.acts) {
+		const leader = leaderBoss(run, prng, badge, size, level);
+		return { ...base, source: 'gym', ...leader, avatar: isTrainerSprite(leader.avatar) ? leader.avatar : '' };
+	}
 	// Chefe do banco (escolhido ou sorteado); se o treinador não existe mais, o chefe é gerado
 	if (kind === 'boss') {
 		const trainerId = bossTrainerId(run, prng);

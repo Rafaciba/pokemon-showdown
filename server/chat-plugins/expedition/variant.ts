@@ -95,6 +95,11 @@ export interface MapSettings {
 	rareNodes?: Record<string, number>;
 	/** Tipo do nó do chefe, no fim de cada ato. */
 	bossType: string;
+	/**
+	 * Modo Completo: depois do último ato vem o ato especial, um caminho único com
+	 * PokéCenter, PokéMart, a Elite 4 em dupla e o Campeão (map.ts → specialAct).
+	 */
+	special?: boolean;
 }
 
 /**
@@ -111,8 +116,11 @@ export const DEFAULT_FORMAT: FormatSpec = {
 	base: 'gen9nationaldexag', rules: 'Standard NatDex, Terastal Clause, Z-Move Clause, Dynamax Clause',
 };
 
-/** Tipos de encontro com batalha (elite: treinador forte, com recompensa melhor). */
-export type EncounterKind = 'wild' | 'trainer' | 'elite' | 'boss' | 'legendary';
+/**
+ * Tipos de encontro com batalha (elite: treinador forte, com recompensa melhor;
+ * elitefour e champion: o ato especial do modo Completo).
+ */
+export type EncounterKind = 'wild' | 'trainer' | 'elite' | 'boss' | 'legendary' | 'elitefour' | 'champion';
 
 /** Chefe de um ato: gerado, sorteado da seleção do banco do Desafio ou um treinador escolhido (id). */
 export type BossSlot = 'generated' | 'pool' | number;
@@ -121,6 +129,33 @@ export type BossSlot = 'generated' | 'pool' | number;
 export interface BossSettings {
 	acts: BossSlot[];
 	pool: number[];
+}
+
+/** Insígnia do modo Completo, com o líder (chefe do ato 3 quando ela está em disputa). */
+export interface BadgeSpec {
+	id: string;
+	type: string;
+	/** Nome do líder no catálogo (para o líder gerado). */
+	leaderName: string;
+	leader: BossSlot;
+}
+
+/** Modo Completo (etapa 9): o que a expedição define. */
+export interface CompleteConfig {
+	badges: BadgeSpec[];
+	/** Os dois da Elite 4 (batalha em dupla do ato especial) e o Campeão. */
+	elite: BossSlot[];
+	champion: BossSlot;
+}
+
+/** Modo Completo numa run: o que foi decidido no começo dela. */
+export interface CompleteSettings extends CompleteConfig {
+	/** Nível de dificuldade escolhido (0 até o número de insígnias do jogador): os agravantes. */
+	level: number;
+	/** Insígnia em disputa (só no nível máximo e para quem ainda não tem as 8). */
+	badge: BadgeSpec | null;
+	/** O jogador começou com as 8 insígnias: vencer o ato 3 abre o ato especial. */
+	allBadges: boolean;
 }
 /**
  * De onde vêm os adversários: sorteados da Pokédex (do tema), treinadores do banco do
@@ -165,6 +200,8 @@ export interface RunSettings {
 	theme?: Theme;
 	/** Chefes (sem isso, todos gerados). */
 	bosses?: BossSettings;
+	/** Modo Completo (etapa 9). */
+	complete?: CompleteSettings;
 }
 
 /** Situação de uma expedição do banco: rascunho (só administradores testam), aberta ou encerrada. */
@@ -187,6 +224,8 @@ export interface ExpeditionVariant {
 	pool?: VariantPool;
 	theme?: Theme;
 	bosses?: BossSettings;
+	/** Modo Completo (etapa 9): insígnias, Elite 4 e Campeão. */
+	completeConfig?: CompleteConfig;
 	/**
 	 * Nível de IA dos adversários por tipo de encontro, progresso da run (0 = início,
 	 * 1 = fim) e ato.

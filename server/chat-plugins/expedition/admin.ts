@@ -407,7 +407,7 @@ function sectionForm(
 			field(TL`Acts`, selectBox('actmode', [
 				['complete', TL`Complete (3 acts and the special act)`],
 				['custom', TL`Custom (1 to 4 acts, no special act)`],
-			], values.actmode), TL`The special act and the badges come in stage 9.`),
+			], values.actmode), TL`Complete: each run fights for one of the 8 badges, each badge adds a difficulty penalty, and with all 8 the special act opens (Elite Four in doubles and the Champion, at level 100).`),
 			field(TL`Number of acts (Custom)`, selectBox('acts', [['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']], values.acts)),
 			field(TL`Starting level`, textbox('start', values.start || '', 2, '4em')),
 			field(TL`Level of the final boss`, textbox('cap', values.cap || '', 3, '4em'),
@@ -665,7 +665,6 @@ function renderEditor(TL: Translator, user: User, rawId: string) {
 			`<p><button class="button" name="send" value="/expedicaoadmin reabrir ${id}"><strong>${TL`Reopen expedition`}</strong>` +
 			`</button></p>` + exportBox(TL, id);
 	}
-	buf += `<p><small>${TL`The badges, the difficulty and the special act of the Complete mode only take effect in stage 9.`}</small></p>`;
 	if (expedition.status === 'open') {
 		buf += `<p><small>${TL`The expedition is open: changes are only saved if it stays ready to play. Runs in progress keep the settings they started with.`}</small></p>`;
 	} else {

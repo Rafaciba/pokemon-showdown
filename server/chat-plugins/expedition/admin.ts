@@ -434,7 +434,7 @@ function sectionForm(
 		};
 		fields.push(`<table>` + NODE_WEIGHT_KEYS.map(key => (
 			`<tr><td>${label(key)}</td><td>${textbox(key, values[key] || '', 3, '4em')} %</td></tr>`
-		)).join('') + `</table>`, `<p><small>${TL`Relative chances. The first floor is always tall grass, the middle floor an item and the floor before the boss a PokéCenter. Until stage 7, the elite counts as a trainer.`}</small></p>`);
+		)).join('') + `</table>`, `<p><small>${TL`Relative chances. The first floor is always tall grass, the middle floor an item and the floor before the boss a PokéCenter. No PokéCenter or elite before floor 6, and no PokéCenter on floor 13.`}</small></p>`);
 		break;
 	}
 	case 'ia': {
@@ -477,7 +477,7 @@ function sectionForm(
 			}
 			pool += `</table></div>`;
 		}
-		fields.push(table, pool, `<p><small>${TL`Trainers from the bank of the Gym Challenge, adjusted to the power of the act (stage 7; until then, the bosses are generated).`}</small></p>`);
+		fields.push(table, pool, `<p><small>${TL`Trainers from the bank of the Gym Challenge, adjusted to the power of the act: each Pokémon goes back to the stage of the level, keeps the moves that stage learns and stays in the theme; the team has 3 or 4 Pokémon in act 1, 5 in act 2 and 6 from act 3 on.`}</small></p>`);
 		break;
 	}
 	case 'insignias': {
@@ -665,7 +665,7 @@ function renderEditor(TL: Translator, user: User, rawId: string) {
 			`<p><button class="button" name="send" value="/expedicaoadmin reabrir ${id}"><strong>${TL`Reopen expedition`}</strong>` +
 			`</button></p>` + exportBox(TL, id);
 	}
-	buf += `<p><small>${TL`Some options only take effect in the next stages of the mode: elite trainers and bosses from the bank (7), Poké Ball capture, Computer and shiny Pokémon (8), badges, difficulty and the special act (9).`}</small></p>`;
+	buf += `<p><small>${TL`Some options only take effect in the next stages of the mode: Poké Ball capture, Computer and shiny Pokémon (8), badges, difficulty and the special act (9).`}</small></p>`;
 	if (expedition.status === 'open') {
 		buf += `<p><small>${TL`The expedition is open: changes are only saved if it stays ready to play. Runs in progress keep the settings they started with.`}</small></p>`;
 	} else {

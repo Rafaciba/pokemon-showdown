@@ -80,6 +80,13 @@ export interface MapSettings {
 	lateTypes?: string[];
 	/** Máximo de nós de um tipo em cada ato. */
 	maxPerAct?: Record<string, number>;
+	/** Andares em que um tipo não pode aparecer (contando do 0; negativos contam do topo). */
+	forbiddenFloors?: Record<string, number[]>;
+	/**
+	 * Nós que saem do mesmo ponto têm tipos diferentes, quando houver opção (regra do
+	 * Slay the Spire: uma bifurcação sempre oferece uma escolha de verdade).
+	 */
+	distinctSiblings?: boolean;
 	/**
 	 * Nós raros: chance (%) de o ato ter um nó do tipo (no máximo um). Não entram nos
 	 * pesos; quando o sorteio acontece, um nó elegível vira desse tipo (decisão do
@@ -104,8 +111,17 @@ export const DEFAULT_FORMAT: FormatSpec = {
 	base: 'gen9nationaldexag', rules: 'Standard NatDex, Terastal Clause, Z-Move Clause, Dynamax Clause',
 };
 
-/** Tipos de encontro com batalha. */
-export type EncounterKind = 'wild' | 'trainer' | 'boss' | 'legendary';
+/** Tipos de encontro com batalha (elite: treinador forte, com recompensa melhor). */
+export type EncounterKind = 'wild' | 'trainer' | 'elite' | 'boss' | 'legendary';
+
+/** Chefe de um ato: gerado, sorteado da seleção do banco do Desafio ou um treinador escolhido (id). */
+export type BossSlot = 'generated' | 'pool' | number;
+
+/** Chefes de uma run: o de cada ato e a seleção do banco para os sorteios. */
+export interface BossSettings {
+	acts: BossSlot[];
+	pool: number[];
+}
 /**
  * De onde vêm os adversários: sorteados da Pokédex (do tema), treinadores do banco do
  * Desafio de Ginásios (ajustados ao nível do andar) ou listas próprias da variação.
@@ -147,6 +163,8 @@ export interface RunSettings {
 	encounters: Partial<Record<EncounterKind, Partial<Record<OpponentSource, number>>>>;
 	/** Tema: a Pokédex dos sorteios e das evoluções (sem tema = a Pokédex inteira). */
 	theme?: Theme;
+	/** Chefes (sem isso, todos gerados). */
+	bosses?: BossSettings;
 }
 
 /** Situação de uma expedição do banco: rascunho (só administradores testam), aberta ou encerrada. */
@@ -168,6 +186,7 @@ export interface ExpeditionVariant {
 	encounters: Partial<Record<EncounterKind, Partial<Record<OpponentSource, number>>>>;
 	pool?: VariantPool;
 	theme?: Theme;
+	bosses?: BossSettings;
 	/**
 	 * Nível de IA dos adversários por tipo de encontro, progresso da run (0 = início,
 	 * 1 = fim) e ato.
@@ -226,10 +245,12 @@ export function resolveSettings(variant: ExpeditionVariant): RunSettings {
 			minFloor: { ...variant.map.minFloor }, noRepeat: [...variant.map.noRepeat],
 			lateTypes: [...variant.map.lateTypes || []], maxPerAct: { ...variant.map.maxPerAct },
 			rareNodes: { ...variant.map.rareNodes },
+			...(variant.map.forbiddenFloors ? { forbiddenFloors: JSON.parse(JSON.stringify(variant.map.forbiddenFloors)) } : {}),
 		},
 		extra: { startLevel: 5, levelsPerAct: 30, bossLegendaryChance: 0, startMoney: 0, ...variant.extra },
 		format: { ...(variant.format || DEFAULT_FORMAT) },
 		encounters: JSON.parse(JSON.stringify(variant.encounters)),
 		...(variant.theme ? { theme: { gens: [...variant.theme.gens], species: [...variant.theme.species] } } : {}),
+		...(variant.bosses ? { bosses: { acts: [...variant.bosses.acts], pool: [...variant.bosses.pool] } } : {}),
 	};
 }

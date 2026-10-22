@@ -5,9 +5,10 @@
  * a cada andar, cada um sobe para a mesma coluna ou uma vizinha, sem cruzar outro
  * caminho, e todos terminam no chefe. Os nós do mapa são a união desses caminhos, e o
  * tipo de cada nó é sorteado com as chances da variação (com andares de tipo fixo, o
- * primeiro andar de cada tipo, tipos que não se repetem em seguida, tipos que só
- * aparecem tarde na run e um máximo de nós de um tipo por ato). Depois, os nós raros:
- * com a chance da variação, um nó elegível do ato vira de um tipo raro.
+ * primeiro andar de cada tipo, andares proibidos para um tipo, tipos que não se repetem
+ * em seguida, tipos que só aparecem tarde na run, um máximo de nós de um tipo por ato
+ * e, como no Slay the Spire, tipos diferentes nos nós que saem do mesmo ponto). Depois,
+ * os nós raros: com a chance da variação, um nó elegível do ato vira de um tipo raro.
  *
  * A mesma semente gera sempre o mesmo mapa.
  *
@@ -44,6 +45,11 @@ function nodeId(floor: number, col: number) {
 /** Tipo fixo de um andar (negativos contam do topo), ou undefined. */
 function fixedType(map: MapSettings, floor: number) {
 	return map.fixedFloors[floor] ?? map.fixedFloors[floor - map.floors];
+}
+
+/** O tipo não pode aparecer no andar (negativos contam do topo). */
+function forbiddenOn(map: MapSettings, type: string, floor: number) {
+	return (map.forbiddenFloors?.[type] || []).some(entry => entry === floor || entry === floor - map.floors);
 }
 
 export function generateAct(seed: string, act: number, map: MapSettings): ActMap {
@@ -115,6 +121,7 @@ export function generateAct(seed: string, act: number, map: MapSettings): ActMap
 		const weights: Record<string, number> = {};
 		for (const [type, weight] of Object.entries(map.weights)) {
 			if (node.floor < (map.minFloor[type] ?? 0)) continue;
+			if (forbiddenOn(map, type, node.floor)) continue;
 			if (map.lateTypes?.includes(type) && !lateAllowed(node.floor)) continue;
 			if ((counts[type] || 0) >= (map.maxPerAct?.[type] ?? Infinity)) continue;
 			if (map.noRepeat.includes(type)) {
@@ -123,6 +130,15 @@ export function generateAct(seed: string, act: number, map: MapSettings): ActMap
 			}
 			weights[type] = weight;
 		}
+		// Bifurcação: os irmãos já decididos (outros nós que saem dos mesmos pais) ficam de fora, se sobrar opção
+		if (map.distinctSiblings) {
+			const siblings = new Set((parents.get(node.id) || []).flatMap(parent => parent.next)
+				.map(id => nodes.get(id)?.type).filter(Boolean));
+			const distinct = Object.fromEntries(Object.entries(weights).filter(([type]) => !siblings.has(type)));
+			if (Object.values(distinct).some(weight => weight > 0)) {
+				for (const type of Object.keys(weights)) if (!(type in distinct)) delete weights[type];
+			}
+		}
 		node.type = weightedPick(prng, weights) || Object.keys(map.weights)[0] || map.bossType;
 		counts[node.type] = (counts[node.type] || 0) + 1;
 	}
@@ -130,7 +146,7 @@ export function generateAct(seed: string, act: number, map: MapSettings): ActMap
 	for (const [type, chance] of Object.entries(map.rareNodes || {}).sort()) {
 		const roll = prng.random(100);
 		const candidates = ordered.filter(node => (
-			!fixedType(map, node.floor) && node.floor >= (map.minFloor[type] ?? 0) &&
+			!fixedType(map, node.floor) && node.floor >= (map.minFloor[type] ?? 0) && !forbiddenOn(map, type, node.floor) &&
 			(!map.lateTypes?.includes(type) || lateAllowed(node.floor)) &&
 			// Sem outro nó raro (ou do mesmo tipo) logo antes ou logo depois
 			![...parents.get(node.id) || [], ...node.next.map(id => nodes.get(id)).filter(Boolean) as MapNode[]]

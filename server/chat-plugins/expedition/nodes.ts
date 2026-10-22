@@ -83,6 +83,8 @@ export function getNodeType(id: string): NodeType | null {
 
 registerNodeType({ id: 'wild', icon: '\u{1F33F}', label: TL => TL`Wild Pokémon`, encounter: true });
 registerNodeType({ id: 'trainer', icon: '\u{1F9E2}', label: TL => TL`Trainer`, encounter: true });
+// Elite (etapa 7): treinador forte, com recompensa melhor (battles.ts → eliteReward)
+registerNodeType({ id: 'elite', icon: '\u{2694}\u{FE0F}', label: TL => TL`Elite trainer`, encounter: true });
 registerNodeType({ id: 'boss', icon: '\u{1F451}', label: TL => TL`Boss`, encounter: true });
 registerNodeType({ id: 'legendary', icon: '\u{2728}', label: TL => TL`Legendary Pokémon`, encounter: true });
 /**

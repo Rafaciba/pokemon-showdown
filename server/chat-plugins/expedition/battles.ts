@@ -29,6 +29,8 @@ import { EXPEDITION_STATE_LINE, expeditionFormatId, PERSISTENT_STATUSES, type Mo
 import { expRates, gainExperience, nuzlockeBonus } from './progression';
 import { healMon, type RunMon } from './team';
 import { battlePrize } from './economy';
+import { eliteReward } from './items';
+import { seededRandom } from './random';
 import type { ExpeditionBattle, ExpeditionRun } from './store';
 
 /** Estado final de cada batalha, recebido do simulador logo antes do fim. */
@@ -261,7 +263,11 @@ export function finishExpeditionBattle(battleId: number, result: NpcBattleResult
 		const reward = run.nodeState?.reward || {};
 		const money = battlePrize(encounter, run.settings) + (reward.money || 0);
 		run.money += money;
-		const items: string[] = reward.items || [];
+		const items: string[] = [...reward.items || []];
+		// Elite: um item a mais, como as relíquias do Slay the Spire (items.ts)
+		if (encounter.kind === 'elite') {
+			items.push(eliteReward(seededRandom(run.seed, `elite:${run.act}:${run.node}`), run.team));
+		}
 		run.items.push(...items);
 		run.lastBattle = { opponent: encounter.name, result, gains, money, items };
 		// Captura: depois das decisões do time, o jogador escolhe se fica com o selvagem

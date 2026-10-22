@@ -19,9 +19,8 @@
  *   - insígnias do modo Completo: 8 de tipos diferentes, escolhidas ou sorteadas,
  *     travadas depois da primeira run.
  *
- * Partes que só passam a valer nas próximas etapas: elite e chefes do banco (7),
- * captura com Poké Bola, Computador e shiny (8), insígnias, agravantes e ato especial
- * (9). O editor avisa disso.
+ * Partes que só passam a valer nas próximas etapas: captura com Poké Bola, Computador e
+ * shiny (8), insígnias, agravantes e ato especial (9). O editor avisa disso.
  *
  * Funções puras (sem banco nem estado do servidor), que rodam também no processo do
  * simulador. Os problemas são mensagens em inglês marcadas com TLkey, com {0}, {1}...
@@ -32,17 +31,16 @@
 import { Utils } from '../../../lib';
 import { TLkey } from '../../../sim/dex-text';
 import type { PRNG } from '../../../sim/prng';
-import { isAILevel, type AILevel } from '../gym-challenge/levels';
+import { AI_LEVELS, isAILevel, type AILevel } from '../gym-challenge/levels';
 import { hasForbiddenChars, type Problem } from '../gym-challenge/rules';
 import { BADGES } from '../gym-challenge/badge-catalog';
 import { createMon, GAME_STARTERS, type RunMon } from './team';
 import { baseStatTotal, inTheme, legendarySpecies, basicSpecies, maxBstForLevel, type Theme } from './species';
 import {
-	DEFAULT_FORMAT, type Attrition, type ExpeditionStatus, type ExpeditionVariant, type FormatSpec,
+	DEFAULT_FORMAT, type Attrition, type BossSlot, type ExpeditionStatus, type ExpeditionVariant, type FormatSpec,
 } from './variant';
 
-/** Chefe de um ato (ou da Elite 4 e do Campeão): gerado, sorteado da seleção do banco ou um treinador escolhido. */
-export type BossSlot = 'generated' | 'pool' | number;
+export type { BossSlot };
 
 /** Tipos de nó com chance no mapa (o andar de item e o lendário ficam por fora). */
 export const NODE_WEIGHT_KEYS = ['wild', 'event', 'trainer', 'elite', 'rest', 'shop', 'item'] as const;
@@ -480,10 +478,10 @@ export interface StoredExpedition {
 	definition: ExpeditionDefinition;
 }
 
-/**
- * Variação que o resto do plugin usa. Nesta etapa, a elite entra como treinador comum
- * (a elite própria vem na etapa 7), e os chefes são gerados.
- */
+/** Andares em que não há PokéCenter: o anterior ao andar fixo de PokéCenter (o 13º; como no Slay the Spire). */
+const NO_REST_FLOORS = [-2];
+
+/** Variação que o resto do plugin usa. */
 export function variantFromDefinition(expedition: StoredExpedition): ExpeditionVariant {
 	const def = expedition.definition;
 	const acts = mapActs(def);
@@ -503,14 +501,16 @@ export function variantFromDefinition(expedition: StoredExpedition): ExpeditionV
 		map: {
 			acts, floors: ACT_FLOORS, columns: MAP_COLUMNS, paths: MAP_PATHS,
 			weights: {
-				wild: def.weights.wild, event: def.weights.event, trainer: def.weights.trainer + def.weights.elite,
+				wild: def.weights.wild, event: def.weights.event, trainer: def.weights.trainer, elite: def.weights.elite,
 				rest: def.weights.rest, shop: def.weights.shop, item: def.weights.item,
 			},
 			// O primeiro andar é de selvagens, o do meio é de item, e o último antes do chefe, PokéCenter
 			fixedFloors: { 0: 'wild', [ITEM_FLOOR]: 'item', [-1]: 'rest' },
-			// Sem PokéCenter antes do andar 6 (como as fogueiras do Slay the Spire)
-			minFloor: { rest: 5, shop: 1, item: 1 },
-			noRepeat: ['rest', 'shop', 'item', 'legendary'],
+			// Sem PokéCenter e sem elite antes do andar 6 (como as fogueiras e as elites do Slay the Spire)
+			minFloor: { rest: 5, elite: 5, shop: 1, item: 1 },
+			forbiddenFloors: { rest: NO_REST_FLOORS },
+			distinctSiblings: true,
+			noRepeat: ['rest', 'shop', 'item', 'elite', 'legendary'],
 			lateTypes: ['legendary'],
 			rareNodes: { legendary: def.legendaryChance },
 			bossType: 'boss',
@@ -522,10 +522,13 @@ export function variantFromDefinition(expedition: StoredExpedition): ExpeditionV
 		format: { ...def.format },
 		encounters: { wild: { pokedex: 100 }, trainer: { pokedex: 100 }, boss: { pokedex: 100 }, legendary: { pokedex: 100 } },
 		theme: { gens: [...def.theme.gens], species: [...def.theme.species] },
+		bosses: { acts: [...def.bosses.acts], pool: [...def.bosses.pool] },
 		aiLevel(kind, progress, act) {
 			const i = index(act);
 			if (kind === 'wild') return def.ai.wild[i];
 			if (kind === 'trainer') return def.ai.trainer[i];
+			// A elite joga um nível acima dos treinadores do ato (até a Mestre)
+			if (kind === 'elite') return AI_LEVELS[Math.min(AI_LEVELS.length - 1, AI_LEVELS.indexOf(def.ai.trainer[i]) + 1)];
 			return def.ai.boss[i];
 		},
 		starterOptions(prng) {

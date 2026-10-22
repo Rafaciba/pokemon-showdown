@@ -68,16 +68,32 @@ export function curveLevel(settings: RunSettings, act: number, floor: number) {
 	return Math.max(1, Math.min(MAX_LEVEL, level));
 }
 
+/** Nível acima da curva: o chefe, 2; a elite, 1. */
+const LEVEL_BONUS: Partial<Record<EncounterKind, number>> = { boss: 2, elite: 1 };
+
 export function opponentLevel(settings: RunSettings, act: number, floor: number, prng: PRNG, kind: EncounterKind) {
-	const level = curveLevel(settings, act, floor) + (prng.random(3) - 1) + (kind === 'boss' ? 2 : 0);
+	const level = curveLevel(settings, act, floor) + (prng.random(3) - 1) + (LEVEL_BONUS[kind] || 0);
 	return Math.max(1, Math.min(MAX_LEVEL, Math.round(level)));
 }
 
-/** Tamanho do time adversário: selvagem e lendário 1; treinador de 1-2 a 4-5; chefe 6. */
-export function opponentTeamSize(kind: EncounterKind, progress: number, prng: PRNG) {
+/**
+ * Tamanho do time do chefe por ato (decisão do usuário, 2026-10-22): 3 ou 4 no ato 1,
+ * 5 no ato 2, 6 do ato 3 em diante.
+ */
+export function bossTeamSize(act: number, prng: PRNG) {
+	if (act <= 1) return 3 + prng.random(2);
+	return act === 2 ? 5 : 6;
+}
+
+/**
+ * Tamanho do time adversário: selvagem e lendário 1; treinador de 1-2 a 4-5; elite, um
+ * a mais que o treinador (até 6); chefe pelo ato.
+ */
+export function opponentTeamSize(kind: EncounterKind, progress: number, prng: PRNG, act = 1) {
 	if (kind === 'wild' || kind === 'legendary') return 1;
-	if (kind === 'boss') return 6;
-	return Math.min(5, 1 + Math.floor(progress * 3.5) + prng.random(2));
+	if (kind === 'boss') return bossTeamSize(act, prng);
+	const trainer = Math.min(5, 1 + Math.floor(progress * 3.5) + prng.random(2));
+	return kind === 'elite' ? Math.min(6, trainer + 1) : trainer;
 }
 
 const sampleCache = new Map<string, string[]>();
@@ -105,6 +121,8 @@ export interface CalibrationStep {
 	/** Adversários esperados (média) e se são de treinador. */
 	count: number;
 	trainer: boolean;
+	/** Treinador elite (paga mais). */
+	elite?: boolean;
 	legendary: boolean;
 	/** Chefe do ato: o nível na chegada é comparado com a curva. */
 	boss: boolean;
@@ -130,13 +148,15 @@ export function calibrationPaths(settings: RunSettings): CalibrationStep[][] {
 				current = node.id;
 				const progress = nodeProgress(settings, act, node.floor);
 				const kind = node.id === map.boss ? 'boss' : node.type;
-				const level = Math.round(curveLevel(settings, act, node.floor) + (kind === 'boss' ? 2 : 0));
+				const level = Math.round(curveLevel(settings, act, node.floor) + (LEVEL_BONUS[kind as EncounterKind] || 0));
 				const step = { level, act, boss: kind === 'boss', trainer: false, legendary: false, count: 0 };
 				if (kind === 'wild') step.count = 1;
 				if (kind === 'legendary') Object.assign(step, { count: 1, legendary: true });
-				// Treinador: 1 + floor(progresso * 3,5) + 0 ou 1, até 5
-				if (kind === 'trainer') Object.assign(step, { count: Math.min(5, 1.5 + Math.floor(progress * 3.5)), trainer: true });
-				if (kind === 'boss') Object.assign(step, { count: 6, trainer: true });
+				// Treinador: 1 + floor(progresso * 3,5) + 0 ou 1, até 5; a elite, um a mais
+				const trainerCount = Math.min(5, 1.5 + Math.floor(progress * 3.5));
+				if (kind === 'trainer') Object.assign(step, { count: trainerCount, trainer: true });
+				if (kind === 'elite') Object.assign(step, { count: Math.min(6, trainerCount + 1), trainer: true, elite: true });
+				if (kind === 'boss') Object.assign(step, { count: act <= 1 ? 3.5 : act === 2 ? 5 : 6, trainer: true });
 				steps.push(step);
 				if (kind === 'boss') break;
 			}

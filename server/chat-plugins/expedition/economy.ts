@@ -129,7 +129,7 @@ export function itemPrice(entry: string): number {
  * ajusta o total). O chefe paga 1,5 vez um treinador comum: o prêmio dele só serve no
  * ato seguinte.
  */
-const PAYOUT_BASE = { trainer: 30, gym: 45, boss: 45 };
+const PAYOUT_BASE = { trainer: 30, gym: 45, elite: 45, boss: 45 };
 
 /** Preço de uma "compra média" (escolha nossa: uma Hyper Potion). */
 const REFERENCE_PRICE = 1500;
@@ -153,7 +153,7 @@ export function moneyMultiplier(settings: RunSettings) {
 	for (const steps of paths) {
 		for (const step of steps) {
 			if (!step.trainer || step.boss) continue;
-			total += PAYOUT_BASE.trainer * step.level;
+			total += (step.elite ? PAYOUT_BASE.elite : PAYOUT_BASE.trainer) * step.level;
 		}
 	}
 	const perAct = total / Math.max(1, paths.length * settings.map.acts);
@@ -167,7 +167,7 @@ export function battlePrize(encounter: Encounter, settings: RunSettings) {
 	if (!encounter.trainer) return 0;
 	const last = encounter.team[encounter.team.length - 1];
 	if (!last) return 0;
-	const base = encounter.kind === 'boss' ? PAYOUT_BASE.boss :
+	const base = encounter.kind === 'boss' ? PAYOUT_BASE.boss : encounter.kind === 'elite' ? PAYOUT_BASE.elite :
 		encounter.source === 'gym' ? PAYOUT_BASE.gym : PAYOUT_BASE.trainer;
 	return Math.round(base * last.level * moneyMultiplier(settings) / 10) * 10;
 }

@@ -170,7 +170,10 @@ describe('Expedition', () => {
 			assert.equal(built.map.acts, 3, 'Completo: 3 atos com mapa');
 			assert.equal(built.map.floors, 14, '15 andares com o chefe');
 			assert.equal(built.map.fixedFloors[-1], 'rest');
-			assert.equal(built.map.weights.trainer, 20, 'a elite conta como treinador até a etapa 7');
+			assert.equal(built.map.weights.trainer, 15);
+			assert.equal(built.map.weights.elite, 5);
+			assert.equal(built.aiLevel('elite', 0.5, 2), 'hard', 'a elite joga um nível acima dos treinadores');
+			assert.equal(built.aiLevel('elite', 1, 4), 'master');
 			const settings = variant.resolveSettings(built);
 			assert.equal(progression.curveLevel(settings, 3, settings.map.floors), 95, 'o chefe final no teto');
 			assert.equal(built.aiLevel('trainer', 0.5, 2), 'medium');
@@ -239,6 +242,81 @@ describe('Expedition', () => {
 				.some(m => m.includes('too few')));
 			assert(messages(definition.normalizeDefinition({ ...custom, starters: { mode: 'fixed', size: 1, teams: [['Charmander'], ['Charmander'], ['Pidgey']] } }))
 				.some(m => m.includes('regional starter')));
+		});
+
+		it('follows the map rules of the Slay the Spire', () => {
+			const built = definition.variantFromDefinition({ id: 1, name: 'M', status: 'open', definition: definition.normalizeDefinition({}) });
+			let forks = 0;
+			let distinct = 0;
+			for (let i = 0; i < 60; i++) {
+				const map = mapModule.generateAct(`sts${i}`, 1, built.map);
+				const byId = new Map(map.nodes.map(node => [node.id, node]));
+				for (const node of map.nodes) {
+					if (node.id === map.boss) continue;
+					if (node.floor === 0) assert.equal(node.type, 'wild');
+					if (node.floor === 7) assert.equal(node.type, 'item');
+					if (node.floor === 13) assert.equal(node.type, 'rest');
+					if (node.floor === 12) assert.notEqual(node.type, 'rest', 'sem PokéCenter no andar 13');
+					if (node.floor < 5) assert(!['rest', 'elite'].includes(node.type), 'nada de PokéCenter e elite antes do andar 6');
+					const kids = node.next.filter(id => id !== map.boss).map(id => byId.get(id));
+					for (const kid of kids) {
+						if (['rest', 'elite', 'shop'].includes(kid.type)) assert.notEqual(kid.type, node.type, 'sem repetir em seguida');
+					}
+					// Bifurcações fora dos andares fixos: tipos diferentes
+					if (kids.length > 1 && ![0, 7, 13].includes(kids[0].floor)) {
+						forks++;
+						if (new Set(kids.map(kid => kid.type)).size === kids.length) distinct++;
+					}
+				}
+			}
+			assert(distinct / forks > 0.95, `bifurcações com tipos diferentes: ${distinct}/${forks}`);
+		});
+
+		it('sizes the teams of bosses by act and of elites above the trainers', () => {
+			const prng = random.seededRandom('size', 'x');
+			for (let i = 0; i < 20; i++) assert([3, 4].includes(progression.opponentTeamSize('boss', 0.3, prng, 1)));
+			assert.equal(progression.opponentTeamSize('boss', 0.6, prng, 2), 5);
+			assert.equal(progression.opponentTeamSize('boss', 1, prng, 3), 6);
+			assert.equal(progression.opponentTeamSize('boss', 1, prng, 4), 6);
+			const trainer = progression.opponentTeamSize('trainer', 0.5, random.seededRandom('t', 'x'));
+			assert.equal(progression.opponentTeamSize('elite', 0.5, random.seededRandom('t', 'x')), trainer + 1);
+		});
+
+		it('adjusts bank trainers to the level of the act', () => {
+			const bank = require('../../../dist/server/chat-plugins/expedition/bank');
+			assert.equal(bank.stageForLevel('Dragonite', 35), 'Dragonair');
+			assert.equal(bank.stageForLevel('Dragonite', 20), 'Dratini');
+			assert.equal(bank.stageForLevel('Dragonite', 60), 'Dragonite');
+			assert.equal(bank.stageForLevel('Alakazam', 20), 'Kadabra', 'troca: 16 + 16 = 32');
+			assert(bank.canLearn('Charmander', 'flamethrower'));
+			assert(!bank.canLearn('Charmander', 'surf'));
+			const set = {
+				name: 'Charizard', species: 'Charizard', item: 'Charizardite X', ability: 'Solar Power',
+				moves: ['Flare Blitz', 'Dragon Dance', 'Air Slash', 'Roost'], nature: 'Jolly', evs: { atk: 252 }, ivs: {}, level: 100,
+			};
+			const adjusted = bank.adjustSet(set, 20);
+			assert.equal(adjusted.species, 'Charmeleon');
+			assert.equal(adjusted.level, 20);
+			assert.equal(adjusted.item, '', 'a Mega Stone não serve à pré-evolução');
+			assert.equal(adjusted.ability, 'Solar Power');
+			assert(adjusted.moves.includes('Flare Blitz') && adjusted.moves.includes('Dragon Dance'));
+			assert(!adjusted.moves.includes('Air Slash') && !adjusted.moves.includes('Roost'), 'golpes que o Charmeleon não aprende saem');
+			assert.equal(adjusted.moves.length, 4, 'completado com os golpes do nível');
+			assert.equal(adjusted.nature, 'Jolly');
+			assert.equal(bank.adjustSet(set, 20, { gens: [2], species: [] }), null, 'fora do tema');
+			const { Teams } = require('../../../dist/sim/teams');
+			const trainer = {
+				name: 'Lance', title: 'Champion', type: 'Dragon', avatar: 'lance',
+				team: Teams.pack([set, { ...set, name: 'Dragonite', species: 'Dragonite', item: 'Leftovers', ability: 'Multiscale',
+					moves: ['Dragon Dance', 'Outrage', 'Extreme Speed', 'Roost'] }]),
+			};
+			const boss = bank.bankBoss(random.seededRandom('boss', 'x'), trainer, 4, 35, null);
+			assert.equal(boss.name, 'Champion Lance');
+			assert.equal(boss.team.length, 4, 'completado no tamanho do ato');
+			assert.equal(boss.team[0].species, 'Charmeleon', 'o Charizard evolui no 36');
+			assert.equal(boss.team[1].species, 'Dragonair');
+			assert(boss.team.slice(2).every(mon => Dex.species.get(mon.species).types.includes('Dragon')), 'do tipo do treinador');
+			assert.equal(Teams.unpack(boss.packed).length, 4);
 		});
 
 		it('draws 8 badges of different types and knows the league sets', () => {

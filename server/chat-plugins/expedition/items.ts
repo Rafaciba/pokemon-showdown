@@ -10,6 +10,10 @@
  * Mega Stone com `MEGA_STONE_CHANCE`% de chance, de preferência uma que algum Pokémon do
  * time (ou a evolução dele) usa. Se entra na loja e em eventos fica para depois.
  *
+ * Recompensa da elite (etapa 7, como as relíquias das elites do Slay the Spire): um item
+ * que vai direto para a mochila, Mega Stone com `ELITE_MEGA_STONE_CHANCE`% de chance
+ * (decisão do usuário: 25%) e, senão, um item de segurar sorteado.
+ *
  * @license MIT
  */
 import type { PRNG } from '../../../sim/prng';
@@ -68,6 +72,18 @@ export function pickMegaStone(prng: PRNG, team: RunMon[]): string | null {
 	const useful = stones.filter(stone => stone.users.some(user => lines.has(user)));
 	const pool = useful.length ? useful : stones;
 	return pool[prng.random(pool.length)].name;
+}
+
+/** Chance (%) de a recompensa da elite ser uma Mega Stone. */
+export const ELITE_MEGA_STONE_CHANCE = 25;
+
+/** Item que a vitória contra a elite dá (sorteado com a semente da run e o nó). */
+export function eliteReward(prng: PRNG, team: RunMon[]): string {
+	if (prng.random(100) < ELITE_MEGA_STONE_CHANCE) {
+		const stone = pickMegaStone(prng, team);
+		if (stone) return stone;
+	}
+	return pickItems(prng, 1)[0];
 }
 
 /** Itens diferentes sorteados da lista. */

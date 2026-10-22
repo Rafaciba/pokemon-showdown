@@ -1,9 +1,12 @@
 /**
  * pokemon-showdown-custom: encontros com batalha da Expedição.
  *
- * O encontro de um nó (selvagem, treinador, chefe ou lendário) é sorteado com a
- * semente da run e o nó: é o mesmo depois de uma interrupção. A fonte dos adversários
- * sai das chances da variação (decisão do usuário: as três fontes coexistem):
+ * O encontro de um nó (selvagem, treinador, elite, chefe ou lendário) é sorteado com a
+ * semente da run e o nó: é o mesmo depois de uma interrupção. O chefe de cada ato segue
+ * a configuração da expedição (etapa 7): gerado, sorteado da seleção do banco do
+ * Desafio ou um treinador escolhido, ajustado ao poder do ato (bank.ts). A elite é um
+ * treinador forte: um Pokémon a mais, um nível acima e a IA um nível acima. Nos
+ * demais, a fonte dos adversários sai das chances da variação:
  *   - "pokedex": espécies sorteadas, no estágio do nível (species.ts);
  *   - "gym": treinadores do banco do Desafio de Ginásios, no nível do andar;
  *   - "pool": as listas próprias da variação.
@@ -28,6 +31,7 @@ import type { EncounterKind, ExpeditionVariant, OpponentSource } from './variant
 import type { ExpeditionRun } from './store';
 import type { MapNode } from './map';
 import type { EventBattle } from './events';
+import { bankBoss } from './bank';
 
 export interface Encounter {
 	kind: EncounterKind;
@@ -136,20 +140,40 @@ export function encounterFromSpec(run: ExpeditionRun, variant: ExpeditionVariant
 	} as Encounter;
 }
 
+/** Treinador do banco escolhido para o chefe do ato (ou sorteado da seleção); null = gerado. */
+function bossTrainerId(run: ExpeditionRun, prng: PRNG): number | null {
+	const bosses = run.settings.bosses;
+	const slot = bosses?.acts[run.act - 1];
+	if (typeof slot === 'number') return slot;
+	if (slot === 'pool' && bosses!.pool.length) return bosses!.pool[prng.random(bosses!.pool.length)];
+	return null;
+}
+
 export function generateEncounter(run: ExpeditionRun, variant: ExpeditionVariant, node: MapNode): Encounter | null {
 	const kind = node.type as EncounterKind;
-	if (!['wild', 'trainer', 'boss', 'legendary'].includes(kind)) return null;
+	if (!['wild', 'trainer', 'elite', 'boss', 'legendary'].includes(kind)) return null;
 	const prng = seededRandom(run.seed, `encounter:${run.act}:${node.id}`);
 	const settings = run.settings;
 	const progress = nodeProgress(settings, run.act, node.floor);
 	const level = opponentLevel(settings, run.act, node.floor, prng, kind);
-	const size = opponentTeamSize(kind, progress, prng);
+	const size = opponentTeamSize(kind, progress, prng, run.act);
 	const aiLevel = variant.aiLevel(kind, progress, run.act);
 	const pool = variant.pool;
 	const theme = settings.theme;
 	let source: OpponentSource = weightedPick(prng, settings.encounters[kind] || {}) || 'pokedex';
 	if (source === 'pool' && !pool) source = 'pokedex';
-	const base = { kind, aiLevel, doubles: false, trainer: kind === 'trainer' || kind === 'boss' };
+	const base = { kind, aiLevel, doubles: false, trainer: kind === 'trainer' || kind === 'elite' || kind === 'boss' };
+
+	// Chefe do banco (escolhido ou sorteado); se o treinador não existe mais, o chefe é gerado
+	if (kind === 'boss') {
+		const trainerId = bossTrainerId(run, prng);
+		let trainer = null;
+		try {
+			trainer = trainerId ? getGymStore().getTrainer(trainerId) : null;
+		} catch {}
+		const boss = trainer ? bankBoss(prng, trainer, size, level, theme) : null;
+		if (boss) return { ...base, source: 'gym', ...boss, avatar: isTrainerSprite(boss.avatar) ? boss.avatar : '' };
+	}
 
 	const legends = legendarySpecies(theme);
 	if (kind === 'legendary' && legends.length) {
@@ -181,6 +205,6 @@ export function generateEncounter(run: ExpeditionRun, variant: ExpeditionVariant
 		const species = evolveForLevel(prng, legends[prng.random(legends.length)], level, theme);
 		team[team.length - 1] = createMon(prng, species, level, `o${team.length - 1}`);
 	}
-	const who = pickClass(prng, kind === 'boss' ? BOSS_CLASSES : TRAINER_CLASSES);
+	const who = pickClass(prng, kind === 'boss' || kind === 'elite' ? BOSS_CLASSES : TRAINER_CLASSES);
 	return { ...base, source, ...who, team, packed: packTeam(team) };
 }

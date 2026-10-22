@@ -13,7 +13,9 @@
  *     lendário no chefe;
  *   - IA: selvagem Aleatório e depois Fácil; treinador do Fácil ao Difícil; chefe
  *     Difícil e Mestre nos três quartos finais da run (o lendário usa a Difícil);
- *   - 30 níveis por ato: com um ato só, o time chega ao chefe por volta do nível 35.
+ *   - 30 níveis por ato: com um ato só, o time chega ao chefe por volta do nível 35;
+ *   - desbloqueio de exemplo (só para provar a estrutura, decisão do usuário): vencer
+ *     libera o Pikachu, que passa a aparecer num dos times iniciais das próximas runs.
  *
  * @license MIT
  */
@@ -85,13 +87,19 @@ export const TEST_VARIANT: ExpeditionVariant = {
 		if (kind === 'boss') return progress < 0.75 ? 'hard' : 'master';
 		return 'hard';
 	},
-	starterOptions(prng) {
+	unlocks: [{ when: 'win', kind: 'starter', ref: 'pikachu' }],
+	starterOptions(prng, settings, unlocked = []) {
 		// 9 iniciais diferentes, em três times de três
-		const pool = [...GAME_STARTERS];
+		const pool: string[] = [...GAME_STARTERS];
 		prng.shuffle(pool);
-		return [0, 1, 2].map(team => pool.slice(team * 3, team * 3 + 3).map((species, i) => (
-			createMon(prng, species, STARTER_LEVEL, `s${team}${i}`)
-		)));
+		const teams = [0, 1, 2].map(team => pool.slice(team * 3, team * 3 + 3));
+		// Iniciais liberados: cada um entra num dos times, no lugar do último
+		const extra = unlocked.filter(entry => entry.kind === 'starter').map(entry => entry.ref);
+		extra.slice(0, 3).forEach((species, i) => {
+			const team = teams[(prng.random(3) + i) % 3];
+			if (!team.includes(species)) team[team.length - 1] = species;
+		});
+		return teams.map((team, t) => team.map((species, i) => createMon(prng, species, STARTER_LEVEL, `s${t}${i}`)));
 	},
 };
 

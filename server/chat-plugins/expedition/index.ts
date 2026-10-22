@@ -15,6 +15,7 @@ import { resumeBattlesOnLogin } from './battles';
 import { expRates } from './progression';
 import { listVariants, resolveSettings } from './variant';
 import './runs';
+import './profile';
 
 // A calibração da experiência leva até 1 s por variação: feita logo depois da carga,
 // e não na primeira vitória de um jogador (fica guardada enquanto o servidor roda).

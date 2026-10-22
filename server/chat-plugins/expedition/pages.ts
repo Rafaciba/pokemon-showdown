@@ -4,6 +4,7 @@
  * Páginas:
  *   view-expedicao                  variações disponíveis, com a run de cada uma
  *   view-expedicao-run-<variação>   a run: time inicial, mapa do ato, nó atual e time
+ *   view-expedicao-admin            painel do admin (admin.ts)
  *
  * Comandos (/expedicao, ou /expedition):
  *   /expedicao                          abre a lista
@@ -35,6 +36,7 @@ import {
 	enterNode, runPhase, setHeldItem, startRun, useBagItem, variantAvailable, visitedNodes, type RunProblem,
 } from './runs';
 import { currentEncounter, hasOpenBattle } from './battles';
+import { renderAdminPage } from './admin';
 import { consumable, consumableDescription, isHeldItem, itemApplies, itemDisplay, tmMove } from './economy';
 import { trainerSpriteImg } from '../gym-challenge/trainer-sprites';
 import type { ExpeditionRun } from './store';
@@ -479,6 +481,7 @@ function endedSummary(TL: Translator, lang: TextLanguage, run: ExpeditionRun) {
 	if (run.status === 'won') result = TL`Your last expedition: completed!`;
 	if (run.status === 'lost') result = TL`Your last expedition: defeated.`;
 	if (run.status === 'abandoned') result = TL`Your last expedition: given up.`;
+	if (run.status === 'closed') result = TL`Your last expedition: closed by an administrator.`;
 	if (!result) return '';
 	let buf = `${BOX}<h3 style="margin-top: 0">${result}</h3>`;
 	const opponent = Utils.escapeHTML(run.lastBattle?.opponent || '');
@@ -489,6 +492,13 @@ function endedSummary(TL: Translator, lang: TextLanguage, run: ExpeditionRun) {
 		const number = Number(run.node.split('-')[0]) + 1;
 		const floor = run.node === BOSS_NODE ? TL`the boss` : TL`floor ${number}`;
 		buf += `<p>${TL`You reached ${floor} of act ${act} of ${acts}.`}</p>`;
+	}
+	// Desbloqueios que a vitória deu (valem nas próximas runs)
+	const rules = getVariant(run.variant)?.unlocks || [];
+	const unlocks = run.status === 'won' ? rules.filter(rule => rule.when === 'win') : [];
+	if (unlocks.length) {
+		const list = unlocks.map(rule => (rule.kind === 'starter' ? Dex.species.get(rule.ref).name : rule.ref)).join(', ');
+		buf += `<p><strong>${TL`Unlocked for your next expeditions: ${list}.`}</strong></p>`;
 	}
 	if (run.team.length) buf += `<h4>${TL`Your team at the end`}</h4>` + teamTable(TL, lang, run.team);
 	return buf + `</div>`;
@@ -570,6 +580,11 @@ export const pages: Chat.PageTable = {
 					`<td><button class="button" name="gymGo" value="${PAGE}-run-${variant.id}">${this.TL`Open`}</button></td></tr>`;
 			}
 			return buf + `</table></div></div>`;
+		},
+
+		admin(query, user) {
+			this.title = `[${this.TL`Expedition`}] ${this.TL`admin panel`}`;
+			return renderAdminPage(this.TL, user);
 		},
 
 		run(query, user) {

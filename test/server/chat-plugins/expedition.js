@@ -281,6 +281,7 @@ describe('Expedition', () => {
 				map: { ...MAP, acts: 2, floors: 3, weights: { rest: 50, item: 50 }, fixedFloors: {} }, tunables: [],
 				encounters: { wild: { pokedex: 100 }, trainer: { pokedex: 100 }, boss: { pokedex: 100 } },
 				aiLevel: () => 'random',
+				unlocks: [{ when: 'win', kind: 'starter', ref: 'pikachu' }],
 				starterOptions: prng => [0, 1, 2].map(i => [team.createMon(prng, 'Bulbasaur', 5, `u${i}`)]),
 			});
 		});
@@ -347,7 +348,32 @@ describe('Expedition', () => {
 			assert.equal(saved.status, 'won');
 			assert(saved.path.length > 4 && saved.path[0].startsWith('1:'));
 			assert.equal(db.getActiveRun(user.id, 'unitteste'), null);
+			assert(db.hasUnlock(user.id, 'starter', 'pikachu'), 'vencer dá o desbloqueio da variação');
 			assert.equal(typeof runs.startRun(user, 'unitteste'), 'object', 'depois de terminar, pode começar outra');
+		});
+
+		it('offers unlocked starters, closes runs from the panel and shows them in the profile', () => {
+			const { TEST_VARIANT } = require('../../../dist/server/chat-plugins/expedition/variants');
+			const settings = variant.resolveSettings(TEST_VARIANT);
+			assert.equal(variant.tunableValue(TEST_VARIANT, 'rare:legendary'), 10, 'padrão das chances raras');
+			const unlocked = TEST_VARIANT.starterOptions(random.seededRandom('u', 's'), settings, [{ kind: 'starter', ref: 'pikachu' }]);
+			assert(unlocked.flat().some(mon => mon.species === 'Pikachu'), 'o inicial liberado aparece');
+			const plain = TEST_VARIANT.starterOptions(random.seededRandom('u', 's'), settings, []);
+			assert(!plain.flat().some(mon => mon.species === 'Pikachu'));
+
+			const run = runs.startRun(user, 'unitteste');
+			runs.chooseStarter(run, 0);
+			assert.deepEqual(db.listAllRuns(true).map(entry => entry.id), [run.id]);
+			assert.equal(runs.closeRunByAdmin(run.id).status, 'closed');
+			assert.equal(runs.closeRunByAdmin(run.id), null, 'só runs em andamento');
+			assert.deepEqual(db.listAllRuns(true), []);
+			assert.equal(db.listAllRuns(false)[0].status, 'closed');
+
+			db.addUnlock(user.id, 'starter', 'pikachu');
+			const { expeditionProfile } = require('../../../dist/server/chat-plugins/expedition/profile');
+			const html = expeditionProfile(text => text.join(''), user.id);
+			assert(html.includes('Pikachu'), 'desbloqueios no perfil');
+			assert(/<td>1<\/td>/.test(html), 'placar por variação');
 		});
 
 		it('generates the same encounter for a node, following the variant rules', () => {

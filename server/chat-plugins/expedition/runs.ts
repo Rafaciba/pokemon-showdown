@@ -66,7 +66,7 @@ export function startRun(user: User, variantId: string): ExpeditionRun | RunProb
 	if (store.getActiveRun(user.id, variant.id)) return 'active';
 	const settings = resolveSettings(variant, store.getVariantSettings(variant.id).overrides);
 	const seed = newSeed();
-	const options = variant.starterOptions(seededRandom(seed, 'starters'), settings);
+	const options = variant.starterOptions(seededRandom(seed, 'starters'), settings, store.listUnlocks(user.id));
 	return store.createRun({ userid: user.id, variant: variant.id, seed, settings, pending: { kind: 'starter', options } });
 }
 
@@ -113,6 +113,10 @@ export function completeNode(run: ExpeditionRun) {
 		run.status = 'won';
 		run.endedAt = Math.floor(Date.now() / 1000);
 		run.decisions = [];
+		// Desbloqueios da variação, que valem nas próximas runs
+		for (const rule of getVariant(run.variant)?.unlocks || []) {
+			if (rule.when === 'win') getStore().addUnlock(run.userid, rule.kind, rule.ref);
+		}
 	}
 }
 
@@ -261,6 +265,21 @@ export function useBagItem(run: ExpeditionRun, item: string, uid: string): RunPr
 	run.decisions.push(...result);
 	getStore().saveRun(run);
 	return null;
+}
+
+/**
+ * Encerramento pelo admin (decisão do usuário, como no Desafio): a run fica no
+ * histórico como "encerrada", e a batalha aberta, se houver, termina com forfeit.
+ */
+export function closeRunByAdmin(runId: number): ExpeditionRun | null {
+	const run = getStore().getRun(runId);
+	if (!run || run.status !== 'active') return null;
+	run.status = 'closed';
+	run.endedAt = Math.floor(Date.now() / 1000);
+	getStore().saveRun(run);
+	forfeitOpenBattle(toID(run.userid), run, ' - the expedition was closed by an administrator.');
+	refreshRunPage(run.userid, run.variant);
+	return run;
 }
 
 export function abandonRun(user: User, run: ExpeditionRun) {

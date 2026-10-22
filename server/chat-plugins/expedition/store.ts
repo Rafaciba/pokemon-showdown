@@ -232,6 +232,13 @@ export class ExpeditionStore {
 			.all(userid, limit) as Row[]).map(toRun);
 	}
 
+	/** Runs de todos os jogadores (painel): em andamento ou encerradas, das mais recentes. */
+	listAllRuns(active: boolean, limit = 50): ExpeditionRun[] {
+		const where = active ? `status = 'active'` : `status <> 'active'`;
+		const sql = `SELECT * FROM runs WHERE ${where} ORDER BY COALESCE(ended_at, started_at) DESC, id DESC LIMIT ?`;
+		return (this.db.prepare(sql).all(limit) as Row[]).map(toRun);
+	}
+
 	/** Grava o estado da run (o que muda durante o jogo). */
 	saveRun(run: ExpeditionRun) {
 		this.db.prepare(`

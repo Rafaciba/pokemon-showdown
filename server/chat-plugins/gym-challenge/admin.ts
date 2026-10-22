@@ -239,7 +239,9 @@ function navButtons(TL: Translator) {
 		`<button class="button" name="gymGo" value="${PAGE}-convites">${TL`Invites`}</button> ` +
 		`<button class="button" name="gymGo" value="${PAGE}-seguranca">${TL`Security`}</button> ` +
 		`<button class="button" name="gymGo" value="${PAGE}-pacotes">${TL`Import and export`}</button> ` +
-		`<button class="button" name="gymGo" value="${PAGE}-mestre">${TL`Master AI`}</button>` +
+		`<button class="button" name="gymGo" value="${PAGE}-mestre">${TL`Master AI`}</button> ` +
+		// Painel da Expedição (decisão do usuário: dentro deste painel; a página é do plugin da Expedição)
+		`<button class="button" name="gymGo" value="view-expedicao-admin">${TL`Expedition`}</button>` +
 		`</p>`;
 }
 

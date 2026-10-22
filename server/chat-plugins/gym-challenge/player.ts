@@ -21,6 +21,7 @@
  */
 import { Utils } from '../../../lib';
 import type { Translator } from '../../../sim/dex-text';
+import type { TextLanguage } from '../../../sim/dex-data';
 import { getStore } from './state';
 import { abandonRun, chooseGym, resumeBattle, runState, savedBattleIn, startRun, type RunState } from './runs';
 import { formatLabel, renderProblem } from './admin';
@@ -263,6 +264,12 @@ export function profileButton(TL: Translator, userid: string, label?: string) {
 		`${label || Utils.escapeHTML(displayName(userid))}</button>`;
 }
 
+/**
+ * Seções do perfil do jogador vindas de outros modos (decisão do usuário, 2026-10-21:
+ * o histórico da Expedição fica no mesmo perfil). Cada uma devolve o HTML da seção.
+ */
+export const profileSections: ((TL: Translator, userid: ID, lang: TextLanguage) => string)[] = [];
+
 export const pages: Chat.PageTable = {
 	ginasios: {
 		default(query, user) {
@@ -375,10 +382,14 @@ export const pages: Chat.PageTable = {
 			const userid = toID(query[0]) || user.id;
 			const store = getStore();
 			const name = displayName(userid);
-			this.title = `[${this.TL`Gym profile`}] ${name}`;
+			this.title = `[${this.TL`Player profile`}] ${name}`;
 			const summaries = store.listUserRuns(userid).map(summarizeRun);
-			let buf = `<div class="pad"><h2>${this.TL`Gym profile`}: ${Utils.escapeHTML(name)}</h2>` + navButtons(this.TL);
-			if (!summaries.length) return buf + `<p><em>${this.TL`No journeys yet.`}</em></p></div>`;
+			// Seções dos outros modos (ex.: Expedição), depois da do Desafio
+			const others = profileSections.map(section => section(this.TL, userid, Chat.getDexLanguage(this.language)))
+				.join('');
+			let buf = `<div class="pad"><h2>${this.TL`Player profile`}: ${Utils.escapeHTML(name)}</h2>` +
+				navButtons(this.TL) + `<h2>${this.TL`Gym Challenge`}</h2>`;
+			if (!summaries.length) return buf + `<p><em>${this.TL`No journeys yet.`}</em></p>${others}</div>`;
 			const challengeName = (id: number) => Utils.escapeHTML(store.getChallenge(id)?.name || `#${id}`);
 
 			// Conquistas: cada desafio vencido (vencer de novo acumula)
@@ -444,7 +455,7 @@ export const pages: Chat.PageTable = {
 					`<td><button class="button" name="gymGo" value="${PAGE}-historico-${challengeId}-${userid}">` +
 					`${this.TL`History`}</button></td></tr>`;
 			}
-			return buf + `</table></div></div>`;
+			return buf + `</table></div>${others}</div>`;
 		},
 
 		historico(query, user) {
@@ -459,7 +470,7 @@ export const pages: Chat.PageTable = {
 			const runs = store.listRuns(challenge.id, userid);
 			const buf = `<div class="pad"><h2>${this.TL`History`}: ${Utils.escapeHTML(name)}</h2>` +
 				`<p><strong>${Utils.escapeHTML(challenge.name)}</strong></p>` +
-				`<p>${profileButton(this.TL, userid, this.TL`Gym profile`)} ` +
+				`<p>${profileButton(this.TL, userid, this.TL`Player profile`)} ` +
 				`<button class="button" name="gymGo" value="${PAGE}-desafio-${challenge.id}">` +
 				`${this.TL`Challenge page`}</button></p>`;
 			if (!runs.length) return buf + `<p><em>${this.TL`No journeys yet.`}</em></p></div>`;

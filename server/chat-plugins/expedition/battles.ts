@@ -171,12 +171,12 @@ export function resumeBattlesOnLogin(user: User) {
 }
 
 /** Desistência com batalha aberta: forfeit na sala viva, ou derrota direta se interrompida. */
-export function forfeitOpenBattle(user: User, run: ExpeditionRun) {
+export function forfeitOpenBattle(user: User | ID, run: ExpeditionRun, message = ' gave up the expedition.') {
 	const open = getStore().getOpenBattle(run);
 	if (!open) return;
 	const game = open.roomid ? Rooms.get(open.roomid)?.game : null;
 	if (game instanceof NpcBattle && !game.ended) {
-		game.forfeit(user, ' gave up the expedition.');
+		game.forfeit(user, message);
 	} else {
 		getStore().finishBattle(open.id, 'loss');
 	}

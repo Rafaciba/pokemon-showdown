@@ -107,6 +107,18 @@ export interface VariantPool {
 	trainers: { name: string, avatar: string, species: string[] }[];
 }
 
+/**
+ * Regra de desbloqueio (decisão do usuário: só a estrutura nesta etapa; o que libera
+ * cada coisa fica para as variações de verdade): ao vencer a run, o jogador ganha o
+ * desbloqueio, que fica na conta e vale nas próximas runs.
+ */
+export interface UnlockRule {
+	when: 'win';
+	kind: 'starter' | 'item' | 'variant';
+	/** Id do que é liberado (espécie, item ou variação). */
+	ref: string;
+}
+
 /** Configurações em vigor numa run (as da variação com os ajustes do painel). */
 export interface RunSettings {
 	rules: VariantRules;
@@ -151,8 +163,13 @@ export interface ExpeditionVariant {
 	aiLevel(kind: EncounterKind, progress: number): AILevel;
 	/** Batalhas automáticas: IA que joga pelo jogador. */
 	autoAILevel?: AILevel;
-	/** Opções de time inicial de uma run (sorteadas com o gerador da run). */
-	starterOptions(prng: PRNG, settings: RunSettings): RunMon[][];
+	/** Desbloqueios que a variação dá (ver UnlockRule). */
+	unlocks?: UnlockRule[];
+	/**
+	 * Opções de time inicial de uma run (sorteadas com o gerador da run). `unlocked`:
+	 * os desbloqueios do jogador (ex.: iniciais liberados).
+	 */
+	starterOptions(prng: PRNG, settings: RunSettings, unlocked?: { kind: string, ref: string }[]): RunMon[][];
 }
 
 const registry = new Map<string, ExpeditionVariant>();
@@ -177,6 +194,7 @@ function clamp(value: number, min: number, max: number) {
 /** Valor atual de um número ajustável (sem ajuste: o da variação). */
 export function tunableValue(variant: ExpeditionVariant, key: string): number | null {
 	if (key.startsWith('weight:')) return variant.map.weights[key.slice(7)] ?? 0;
+	if (key.startsWith('rare:')) return variant.map.rareNodes?.[key.slice(5)] ?? 0;
 	if (key.startsWith('extra:')) return variant.extra?.[key.slice(6)] ?? null;
 	if (key === 'teamSize') return variant.rules.teamSize;
 	if (key === 'acts' || key === 'floors' || key === 'columns' || key === 'paths') return variant.map[key];

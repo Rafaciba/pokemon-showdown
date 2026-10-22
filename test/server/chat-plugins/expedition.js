@@ -1079,8 +1079,8 @@ describe('Expedition', () => {
 			assert.equal(economy.battlePrize(trainer, settingsAt(1)), Math.round(economy.battlePrize(trainer, settingsAt(0)) * 0.75 / 10) * 10);
 			const shop = level => economy.shopStock({ seed: 's', act: 1, team: [], settings: settingsAt(level) }, '3-0')
 				.find(entry => entry.item === 'potion').price;
-			assert.equal(shop(6), 250, 'PokéMart 25% mais caro');
-			assert.equal(shop(5), 200);
+			assert.equal(shop(7), 250, 'PokéMart 25% mais caro');
+			assert.equal(shop(6), 200);
 			const nodes = require('../../../dist/server/chat-plugins/expedition/nodes');
 			const itemCount = level => nodes.getNodeType('item').view({
 				run: { seed: 'i', act: 1, team: [], settings: settingsAt(level) }, node: { id: '2-0' }, TL,
@@ -1092,13 +1092,28 @@ describe('Expedition', () => {
 			const at = { id: '1-0', floor: 1, col: 0, type: 'trainer', next: [] };
 			const strongTrainer = encounters.generateEncounter(strong, all, at);
 			const weakTrainer = encounters.generateEncounter(weak, all, at);
-			assert.equal(strongTrainer.team[0].level, weakTrainer.team[0].level + 2, '+2 níveis');
+			assert.equal(strongTrainer.team[0].level, weakTrainer.team[0].level, 'sem +2 níveis nos treinadores (saiu da lista)');
 			assert.equal(strongTrainer.aiLevel, 'medium', 'IA um nível acima');
 			assert.equal(strongTrainer.team.length, Math.min(6, weakTrainer.team.length + 1), 'um Pokémon a mais');
 			const strongBoss = encounters.generateEncounter({ ...strong, settings: { ...strong.settings, complete: { ...strong.settings.complete, badge: null } } },
 				all, { id: 'boss', floor: 3, col: 0, type: 'boss', next: [] });
 			assert.equal(strongBoss.team.length, 6);
 			assert.equal(strongBoss.aiLevel, 'master');
+
+			// Cura entre os atos: 100%; com o agravante 4, metade do HP e do PP, e quem desmaiou volta com metade
+			const hurt = () => [{ ...run.team?.[0], uid: 'h1', species: 'Bulbasaur', moves: ['tackle'], hp: 0.2, ppUsed: [30],
+				fainted: false, status: 'brn' }, { uid: 'h2', species: 'Bulbasaur', moves: ['tackle'], hp: 0, ppUsed: [0], fainted: true }];
+			const healed = level => {
+				const target = { team: hurt(), settings: settingsAt(level) };
+				runs.healBetweenActs(target);
+				return target.team;
+			};
+			assert.deepEqual(healed(3).map(mon => [mon.hp, mon.fainted, mon.status, mon.ppUsed[0]]), [[1, false, '', 0], [1, false, '', 0]]);
+			const half = healed(4);
+			assert.equal(half[0].hp, 0.7);
+			assert.equal(half[0].status, '');
+			assert.equal(half[0].ppUsed[0], 30 - 28, 'metade do PP (56 máximo)');
+			assert.deepEqual([half[1].hp, half[1].fainted], [0.5, false]);
 
 			// Com as 8: sem insígnia em disputa; vencer o último ato abre o ato especial
 			for (const id of ids) db.addBadge(user.id, 'unitcomplete', id);

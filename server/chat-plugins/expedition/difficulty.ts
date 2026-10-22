@@ -7,11 +7,13 @@
  *   1. treinadores, elite e chefes pagam 25% a menos;
  *   2. o nó de item oferece 2 itens em vez de 3;
  *   3. a chance de PokéCenter no meio do ato cai pela metade (o fixo antes do chefe fica);
- *   4. IA um nível acima em todos os adversários (até a Mestre);
- *   5. um Pokémon a mais nos treinadores e na elite (até 6);
- *   6. PokéMart 25% mais caro;
- *   7. +2 níveis em todos os adversários;
- *   8. chefes com 6 Pokémon em todos os atos, +2 níveis além do 7 e IA Mestre.
+ *   4. entre os atos, o time recupera só metade do HP e do PP (sem o agravante, tudo);
+ *   5. IA um nível acima em todos os adversários (até a Mestre);
+ *   6. um Pokémon a mais nos treinadores e na elite (até 6);
+ *   7. PokéMart 25% mais caro;
+ *   8. chefes com 6 Pokémon em todos os atos, +2 níveis e IA Mestre.
+ * O "+2 níveis em todos os adversários" da primeira versão saiu (decisão do usuário):
+ * a cura reduzida entre atos entrou no lugar, em 4º.
  *
  * @license MIT
  */
@@ -21,10 +23,10 @@ import type { RunSettings } from './variant';
 export const LESS_MONEY = 1;
 export const FEWER_ITEMS = 2;
 export const FEWER_CENTERS = 3;
-export const SMARTER_AI = 4;
-export const STRONGER_TRAINERS = 5;
-export const PRICIER_MART = 6;
-export const HIGHER_LEVELS = 7;
+export const LESS_ACT_HEAL = 4;
+export const SMARTER_AI = 5;
+export const STRONGER_TRAINERS = 6;
+export const PRICIER_MART = 7;
 export const STRONGER_BOSSES = 8;
 
 /** Nível de dificuldade da run (0 fora do modo Completo). */

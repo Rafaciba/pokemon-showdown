@@ -315,13 +315,13 @@ function mapHtml(TL: Translator, run: ExpeditionRun, map: ActMap, variantId: str
 		const icon = type?.icon || '?';
 		const label = type ? type.label(TL) : node.type;
 		if (choosable.has(id)) {
-			return `<button class="button" name="send" value="/expedicao avancar ${variantId},${id}" title="${label}" ` +
+			return `<button class="button exp-map-next" name="send" value="/expedicao avancar ${variantId},${id}" title="${label}" ` +
 				`style="${ICON}; padding: 3px 6px">${icon}</button>`;
 		}
 		const current = id === run.node;
 		const style = current ? 'border: 3px solid #4a7; border-radius: 6px; padding: 2px 5px' :
 			visited.has(id) ? 'opacity: 1' : 'opacity: 0.45';
-		return `<span title="${label}" style="${ICON}; ${style}">${icon}</span>`;
+		return `<span${current ? ' class="exp-map-here"' : ''} title="${label}" style="${ICON}; ${style}">${icon}</span>`;
 	};
 	const pathEdge = (from: string, to: string) => visited.has(from) && visited.has(to);
 	const boss = map.nodes.find(node => node.id === BOSS_NODE)!;
@@ -377,7 +377,11 @@ function mapHtml(TL: Translator, run: ExpeditionRun, map: ActMap, variantId: str
 		}
 		rows += `<tr>${links.map(link => `<td style="${CELL}">${link}</td>`).join('')}</tr>`;
 	}
-	return `<table style="border-collapse: collapse; margin: 0 auto">${rows}</table>`;
+	// Quadro mais baixo, com rolagem (pedido do usuário): o cliente rola até o nó atual ou os
+	// próximos (client-custom.js, seção "Mapa da Expedição")
+	return `<div class="exp-map" style="position: relative; max-height: 420px; overflow-y: auto; ` +
+		`border: 1px solid rgba(128,128,128,.35); border-radius: 6px; padding: 6px 0">` +
+		`<table style="border-collapse: collapse; margin: 0 auto">${rows}</table></div>`;
 }
 
 function legend(TL: Translator, run: ExpeditionRun) {
@@ -523,10 +527,10 @@ function difficultyList(TL: Translator, upTo: number) {
 		TL`Trainers, elites and bosses pay 25% less.`,
 		TL`Item nodes offer 2 items instead of 3.`,
 		TL`Half the chance of a PokéCenter in the middle of the act.`,
+		TL`Between acts, your team recovers only half of its HP and PP.`,
 		TL`The computer plays one level smarter.`,
 		TL`Trainers and elites have one more Pokémon.`,
 		TL`The PokéMart is 25% more expensive.`,
-		TL`Opponents are 2 levels higher.`,
 		TL`Bosses have 6 Pokémon, 2 more levels and the Master AI.`,
 	];
 	return `<details><summary>${TL`Difficulty penalties (they add up)`}</summary><ol>` +
@@ -783,7 +787,8 @@ export const pages: Chat.PageTable = {
 				return buf + (last ? endedSummary(this.TL, lang, last) : '') + `<p>${variant.description(this.TL)}</p>` +
 					startSection(this.TL, user, variant) + `</div>`;
 			}
-			return buf + runSection(this.TL, lang, run, variant.id) + `</div>`;
+			// Espaço no fim da página: os tooltips do time têm onde abrir (pedido do usuário)
+			return buf + runSection(this.TL, lang, run, variant.id) + `<div style="height: 260px"></div></div>`;
 		},
 	},
 };

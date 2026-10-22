@@ -19,7 +19,6 @@
  */
 import type { PRNG } from '../../../sim/prng';
 import type { ExpeditionRun } from './store';
-import type { MapNode } from './map';
 import { BERRIES, eventMoney, levelAt, registerEvent, type EventBattle } from './events';
 import { inTheme, randomSpeciesForLevel } from './species';
 import { bossTeamSize, nodeProgress, opponentTeamSize } from './progression';

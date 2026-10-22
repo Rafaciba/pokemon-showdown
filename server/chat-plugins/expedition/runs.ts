@@ -28,7 +28,9 @@ import type { Translator } from '../../../sim/dex-text';
 import type { TextLanguage } from '../../../sim/dex-data';
 import { isHeldItem, useItem, type EconomyProblem } from './economy';
 import { DEFAULT_BALL, getBall, rollCapture, withBall } from './capture';
-import { FEWER_CENTERS, hasPenalty } from './difficulty';
+import { FEWER_CENTERS, hasPenalty, LESS_ACT_HEAL } from './difficulty';
+import { maxPP } from './tooltips';
+import { healMon } from './team';
 
 export type RunProblem =
 	'novariant' | 'disabled' | 'active' | 'norun' | 'nostarter' | 'badchoice' | 'unreachable' | 'nodeopen' | 'nonode' |
@@ -199,11 +201,31 @@ export function completeNode(run: ExpeditionRun) {
 		run.act++;
 		run.node = null;
 		run.nodeDone = false;
+		healBetweenActs(run);
 	} else if (run.act === acts && complete?.allBadges && run.settings.map.special) {
 		run.pending = { kind: 'special' };
 	} else {
 		if (run.act > acts) getStore().addUnlock(run.userid, 'shiny', 'starters', run.variant);
 		winRun(run);
+	}
+}
+
+/**
+ * Cura entre os atos (decisão do usuário): o time inteiro volta 100%, como no PokéCenter.
+ * Com o agravante 4 do modo Completo, metade: cada Pokémon recupera 50% do HP e do PP,
+ * o status é curado, e quem desmaiou volta com metade do HP.
+ */
+export function healBetweenActs(run: ExpeditionRun) {
+	const half = hasPenalty(run.settings, LESS_ACT_HEAL);
+	for (const mon of run.team) {
+		if (!half) {
+			healMon(mon);
+			continue;
+		}
+		mon.hp = mon.fainted ? 0.5 : Math.min(1, mon.hp + 0.5);
+		mon.fainted = false;
+		mon.status = '';
+		mon.ppUsed = mon.moves.map((move, i) => Math.max(0, (mon.ppUsed[i] || 0) - Math.ceil(maxPP(move) / 2)));
 	}
 }
 
@@ -215,6 +237,7 @@ export function decideSpecial(run: ExpeditionRun, go: boolean): RunProblem | nul
 		run.act++;
 		run.node = null;
 		run.nodeDone = false;
+		healBetweenActs(run);
 	} else {
 		winRun(run);
 	}

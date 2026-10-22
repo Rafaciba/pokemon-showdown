@@ -540,19 +540,19 @@ function challengeSummary(TL: Translator, challenge: Challenge) {
 // "gym-select-filter" (busca por nome ao lado de uma lista de treinadores).
 
 /** Botão de ordenação no título de uma coluna da tabela do sorteio. */
-function sortButton(key: string, label: string, title = '') {
+export function sortButton(key: string, label: string, title = '') {
 	return `<button type="button" name="gymSort" value="${key}" class="gym-sort"${title ? ` title="${title}"` : ''} ` +
 		`style="background: none; border: 0; padding: 0; font-weight: bold; cursor: pointer">${label}</button>`;
 }
 
 /** Campo de busca por nome que filtra a lista de treinadores logo depois dele. */
-function selectFilter(TL: Translator) {
+export function selectFilter(TL: Translator) {
 	return `<input type="text" class="textbox gym-select-filter" size="12" placeholder="${TL`Search by name`}" ` +
 		`aria-label="${TL`Search by name`}" />`;
 }
 
 /** Ícones do time com o nome de cada Pokémon (dica ao passar o mouse e busca por Pokémon). */
-function teamIconsWithNames(team: string) {
+export function teamIconsWithNames(team: string) {
 	const sets = Teams.unpack(team) || [];
 	return sets.map(set => {
 		const species = Utils.escapeHTML(set.species);

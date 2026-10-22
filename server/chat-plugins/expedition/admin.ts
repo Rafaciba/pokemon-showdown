@@ -40,7 +40,10 @@ import {
 } from './definition';
 import { AI_LEVELS } from '../gym-challenge/levels';
 import { getStore as getGymStore } from '../gym-challenge/state';
-import { aiLevelLabel, formatLabel, renderProblem, selectBox } from '../gym-challenge/admin';
+import {
+	aiLevelLabel, formatLabel, renderProblem, selectBox, selectFilter, sortButton, teamIconsWithNames,
+} from '../gym-challenge/admin';
+import { trainerSpriteImg } from '../gym-challenge/trainer-sprites';
 import { fieldKey } from '../gym-challenge/challenges';
 import { BADGES } from '../gym-challenge/badge-catalog';
 import { badgeIcon, badgeLabel } from '../gym-challenge/badges';
@@ -131,15 +134,36 @@ function problemList(TL: Translator, problems: Problem[]) {
 const REGIONS = ['Kanto', 'Johto', 'Hoenn', 'Sinnoh', 'Unova', 'Kalos', 'Alola', 'Galar', 'Paldea'];
 
 /** Treinadores do banco do Desafio, como a validação e os seletores precisam. */
-function bankTrainers(): Map<number, BankTrainer & { avatar: string }> {
+function bankTrainers(): Map<number, BankTrainer & { avatar: string, team: string }> {
 	let trainers: ReturnType<ReturnType<typeof getGymStore>['listTrainers']> = [];
 	try {
 		trainers = getGymStore().listTrainers();
 	} catch {}
 	return new Map(trainers.map(trainer => [trainer.id, {
 		id: trainer.id, name: trainer.name, type: trainer.type, doubles: trainer.doubles, hasTeam: !!trainer.team,
-		avatar: trainer.avatar,
+		avatar: trainer.avatar, team: trainer.team,
 	}]));
+}
+
+/**
+ * Seletor de Pokémon com busca (pedido do usuário, 2026-10-22: no lugar dos campos de
+ * texto, para evitar erros de digitação). Os escolhidos vão separados por vírgula no
+ * campo oculto `name`; a busca e as etiquetas rodam no cliente (client-custom.js, seção
+ * "Editor de expedições"). `max` limita a quantidade (os times fixos).
+ */
+function speciesPicker(TL: Translator, name: string, value: string, max = 0) {
+	const names = parseSpeciesText(value);
+	const chips = names.map(entry => {
+		const species = Utils.escapeHTML(entry);
+		return `<span class="exp-species-chip"><psicon pokemon="${species}" /> ${species}` +
+			`<button type="button" class="exp-species-remove" value="${species}" title="${species}">&times;</button></span> `;
+	}).join('');
+	const placeholder = TL`Search a Pokémon to add`;
+	return `<div class="exp-species-picker${max ? ` exp-species-max-${max}` : ''}">` +
+		`<input type="hidden" name="${name}" value="${Utils.escapeHTML(names.join(', '))}" />` +
+		`<span class="exp-species-chips">${chips}</span>` +
+		`<input type="text" class="textbox exp-species-search" size="24" placeholder="${placeholder}" aria-label="${placeholder}" />` +
+		`<div class="exp-species-results"></div></div>`;
 }
 
 function trainerLabel(trainer: BankTrainer) {
@@ -163,12 +187,6 @@ function field(label: string, control: string, hint = '') {
 function textbox(name: string, value: string, maxlength: number, width = '') {
 	return `<input name="${name}" class="textbox" maxlength="${maxlength}" value="${Utils.escapeHTML(value)}"` +
 		(width ? ` style="width: ${width}"` : '') + ` />`;
-}
-
-/** Textarea com várias linhas: escape linha por linha (o escapeHTML do PS troca "\n" por <br />). */
-function textarea(name: string, value: string, height = '80px') {
-	const text = value.split('\n').map(line => Utils.escapeHTML(line)).join('&#13;');
-	return `<textarea name="${name}" class="textbox" style="width: 100%; height: ${height}">${text}</textarea>`;
 }
 
 function speciesText(list: string[]) {
@@ -381,8 +399,8 @@ function sectionForm(
 				TL`Pokémon Showdown rules, separated by commas. The default allows the full Pokédex and Mega Evolution, without Tera, Z-Moves and Dynamax.`),
 			`<p><strong>${TL`Theme: generations`}</strong><br />${gens.join(' &nbsp; ')}<br />` +
 			`<small>${TL`None checked = the whole Pokédex. Wild Pokémon, trainers, starters and evolutions stay in the theme.`}</small></p>`,
-			field(TL`Theme: Pokémon list`, textarea('theme', values.theme || ''),
-				TL`Optional, separated by commas. Each Pokémon brings its whole evolution line. With a list, the generations do not count.`),
+			field(TL`Theme: Pokémon list`, speciesPicker(TL, 'theme', values.theme || ''),
+				TL`Optional. Each Pokémon brings its whole evolution line. With a list, the generations do not count.`),
 		);
 		break;
 	}
@@ -394,12 +412,12 @@ function sectionForm(
 				['random', TL`Drawn for each run`],
 				['fixed', TL`Fixed`],
 			], values.smode), TL`The player always chooses one of 3 teams. Each team has a regional starter, and they do not repeat between the teams.`),
-			`<p><strong>${TL`Fixed teams`}</strong> <small>${TL`(Pokémon separated by commas)`}</small></p>`,
-			field(TL`Team 1`, textbox('teama', values.teama || '', 120, '100%')),
-			field(TL`Team 2`, textbox('teamb', values.teamb || '', 120, '100%')),
-			field(TL`Team 3`, textbox('teamc', values.teamc || '', 120, '100%')),
-			field(TL`Pool of the drawn teams`, textarea('pool', values.pool || ''),
-				TL`Separated by commas. Empty = the regional starters of the theme. It needs at least 3 regional starters, and the Pokémon must fit the starting level.`),
+			`<p><strong>${TL`Fixed teams`}</strong></p>`,
+			field(TL`Team 1`, speciesPicker(TL, 'teama', values.teama || '', 3)),
+			field(TL`Team 2`, speciesPicker(TL, 'teamb', values.teamb || '', 3)),
+			field(TL`Team 3`, speciesPicker(TL, 'teamc', values.teamc || '', 3)),
+			field(TL`Pool of the drawn teams`, speciesPicker(TL, 'pool', values.pool || ''),
+				TL`Empty = the regional starters of the theme. It needs at least 3 regional starters, and the Pokémon must fit the starting level.`),
 		);
 		break;
 	case 'atos':
@@ -458,23 +476,38 @@ function sectionForm(
 			keys.push(key);
 			const note = def.acts.mode === 'complete' && act === COMPLETE_ACTS ?
 				`<br /><small>${TL`In the Complete mode, the act 3 boss is the leader of the badge in play (Badges section).`}</small>` : '';
-			table += `<tr><td>${TL`Act ${act} boss`}</td><td>${selectBox(key, options, values[key])}${note}</td></tr>`;
+			table += `<tr><td>${TL`Act ${act} boss`}</td><td>${selectFilter(TL)} ${selectBox(key, options, values[key])}${note}</td></tr>`;
 		}
 		keys.push('elitea', 'eliteb', 'champ');
-		table += `<tr><td>${TL`Special act: Elite Four 1`}</td><td>${selectBox('elitea', options, values.elitea)}</td></tr>` +
-			`<tr><td>${TL`Special act: Elite Four 2`}</td><td>${selectBox('eliteb', options, values.eliteb)}</td></tr>` +
-			`<tr><td>${TL`Special act: Champion`}</td><td>${selectBox('champ', options, values.champ)}</td></tr></table>`;
+		const slot = (name: string) => `${selectFilter(TL)} ${selectBox(name, options, values[name])}`;
+		table += `<tr><td>${TL`Special act: Elite Four 1`}</td><td>${slot('elitea')}</td></tr>` +
+			`<tr><td>${TL`Special act: Elite Four 2`}</td><td>${slot('eliteb')}</td></tr>` +
+			`<tr><td>${TL`Special act: Champion`}</td><td>${slot('champ')}</td></tr></table>`;
 		let pool = `<p><strong>${TL`Trainers that can be drawn`}</strong></p>`;
 		if (!trainers.length) {
 			pool += `<p><em>${TL`The trainer bank of the Gym Challenge is empty.`}</em></p>`;
 		} else {
-			pool += `<div class="ladder"><table><tr><th></th><th>${TL`Trainer`}</th><th>${TL`Trainer type`}</th></tr>`;
-			for (const trainer of trainers) {
+			// Busca, filtros e ordenação como no Desafio (client-custom.js: .gym-filter-*, table.gym-pool)
+			const types = [...new Set(trainers.map(trainer => trainer.type).filter(Boolean) as string[])].sort();
+			const filterLabel = TL`Search by name or Pokémon`;
+			pool += `<p><input type="text" class="textbox gym-filter-text" size="28" placeholder="${filterLabel}" aria-label="${filterLabel}" /> ` +
+				`<select class="gym-filter-type" aria-label="${TL`Trainer type`}"><option value="">${TL`All types`}</option>` +
+				types.map(type => `<option value="${Utils.escapeHTML(type)}">${Utils.escapeHTML(type)}</option>`).join('') +
+				`</select> <select class="gym-filter-checked" aria-label="${TL`Selection`}">` +
+				`<option value="">${TL`All trainers`}</option><option value="checked">${TL`Selected only`}</option>` +
+				`<option value="unchecked">${TL`Not selected only`}</option></select></p>` +
+				`<p><small>${TL`Click a column title to sort.`}</small></p>` +
+				`<div class="ladder"><table class="gym-pool"><tr><th>${sortButton('checked', '&#10003;', TL`Selected first`)}</th>` +
+				`<th>${sortButton('name', TL`Trainer`)}</th><th>${sortButton('type', TL`Trainer type`)}</th><th>${TL`Team`}</th></tr>`;
+			const sorted = [...trainers].sort((a, b) => (a.type || '').localeCompare(b.type || '') || a.name.localeCompare(b.name));
+			for (const trainer of sorted) {
 				const key = `pool${fieldKey(trainer.id)}`;
 				keys.push(key);
+				const type = Utils.escapeHTML(trainer.type || '');
 				pool += `<tr><td><input type="checkbox" name="${key}"${values[key] === 'on' ? ' checked' : ''} /></td>` +
-					`<td>${Utils.escapeHTML(trainer.name)}</td>` +
-					`<td>${trainer.type ? `<psicon type="${Utils.escapeHTML(trainer.type)}" />` : '-'}</td></tr>`;
+					`<td>${trainerSpriteImg(trainer.avatar, 40)} <span class="gym-pool-name">${Utils.escapeHTML(trainer.name)}</span></td>` +
+					`<td class="gym-pool-type" title="${type}">${trainer.type ? `<psicon type="${type}" />` : '-'}</td>` +
+					`<td>${teamIconsWithNames(trainer.team)}</td></tr>`;
 			}
 			pool += `</table></div>`;
 		}
@@ -498,7 +531,7 @@ function sectionForm(
 				`${icon}${badge ? Utils.escapeHTML(badgeLabel(badge)) : '-'}${type}` :
 				`${icon}${selectBox(`badge${k}`, options, values[`badge${k}`])}${type}`;
 			table += `<tr><td>${position}</td><td>${badgeControl}</td>` +
-				`<td>${selectBox(`leader${k}`, leaderOptions, values[`leader${k}`])}</td></tr>`;
+				`<td>${selectFilter(TL)} ${selectBox(`leader${k}`, leaderOptions, values[`leader${k}`])}</td></tr>`;
 		}
 		table += `</table>`;
 		keys.unshift('bmode');

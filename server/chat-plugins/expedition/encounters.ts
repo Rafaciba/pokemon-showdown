@@ -34,7 +34,7 @@ import type { MapNode } from './map';
 import type { EventBattle } from './events';
 import { bankBoss, type BankBoss } from './bank';
 import {
-	HIGHER_LEVELS, hasPenalty, raiseAI, SMARTER_AI, STRONGER_BOSSES, STRONGER_TRAINERS,
+	hasPenalty, raiseAI, SMARTER_AI, STRONGER_BOSSES, STRONGER_TRAINERS,
 } from './difficulty';
 import { interleave } from './tag-team';
 
@@ -149,12 +149,11 @@ function gymTrainer(prng: PRNG, size: number, level: number, allowLegendary: boo
  */
 export function encounterFromSpec(run: ExpeditionRun, variant: ExpeditionVariant, node: MapNode, spec: EventBattle) {
 	const prng = seededRandom(run.seed, `eventbattle:${run.act}:${node.id}`);
-	// Agravantes 7 (+2 níveis) e 4 (IA um nível acima) valem também nas batalhas de evento
-	const level = Math.min(100, spec.level + (hasPenalty(run.settings, HIGHER_LEVELS) ? 2 : 0));
-	const team = spec.species.map((species, i) => createMon(prng, species, level, `o${i}`));
+	const team = spec.species.map((species, i) => createMon(prng, species, spec.level, `o${i}`));
 	const progress = nodeProgress(run.settings, run.act, node.floor);
 	let aiLevel: AILevel = spec.ai === 'hard' ? 'hard' :
 		variant.aiLevel(spec.ai === 'boss' ? 'boss' : spec.kind, progress, run.act);
+	// Agravante da IA um nível acima: vale também nas batalhas de evento
 	if (hasPenalty(run.settings, SMARTER_AI)) aiLevel = raiseAI(aiLevel);
 	const avatar = spec.kind === 'wild' ? WILD_AVATAR : isTrainerSprite(spec.avatar) ? spec.avatar : '';
 	return {
@@ -295,7 +294,6 @@ export function generateEncounter(run: ExpeditionRun, variant: ExpeditionVariant
 	let aiLevel = variant.aiLevel(kind, progress, run.act);
 	// Agravantes do modo Completo (difficulty.ts)
 	const strongBoss = kind === 'boss' && hasPenalty(settings, STRONGER_BOSSES);
-	if (hasPenalty(settings, HIGHER_LEVELS)) level += 2;
 	if (strongBoss) level += 2;
 	level = Math.min(100, level);
 	if ((kind === 'trainer' || kind === 'elite') && hasPenalty(settings, STRONGER_TRAINERS)) size = Math.min(6, size + 1);

@@ -352,6 +352,62 @@ describe('Expedition', () => {
 			assert.equal(typeof runs.startRun(user, 'unitteste'), 'object', 'depois de terminar, pode começar outra');
 		});
 
+		it('keeps one active run per variant when renaming, and blocks renames with interrupted battles', () => {
+			const run = runs.startRun(user, 'unitteste');
+			runs.chooseStarter(run, 0);
+			// O nome novo já tem uma run ativa na mesma variação (dados ainda não limpos)
+			const other = db.createRun({ userid: 'novonome', variant: 'unitteste', seed: 'x', settings: run.settings, pending: null });
+			db.renameUser(user.id, 'novonome');
+			assert.equal(db.getRun(run.id).status, 'closed');
+			assert.equal(db.getRun(run.id).userid, 'novonome');
+			assert.equal(db.getActiveRun('novonome', 'unitteste').id, other.id);
+			// Batalha interrompida bloqueia a troca de nome
+			const { accountRenameBlockers } = require('../../../dist/server/chat-plugins/custom-accounts');
+			const live = db.createRun({ userid: 'bloqueado', variant: 'unitteste', seed: 'y', settings: run.settings, pending: null });
+			assert(!accountRenameBlockers.some(blocked => blocked('bloqueado')));
+			db.createBattle(live.id, 1, '0-0', []);
+			assert(accountRenameBlockers.some(blocked => blocked('bloqueado')));
+		});
+
+		it('never gives the NPC the same id as the player (the result comes from the winner id)', async function () {
+			this.timeout(30000);
+			const run = runs.startRun(user, 'unitteste');
+			runs.chooseStarter(run, 0);
+			run.node = '0-0';
+			run.variant = 'teste';
+			db.saveRun(run);
+			const encounter = require('../../../dist/server/chat-plugins/expedition/encounters');
+			const { TEST_VARIANT } = require('../../../dist/server/chat-plugins/expedition/variants');
+			const original = encounter.generateEncounter;
+			battles.setEncounterOverride(() => ({
+				...original(run, TEST_VARIANT, { id: '0-0', floor: 0, col: 0, type: 'wild', next: [] }), name: user.name,
+			}));
+			let room = null;
+			try {
+				assert(battles.startOrResumeBattle(user, run));
+				const battleId = db.getOpenBattle(run).id;
+				room = Rooms.get(db.getBattle(battleId).roomid);
+				assert.equal(room.battle.p2.name, `${user.name} (NPC)`);
+				room.battle.forfeit(user);
+				for (let i = 0; i < 800 && !db.getBattle(battleId).result; i++) {
+					await new Promise(resolve => { setTimeout(resolve, 10); });
+				}
+				assert.equal(db.getBattle(battleId).result, 'loss', 'a derrota não vira vitória');
+			} finally {
+				battles.setEncounterOverride(null);
+				room?.destroy();
+			}
+		});
+
+		it('limits how many expeditions a player starts in a short time', () => {
+			for (let i = 0; i < runs.RUN_START_LIMIT; i++) {
+				const run = runs.startRun(user, 'unitteste');
+				assert.equal(typeof run, 'object', `run ${i + 1}`);
+				runs.abandonRun(user, run);
+			}
+			assert.equal(runs.startRun(user, 'unitteste'), 'toomany');
+		});
+
 		it('offers unlocked starters, closes runs from the panel and shows them in the profile', () => {
 			const { TEST_VARIANT } = require('../../../dist/server/chat-plugins/expedition/variants');
 			const settings = variant.resolveSettings(TEST_VARIANT);
@@ -679,7 +735,11 @@ describe('Expedition', () => {
 
 			// Evolução especial: Kadabra evolui (troca) para Alakazam
 			const evolution = start('evolution', () => { run.team[0].species = 'Kadabra'; });
-			assert.deepEqual(evolution.offers, [{ uid: run.team[0].uid, into: 'Alakazam' }], 'oferece Alakazam');
+			assert.deepEqual(evolution.offers, [{ uid: run.team[0].uid, from: 'Kadabra', into: 'Alakazam' }], 'oferece Alakazam');
+			// Se o Pokémon mudou depois do sorteio, a oferta não vale mais
+			run.team[0].species = 'Abra';
+			assert.equal(eventNode.choose(context, 'evolve:0'), null, 'oferta indisponível');
+			run.team[0].species = 'Kadabra';
 			assert.equal(eventNode.choose(context, 'evolve:0'), false);
 			assert.equal(run.team[0].species, 'Alakazam');
 			assert.equal(events.getEvent('evolution').setup(run, node, random.seededRandom('x', 'y')), null,

@@ -672,4 +672,5 @@ export const translations: TranslationCatalog = {
 	"Nothing unlocked yet.": "Nada liberado ainda.",
 	"Player profile": "Perfil do jogador",
 	"Act {act} of {acts}, at the boss": "Ato {act} de {acts}, no chefe",
+	"You started too many expeditions in a short time. Wait a few minutes.": "Você começou expedições demais em pouco tempo. Espere alguns minutos.",
 };

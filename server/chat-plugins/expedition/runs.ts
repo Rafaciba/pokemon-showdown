@@ -30,7 +30,11 @@ import { isHeldItem, useItem, type EconomyProblem } from './economy';
 
 export type RunProblem =
 	'novariant' | 'disabled' | 'active' | 'norun' | 'nostarter' | 'badchoice' | 'unreachable' | 'nodeopen' | 'nonode' |
-	'decisions' | 'nodecision' | 'nobattle' | 'teamfull' | 'inbattle' | 'noitem' | EconomyProblem;
+	'decisions' | 'nodecision' | 'nobattle' | 'teamfull' | 'inbattle' | 'noitem' | 'toomany' | EconomyProblem;
+
+/** No máximo RUN_START_LIMIT runs novas por jogador a cada RUN_START_WINDOW segundos (como as jornadas do Desafio). */
+export const RUN_START_LIMIT = 5;
+const RUN_START_WINDOW = 10 * 60;
 
 export type RunPhase = 'starter' | 'decision' | 'map' | 'node' | 'ended';
 
@@ -64,6 +68,9 @@ export function startRun(user: User, variantId: string): ExpeditionRun | RunProb
 	if (!variantAvailable(variant, user)) return 'disabled';
 	const store = getStore();
 	if (store.getActiveRun(user.id, variant.id)) return 'active';
+	// Evita runs sem fim (desistir e recomeçar em loop), como no Desafio
+	const since = Math.floor(Date.now() / 1000) - RUN_START_WINDOW;
+	if (store.countRunsSince(user.id, since) >= RUN_START_LIMIT) return 'toomany';
 	const settings = resolveSettings(variant, store.getVariantSettings(variant.id).overrides);
 	const seed = newSeed();
 	const options = variant.starterOptions(seededRandom(seed, 'starters'), settings, store.listUnlocks(user.id));

@@ -448,17 +448,21 @@ export function createNpcBattle(human: User, settings: NpcBattleSettings): GameR
 	}
 	Ladders.cancelSearches(human);
 
+	// O resultado (end) compara o id do vencedor com o do jogador: um NPC com o mesmo id
+	// (conta "Lass" contra a Lass) contaria a derrota como vitória. O nome é o mesmo na
+	// criação e na retomada, então o registro de entrada continua batendo.
+	const npcName = toID(settings.npc.name) === human.id ? `${settings.npc.name} (NPC)` : settings.npc.name;
 	const resuming = !!settings.inputLog;
 	const options: NpcBattleOptions = {
 		format: settings.format,
 		// Na retomada, os times já estão no log: sem time, o simulador só confirma nome e avatar
 		players: resuming ? [
 			{ user: human },
-			{ user: settings.npc.name as unknown as User },
+			{ user: npcName as unknown as User },
 		] : [
 			{ user: human, team: settings.team },
 			// Jogador sem usuário: o RoomBattle aceita só o nome (ver RoomBattle.addPlayer)
-			{ user: settings.npc.name as unknown as User, team: settings.npc.team },
+			{ user: npcName as unknown as User, team: settings.npc.team },
 		],
 		inputLog: settings.inputLog,
 		delayedStart: true,

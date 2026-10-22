@@ -138,9 +138,9 @@ registerEvent({
 	id: 'evolution',
 	weight: 20,
 	setup(run, node, prng) {
-		const offers: { uid: string, into: string }[] = [];
+		const offers: { uid: string, from: string, into: string }[] = [];
 		for (const mon of run.team) {
-			for (const evo of specialEvolutions(mon.species)) offers.push({ uid: mon.uid, into: evo });
+			for (const evo of specialEvolutions(mon.species)) offers.push({ uid: mon.uid, from: mon.species, into: evo });
 		}
 		if (!offers.length) return null;
 		prng.shuffle(offers);
@@ -152,10 +152,11 @@ registerEvent({
 	),
 	choices({ TL, run, data }) {
 		return [
-			...data.offers.map((offer: { uid: string, into: string }, i: number) => {
+			...data.offers.map((offer: { uid: string, from?: string, into: string }, i: number) => {
 				const species = monName(run, offer.uid);
 				const into = offer.into;
-				return { id: `evolve:${i}`, label: TL`Evolve ${species} into ${into}`, disabled: !species };
+				const changed = !!offer.from && species !== offer.from;
+				return { id: `evolve:${i}`, label: TL`Evolve ${species} into ${into}`, disabled: !species || changed };
 			}),
 			{ id: 'leave', label: TL`Leave` },
 		];
@@ -165,6 +166,8 @@ registerEvent({
 		const offer = data.offers[Number(choice.split(':')[1])];
 		const mon = choice.startsWith('evolve:') && offer && run.team.find(entry => entry.uid === offer.uid);
 		if (!mon) return null;
+		// O Pokémon pode ter evoluído por nível depois do sorteio (Rare Candy no nó)
+		if (offer.from && mon.species !== offer.from) return 'badchoice';
 		evolveMon(mon, offer.into);
 		data.evolved = { species: offer.into };
 		return { result: true };

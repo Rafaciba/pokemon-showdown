@@ -55,6 +55,7 @@ function problemText(TL: Translator, problem: RunProblem) {
 	case 'novariant': return TL`Expedition not found.`;
 	case 'disabled': return TL`This expedition is not available.`;
 	case 'active': return TL`You already have an expedition in progress in this variant.`;
+	case 'toomany': return TL`You started too many expeditions in a short time. Wait a few minutes.`;
 	case 'norun': return TL`You have no expedition in progress here.`;
 	case 'nostarter': return TL`The starting team was already chosen.`;
 	case 'badchoice': return TL`Invalid choice.`;
@@ -210,7 +211,7 @@ function bagSection(TL: Translator, lang: TextLanguage, run: ExpeditionRun, vari
 		const options = targets.map(mon => `<option value="${mon.uid}">${Utils.escapeHTML(mon.species)}</option>`).join('');
 		let form = '';
 		if (canUse && targets.length) {
-			form = ` <form data-submitsend="/expedicao usar ${variantId},${item},{uid}" style="display: inline">` +
+			form = ` <form data-submitsend="/expedicao usar ${variantId},${Utils.escapeHTML(item)},{uid}" style="display: inline">` +
 				`<select name="uid">${options}</select> <button class="button" type="submit">${TL`Use`}</button></form>`;
 		} else if (canUse) {
 			form = ` <small>${TL`No Pokémon can use it right now.`}</small>`;
@@ -611,7 +612,9 @@ export const pages: Chat.PageTable = {
 
 function requireRun(context: Chat.CommandContext, user: User, variantId: string) {
 	if (!isPlayer(user)) throw new Chat.ErrorMessage(context.TL`Log in to take part in the Expedition.`);
-	const run = getStore().getActiveRun(user.id, toID(variantId));
+	const variant = getVariant(toID(variantId));
+	if (!variant || !variantAvailable(variant, user)) throw new Chat.ErrorMessage(problemText(context.TL, 'disabled'));
+	const run = getStore().getActiveRun(user.id, variant.id);
 	if (!run) throw new Chat.ErrorMessage(problemText(context.TL, 'norun'));
 	return run;
 }

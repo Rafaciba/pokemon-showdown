@@ -14,8 +14,13 @@ import { getStore } from './state';
 import { resumeBattlesOnLogin } from './battles';
 import { expRates } from './progression';
 import { listVariants, resolveSettings } from './variant';
+import { accountRenameBlockers } from '../custom-accounts';
 import './runs';
 import './profile';
+
+// Batalha interrompida guarda o nome do jogador no registro de entrada: a troca de nome
+// espera ela acabar, como no Desafio
+accountRenameBlockers.push(userid => getStore().listUnfinishedBattles(userid).length > 0);
 
 // A calibração da experiência leva até 1 s por variação: feita logo depois da carga,
 // e não na primeira vitória de um jogador (fica guardada enquanto o servidor roda).

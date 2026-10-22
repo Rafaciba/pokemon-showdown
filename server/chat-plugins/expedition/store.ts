@@ -232,6 +232,12 @@ export class ExpeditionStore {
 			.all(userid, limit) as Row[]).map(toRun);
 	}
 
+	/** Runs começadas por um jogador desde `since` (limite de runs novas). */
+	countRunsSince(userid: string, since: number): number {
+		return Number((this.db.prepare('SELECT count(*) AS n FROM runs WHERE userid = ? AND started_at >= ?')
+			.get(userid, since) as Row).n);
+	}
+
 	/** Runs de todos os jogadores (painel): em andamento ou encerradas, das mais recentes. */
 	listAllRuns(active: boolean, limit = 50): ExpeditionRun[] {
 		const where = active ? `status = 'active'` : `status <> 'active'`;
@@ -351,6 +357,12 @@ export class ExpeditionStore {
 	/** Troca de nome da conta: tudo passa para o nome novo. */
 	renameUser(oldid: string, newid: string) {
 		this.transaction(() => {
+			// Se o nome novo já tem run ativa numa variação (dados que ainda não foram limpos),
+			// a do nome antigo fica encerrada, para respeitar a regra de uma run ativa por variação
+			this.db.prepare(`
+				UPDATE runs SET status = 'closed', ended_at = ? WHERE userid = ? AND status = 'active'
+				AND variant IN (SELECT variant FROM runs WHERE userid = ? AND status = 'active')
+			`).run(now(), oldid, newid);
 			this.db.prepare('UPDATE runs SET userid = ? WHERE userid = ?').run(newid, oldid);
 			// Um desbloqueio que o nome novo já tenha fica só uma vez
 			this.db.prepare('UPDATE OR IGNORE unlocks SET userid = ? WHERE userid = ?').run(newid, oldid);

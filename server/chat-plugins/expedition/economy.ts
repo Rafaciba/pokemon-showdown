@@ -38,7 +38,9 @@ export type ConsumableEffect =
 	{ kind: 'revive', hp: number } |
 	{ kind: 'status', cures: string[] } |
 	{ kind: 'candy' } |
-	{ kind: 'ball' };
+	{ kind: 'ball' } |
+	/** Item-chave (Bicicleta, Old Rod): fica na mochila e abre escolhas nos eventos "?". */
+	{ kind: 'key' };
 
 export interface Consumable {
 	id: string;
@@ -73,9 +75,42 @@ export const CONSUMABLES: readonly Consumable[] = [
 	{ id: 'iceheal', name: 'Ice Heal', icon: 'ice-heal', price: 300, effect: { kind: 'status', cures: ['frz'] } },
 	{ id: 'fullheal', name: 'Full Heal', icon: 'full-heal', price: 400, effect: { kind: 'status', cures: ALL_STATUSES } },
 	{ id: 'rarecandy', name: 'Rare Candy', icon: 'rare-candy', price: 5000, effect: { kind: 'candy' } },
-	// Só no catálogo: para variações com captura por Poké Bola
+	// Poké Bolas (etapa 8): à venda nas expedições com captura por bola (capture.ts tem os multiplicadores).
+	// Premier e Luxury só visuais, a Master Ball só por evento (sem preço de loja)
 	{ id: 'pokeball', name: 'Poké Ball', icon: 'poke-ball', price: 200, effect: { kind: 'ball' } },
+	{ id: 'greatball', name: 'Great Ball', icon: 'great-ball', price: 600, effect: { kind: 'ball' } },
+	{ id: 'ultraball', name: 'Ultra Ball', icon: 'ultra-ball', price: 800, effect: { kind: 'ball' } },
+	{ id: 'netball', name: 'Net Ball', icon: 'net-ball', price: 1000, effect: { kind: 'ball' } },
+	{ id: 'premierball', name: 'Premier Ball', icon: 'premier-ball', price: 200, effect: { kind: 'ball' } },
+	{ id: 'luxuryball', name: 'Luxury Ball', icon: 'luxury-ball', price: 1000, effect: { kind: 'ball' } },
+	{ id: 'masterball', name: 'Master Ball', icon: 'master-ball', price: 0, effect: { kind: 'ball' } },
+	// Itens-chave dos eventos "?" (sem preço de loja: a Bicicleta é vendida pelo evento)
+	{ id: 'bicycle', name: 'Bicycle', icon: 'bicycle', price: 0, effect: { kind: 'key' } },
+	{ id: 'oldrod', name: 'Old Rod', icon: 'old-rod', price: 0, effect: { kind: 'key' } },
 ];
+
+/**
+ * Fósseis (itens-chave do evento da caverna; o Cientista revive): o item do PS e a
+ * espécie. Só os clássicos (decisão do usuário); os compostos da geração 8 ficam de fora.
+ */
+export const FOSSILS: readonly { item: string, species: string }[] = [
+	{ item: 'Helix Fossil', species: 'Omanyte' }, { item: 'Dome Fossil', species: 'Kabuto' },
+	{ item: 'Old Amber', species: 'Aerodactyl' }, { item: 'Root Fossil', species: 'Lileep' },
+	{ item: 'Claw Fossil', species: 'Anorith' }, { item: 'Skull Fossil', species: 'Cranidos' },
+	{ item: 'Armor Fossil', species: 'Shieldon' }, { item: 'Cover Fossil', species: 'Tirtouga' },
+	{ item: 'Plume Fossil', species: 'Archen' }, { item: 'Jaw Fossil', species: 'Tyrunt' },
+	{ item: 'Sail Fossil', species: 'Amaura' },
+];
+
+/** Item-chave: Bicicleta, Old Rod ou fóssil (não vai para os Pokémon nem é usado pela mochila). */
+export function isKeyItem(entry: string) {
+	return consumable(toID(entry))?.effect.kind === 'key' || FOSSILS.some(fossil => toID(fossil.item) === toID(entry));
+}
+
+/** Bolas da loja nas expedições com captura por bola. */
+const SHOP_BALLS = ['pokeball', 'greatball', 'ultraball', 'netball'];
+/** Itens de reviver: fora da loja no Nuzlocke (decisão do usuário: quem desmaia sai do time). */
+const REVIVE_ITEMS = ['revive', 'maxrevive'];
 
 export const TM_PRICE = 3000;
 const TM_PREFIX = 'tm:';
@@ -108,7 +143,7 @@ export function tmMove(entry: string): string | null {
 
 /** Item de segurar do PS (vai para um Pokémon), e não item de uso nem TM. */
 export function isHeldItem(entry: string) {
-	return !consumable(toID(entry)) && !tmMove(entry) && Dex.items.get(entry).exists;
+	return !consumable(toID(entry)) && !tmMove(entry) && !isKeyItem(entry) && Dex.items.get(entry).exists;
 }
 
 /** Preço de um item da loja (item de segurar, item de uso ou TM). */
@@ -211,7 +246,11 @@ export function tmMovesFor(mon: RunMon): string[] {
  */
 export function shopStock(run: ExpeditionRun, nodeId: string): ShopEntry[] {
 	const prng = seededRandom(run.seed, `shop:${run.act}:${nodeId}`);
-	const stock: ShopEntry[] = SHOP_STAPLES.map(id => ({
+	const rules = run.settings.rules;
+	const staples = SHOP_STAPLES.filter(id => rules.faint !== 'nuzlocke' || !REVIVE_ITEMS.includes(id));
+	// Captura por bola: as bolas de sempre (decisão do usuário: mais chances de conseguir bolas)
+	if (rules.capture === 'ball' || rules.capture === 'chance') staples.push(...SHOP_BALLS);
+	const stock: ShopEntry[] = staples.map(id => ({
 		item: id, price: itemPrice(id), single: false, group: 'healing',
 	}));
 	const held = HELD_ITEMS.filter(name => Dex.items.get(name).exists);
@@ -343,5 +382,15 @@ export function consumableDescription(TL: Translator, usable: Consumable) {
 		return TL`Thaws out a frozen Pokémon.`;
 	}
 	if (effect.kind === 'candy') return TL`Raises a Pokémon's level by one.`;
+	// Bolas: o multiplicador conta na captura com chance (capture.ts)
+	switch (usable.id) {
+	case 'greatball': return TL`Used to catch Pokémon. Capture chance ×1.5.`;
+	case 'ultraball': return TL`Used to catch Pokémon. Capture chance ×2.`;
+	case 'netball': return TL`Used to catch Pokémon. Capture chance ×3.5 against Water and Bug Pokémon.`;
+	case 'premierball': case 'luxuryball': return TL`Used to catch Pokémon. Only the look is different.`;
+	case 'masterball': return TL`Catches any Pokémon for sure.`;
+	case 'bicycle': return TL`Key item: lets you get away in some events.`;
+	case 'oldrod': return TL`Key item: lets you fish at lakes.`;
+	}
 	return TL`Used to catch Pokémon.`;
 }

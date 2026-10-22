@@ -27,10 +27,25 @@ import type { ExpeditionRun } from './store';
 import type { Translator } from '../../../sim/dex-text';
 import type { TextLanguage } from '../../../sim/dex-data';
 import { isHeldItem, useItem, type EconomyProblem } from './economy';
+import { DEFAULT_BALL, getBall, rollCapture, withBall } from './capture';
 
 export type RunProblem =
 	'novariant' | 'disabled' | 'active' | 'norun' | 'nostarter' | 'badchoice' | 'unreachable' | 'nodeopen' | 'nonode' |
-	'decisions' | 'nodecision' | 'nobattle' | 'teamfull' | 'inbattle' | 'noitem' | 'toomany' | EconomyProblem;
+	'decisions' | 'nodecision' | 'nobattle' | 'teamfull' | 'inbattle' | 'noitem' | 'toomany' | 'boxfull' | 'lastmon' |
+	EconomyProblem;
+
+/** Vagas do Computador (escolha nossa). */
+export const BOX_SIZE = 30;
+/**
+ * Poké Bolas no começo, nas expedições com captura por bola (decisão do usuário): 5 com
+ * chance, 3 com captura certa.
+ */
+export const STARTING_BALLS = { chance: 5, ball: 3 } as const;
+
+/** Captura por bola (etapa 8): "ball" (certa) ou "chance". */
+export function usesBalls(run: ExpeditionRun) {
+	return run.settings.rules.capture === 'ball' || run.settings.rules.capture === 'chance';
+}
 
 /** No máximo RUN_START_LIMIT runs novas por jogador a cada RUN_START_WINDOW segundos (como as jornadas do Desafio). */
 export const RUN_START_LIMIT = 5;
@@ -85,9 +100,12 @@ export function chooseStarter(run: ExpeditionRun, index: number): RunProblem | n
 	if (runPhase(run) !== 'starter' || run.pending?.kind !== 'starter') return 'nostarter';
 	const team = run.pending.options[index];
 	if (!team) return 'badchoice';
-	run.team = team.slice(0, run.settings.rules.teamSize);
+	run.team = team.slice(0, run.settings.rules.teamSize).map(mon => withBall(mon, DEFAULT_BALL));
 	run.pending = null;
 	run.money = run.settings.extra.startMoney || 0;
+	const capture = run.settings.rules.capture;
+	const balls = capture === 'chance' || capture === 'ball' ? STARTING_BALLS[capture] : 0;
+	for (let i = 0; i < balls; i++) run.items.push('pokeball');
 	getStore().saveRun(run);
 	return null;
 }
@@ -218,23 +236,72 @@ export function decideEvolve(run: ExpeditionRun, into: string | null): RunProble
  * Captura do selvagem vencido: "keep" (com vaga no time), o uid de quem sai do time
  * para dar a vaga (o item de quem sai vai para a mochila) ou null (não fica com ele).
  */
+/**
+ * Captura do selvagem vencido. `choice`:
+ *   - null: deixa ir (com a bola já gasta, se houve lançamento);
+ *   - "ball:<id>" (captura por bola): lança uma bola da mochila. Na "ball", captura
+ *     certa; na "chance", pela chance da espécie e da bola (capture.ts), e o jogador pode
+ *     tentar de novo. Capturado e com espaço no time, entra direto;
+ *   - "keep": entra no time (com espaço);
+ *   - "pc": vai para o Computador (com o Computador ligado);
+ *   - uid de um Pokémon do time (time cheio): ele sai para o capturado entrar (com o
+ *     Computador, vai para lá; sem ele, é solto). O item vai sempre para a mochila
+ *     (decisão do usuário: nenhum item fica no Computador).
+ */
 export function decideCapture(run: ExpeditionRun, choice: string | null): RunProblem | null {
 	const decision = run.decisions[0];
 	if (runPhase(run) !== 'decision' || decision?.kind !== 'capture') return 'nodecision';
-	if (choice !== null) {
-		const full = run.team.length >= run.settings.rules.teamSize;
-		if (choice === 'keep') {
-			if (full) return 'teamfull';
+	const rules = run.settings.rules;
+	const store = getStore();
+	if (choice === null) {
+		run.decisions.shift();
+		store.saveRun(run);
+		return null;
+	}
+	if (choice.startsWith('ball:')) {
+		if (!usesBalls(run) || decision.caught || decision.gift) return 'badchoice';
+		const ball = getBall(choice.slice(5));
+		const index = ball ? run.items.findIndex(item => toID(item) === ball.id) : -1;
+		if (!ball || index < 0) return 'noitem';
+		run.items.splice(index, 1);
+		const tries = (decision.tries || 0) + 1;
+		decision.tries = tries;
+		const prng = seededRandom(run.seed, `capture:${run.act}:${run.node}:${tries}`);
+		if (rules.capture === 'ball' || rollCapture(prng, decision.mon.species, ball.id)) {
+			decision.caught = true;
+			decision.mon = withBall(decision.mon, ball.name);
+			delete decision.escaped;
+			if (run.team.length < rules.teamSize) {
+				run.team.push(decision.mon);
+				run.decisions.shift();
+			}
 		} else {
-			const index = run.team.findIndex(mon => mon.uid === choice);
-			if (index < 0 || !full) return 'badchoice';
-			const [released] = run.team.splice(index, 1);
-			if (released.item) run.items.push(released.item);
+			decision.escaped = ball.name;
 		}
-		run.team.push(decision.mon);
+		store.saveRun(run);
+		return null;
+	}
+	if (usesBalls(run) && !decision.caught && !decision.gift) return 'badchoice';
+	const mon = decision.mon.ball ? decision.mon : withBall(decision.mon, DEFAULT_BALL);
+	const full = run.team.length >= rules.teamSize;
+	if (choice === 'keep') {
+		if (full) return 'teamfull';
+		run.team.push(mon);
+	} else if (choice === 'pc') {
+		if (!rules.computer) return 'badchoice';
+		if (run.box.length >= BOX_SIZE) return 'boxfull';
+		run.box.push(mon);
+	} else {
+		const index = run.team.findIndex(entry => entry.uid === choice);
+		if (index < 0 || !full) return 'badchoice';
+		if (rules.computer && run.box.length >= BOX_SIZE) return 'boxfull';
+		const [out] = run.team.splice(index, 1);
+		if (out.item) run.items.push(out.item);
+		if (rules.computer) run.box.push({ ...out, item: '' });
+		run.team.push(mon);
 	}
 	run.decisions.shift();
-	getStore().saveRun(run);
+	store.saveRun(run);
 	return null;
 }
 

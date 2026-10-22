@@ -44,6 +44,8 @@ export interface EventBattle {
 	avatar: string;
 	/** Nível de IA: o da variação para o tipo, ou um fixo. */
 	ai: 'variant' | 'hard';
+	/** Selvagens que não podem ser capturados depois (o grupo da caverna). */
+	noCapture?: boolean;
 }
 
 /** Recompensa de uma batalha de evento, entregue na vitória. */
@@ -113,20 +115,20 @@ export function pickEvent(run: ExpeditionRun, node: MapNode): { event: string, d
 
 // --- Auxiliares ---------------------------------------------------------------------
 
-function levelAt(run: ExpeditionRun, node: MapNode, offset = 0) {
+export function levelAt(run: ExpeditionRun, node: MapNode, offset = 0) {
 	return Math.max(1, Math.round(curveLevel(run.settings, run.act, node.floor) + offset));
 }
 
 /** Quantia de dinheiro de evento: uma fração do prêmio de um treinador do andar. */
-function eventMoney(run: ExpeditionRun, node: MapNode, factor: number) {
+export function eventMoney(run: ExpeditionRun, node: MapNode, factor: number) {
 	return Math.round(30 * levelAt(run, node) * moneyMultiplier(run.settings) * factor / 10) * 10;
 }
 
-function monName(run: ExpeditionRun, uid: string) {
+export function monName(run: ExpeditionRun, uid: string) {
 	return run.team.find(mon => mon.uid === uid)?.species || '';
 }
 
-const BERRIES = ['Oran Berry', 'Sitrus Berry', 'Lum Berry', 'Chesto Berry'];
+export const BERRIES = ['Oran Berry', 'Sitrus Berry', 'Lum Berry', 'Chesto Berry'];
 
 /** HP recuperado à sombra da árvore de berries (fração do HP máximo; escolha nossa). */
 export const SHADE_HEAL = 0.3;
@@ -309,7 +311,7 @@ registerEvent({
 		if (choice === 'decline') return { result: true };
 		if (choice !== 'accept') return null;
 		// Entra pela fila de decisões (a mesma da captura: com o time cheio, alguém sai)
-		run.decisions.push({ kind: 'capture', uid: data.mon.uid, mon: data.mon });
+		run.decisions.push({ kind: 'capture', uid: data.mon.uid, mon: data.mon, gift: true });
 		return { result: true };
 	},
 	result({ TL, data }, choice) {
@@ -434,7 +436,7 @@ registerEvent({
 		const potion = POTIONS.find(id => run.items.includes(id));
 		if (!potion) return 'noitem';
 		run.items.splice(run.items.indexOf(potion), 1);
-		run.decisions.push({ kind: 'capture', uid: data.mon.uid, mon: data.mon as RunMon });
+		run.decisions.push({ kind: 'capture', uid: data.mon.uid, mon: data.mon as RunMon, gift: true });
 		return { result: true };
 	},
 	result({ TL, data }, choice) {
@@ -445,4 +447,4 @@ registerEvent({
 });
 
 /** Poções que servem para ajudar o Pokémon ferido (a mais barata é usada primeiro). */
-const POTIONS = ['potion', 'superpotion', 'hyperpotion', 'maxpotion', 'fullrestore'];
+export const POTIONS = ['potion', 'superpotion', 'hyperpotion', 'maxpotion', 'fullrestore'];

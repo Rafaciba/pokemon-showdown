@@ -357,9 +357,9 @@ function sectionForm(
 				['choose', TL`Choose whether to keep the wild Pokémon after winning`],
 				['ball', TL`Poké Ball from the bag: sure capture`],
 				['chance', TL`Poké Ball from the bag: capture chance, as in the games`],
-			], values.capture), TL`Poké Ball capture comes in stage 8; until then, the player chooses.`),
+			], values.capture), TL`With Poké Balls, the player starts with 5 (with a chance) or 3 (sure capture), the PokéMart sells them and item nodes sometimes offer a Master Ball. With a chance, the wild Pokémon counts as weakened, and legendaries have at least 10% per ball.`),
 			field(TL`Computer`, selectBox('computer', yesNo(TL), values.computer),
-				TL`At the PokéCenter, the player chooses between healing and using the Computer to change the team (stage 8).`),
+				TL`At the PokéCenter, the player chooses between healing and using the Computer to change the team. With a full team, the caught Pokémon or the one swapped out goes to the Computer. Held items always go to the bag.`),
 		);
 		break;
 	case 'formato': {
@@ -416,7 +416,7 @@ function sectionForm(
 			field(TL`Chance of a legendary in each act (%)`, textbox('legendary', values.legendary || '', 3, '4em'),
 				TL`From the second act on (with one act, in its second half).`),
 			field(TL`Shiny wild Pokémon: 1 in`, textbox('shiny', values.shiny || '', 5, '6em'),
-				TL`0 = never. Up to ${MAX_SHINY_ODDS}. Shiny Pokémon come in stage 8.`),
+				TL`0 = never. Up to ${MAX_SHINY_ODDS}. A shiny Pokémon stays shiny when caught.`),
 		);
 		break;
 	case 'mapa': {
@@ -665,7 +665,7 @@ function renderEditor(TL: Translator, user: User, rawId: string) {
 			`<p><button class="button" name="send" value="/expedicaoadmin reabrir ${id}"><strong>${TL`Reopen expedition`}</strong>` +
 			`</button></p>` + exportBox(TL, id);
 	}
-	buf += `<p><small>${TL`Some options only take effect in the next stages of the mode: Poké Ball capture, Computer and shiny Pokémon (8), badges, difficulty and the special act (9).`}</small></p>`;
+	buf += `<p><small>${TL`The badges, the difficulty and the special act of the Complete mode only take effect in stage 9.`}</small></p>`;
 	if (expedition.status === 'open') {
 		buf += `<p><small>${TL`The expedition is open: changes are only saved if it stays ready to play. Runs in progress keep the settings they started with.`}</small></p>`;
 	} else {

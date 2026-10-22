@@ -38,8 +38,13 @@ import { generateAct, reachableNodes } from './map';
 export type RunDecision =
 	{ kind: 'learn', uid: string, move: string } |
 	{ kind: 'evolve', uid: string, into: string } |
-	/** Selvagem vencido: ficar com ele (`mon`, já pronto para entrar no time) ou não. */
-	{ kind: 'capture', uid: string, mon: RunMon };
+	/**
+	 * Selvagem vencido: ficar com ele (`mon`, já pronto para entrar no time) ou não. Na
+	 * captura por bola (etapa 8), primeiro o lançamento: `caught` depois de capturado,
+	 * `tries` tentativas feitas e `escaped` a bola da última tentativa que falhou. `gift`:
+	 * Pokémon de evento (presente, ferido), que entra sem bola.
+	 */
+	{ kind: 'capture', uid: string, mon: RunMon, caught?: boolean, tries?: number, escaped?: string, gift?: boolean };
 
 /** Experiência ganha numa vitória, para o resumo da página. */
 export interface MonGain {

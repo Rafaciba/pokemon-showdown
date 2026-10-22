@@ -30,6 +30,7 @@ import { expRates, gainExperience, nuzlockeBonus } from './progression';
 import { healMon, type RunMon } from './team';
 import { battlePrize } from './economy';
 import { eliteReward } from './items';
+import { ballIdByName } from './capture';
 import { seededRandom } from './random';
 import type { ExpeditionBattle, ExpeditionRun } from './store';
 
@@ -70,6 +71,7 @@ function packPlayerTeam(team: RunMon[]) {
 		name: mon.species, species: mon.species, item: mon.item, ability: mon.ability,
 		moves: mon.moves.map(id => Dex.moves.get(id).name), nature: mon.nature, gender: mon.gender,
 		evs: { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 }, ivs: { ...mon.ivs }, level: mon.level,
+		shiny: mon.shiny || undefined, pokeball: ballIdByName(mon.ball) || undefined,
 	}) as any));
 }
 
@@ -272,7 +274,9 @@ export function finishExpeditionBattle(battleId: number, result: NpcBattleResult
 		run.lastBattle = { opponent: encounter.name, result, gains, money, items };
 		// Captura: depois das decisões do time, o jogador escolhe se fica com o selvagem
 		const wild = encounter.kind === 'wild' || encounter.kind === 'legendary';
-		const mon = wild && run.settings.rules.capture === 'choose' ? capturedMon(run, encounter) : null;
+		const capture = run.settings.rules.capture;
+		const mon = wild && capture && capture !== 'none' && !run.nodeState?.battle?.noCapture ?
+			capturedMon(run, encounter) : null;
 		if (mon) run.decisions.push({ kind: 'capture', uid: mon.uid, mon });
 	}
 	// Nuzlocke: quem desmaiou sai do time; cura total: os demais voltam inteiros

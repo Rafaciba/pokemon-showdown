@@ -73,8 +73,20 @@ function packTeam(team: RunMon[], evs = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0,
 	return Teams.pack(team.map(mon => ({
 		name: mon.species, species: mon.species, item: mon.item, ability: mon.ability,
 		moves: mon.moves.map(id => Dex.moves.get(id).name), nature: mon.nature, gender: mon.gender,
-		evs: { ...evs }, ivs: { ...mon.ivs }, level: mon.level,
+		evs: { ...evs }, ivs: { ...mon.ivs }, level: mon.level, shiny: mon.shiny || undefined,
 	}) as any));
+}
+
+/**
+ * Selvagem shiny (etapa 8): 1 em `shinyOdds` (decisão do usuário: configurável, padrão
+ * 1/4096, como nos jogos). Sorteio próprio, para não mudar o resto do encontro.
+ */
+function rollShiny(run: ExpeditionRun, node: MapNode, team: RunMon[]) {
+	const odds = run.settings.rules.shinyOdds || 0;
+	if (odds <= 0 || !team[0]) return team;
+	const prng = seededRandom(run.seed, `shiny:${run.act}:${node.id}`);
+	if (prng.random(odds) === 0) team[0] = { ...team[0], shiny: true };
+	return team;
 }
 
 function pickClass(prng: PRNG, classes: [string, string][]) {
@@ -178,12 +190,12 @@ export function generateEncounter(run: ExpeditionRun, variant: ExpeditionVariant
 	const legends = legendarySpecies(theme);
 	if (kind === 'legendary' && legends.length) {
 		const species = evolveForLevel(prng, legends[prng.random(legends.length)], level, theme);
-		const team = [createMon(prng, species, level, 'o0')];
+		const team = rollShiny(run, node, [createMon(prng, species, level, 'o0')]);
 		return { ...base, source: 'pokedex', name: `Wild ${species}`, avatar: WILD_AVATAR, team, packed: packTeam(team) };
 	}
 	// Tema sem lendários (o painel não deixa abrir assim): o nó vira um selvagem comum
 	if (kind === 'wild' || kind === 'legendary') {
-		const team = randomTeam(prng, 1, level, source === 'pool' ? pool!.species : undefined, theme);
+		const team = rollShiny(run, node, randomTeam(prng, 1, level, source === 'pool' ? pool!.species : undefined, theme));
 		const species = team[0].species;
 		return { ...base, source: source === 'gym' ? 'pokedex' : source, name: `Wild ${species}`, avatar: WILD_AVATAR, team,
 			packed: packTeam(team) };

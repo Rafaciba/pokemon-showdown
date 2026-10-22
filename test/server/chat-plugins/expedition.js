@@ -812,6 +812,267 @@ describe('Expedition', () => {
 			assert.deepEqual(after.items, ['Leftovers']);
 		});
 
+		it('runs the second batch of "?" events', () => {
+			const events = require('../../../dist/server/chat-plugins/expedition/events');
+			const world = require('../../../dist/server/chat-plugins/expedition/events-world');
+			const economy = require('../../../dist/server/chat-plugins/expedition/economy');
+			const run = runs.startRun(user, 'unitteste');
+			runs.chooseStarter(run, 0);
+			const node = { id: '4-0', floor: 4, col: 0, type: 'event', next: [] };
+			const start = (id, setupRun = run, at = node) => {
+				const event = events.getEvent(id);
+				const data = event.setup(setupRun, at, random.seededRandom(`ev-${id}`, 'x'));
+				return { event, data, context: { run: setupRun, node: at, TL, lang: 'en', data } };
+			};
+			const ids = choices => choices.map(choice => choice.id);
+
+			// Itens-chave: na mochila, sem ir para os Pokémon
+			assert(economy.isKeyItem('Helix Fossil') && economy.isKeyItem('bicycle') && economy.isKeyItem('oldrod'));
+			assert(!economy.isHeldItem('Helix Fossil'));
+			assert(economy.isHeldItem('Leftovers'));
+
+			// Ataque da Equipe Rocket: entregar qualquer um (nunca o último), fugir só com a Bicicleta
+			const base = run.team[0];
+			run.team = [base, { ...base, uid: 'r2', species: 'Pidgey', item: 'Leftovers' }];
+			const rocket = start('rocketattack');
+			assert(rocket.data.species.length >= 1);
+			assert(!ids(rocket.event.choices(rocket.context)).includes('flee'));
+			const battle = rocket.event.choose(rocket.context, 'battle');
+			assert.equal(battle.battle.kind, 'trainer');
+			assert.equal(rocket.event.choose(rocket.context, 'give:r2').result, true);
+			assert.deepEqual(run.team.map(mon => mon.uid), [base.uid]);
+			assert(run.items.includes('Leftovers'), 'o item vai para a mochila');
+			assert(rocket.event.choices(rocket.context).find(choice => choice.id === `give:${base.uid}`).disabled, 'o único fica');
+			run.team.push({ ...base, uid: 'r3', fainted: true, hp: 0 });
+			assert(rocket.event.choices(rocket.context).find(choice => choice.id === `give:${base.uid}`).disabled,
+				'o único em condição de batalhar fica');
+			assert(!rocket.event.choices(rocket.context).find(choice => choice.id === 'give:r3').disabled, 'o desmaiado pode ir');
+			run.team.pop();
+			run.items.push('bicycle');
+			assert(ids(rocket.event.choices(rocket.context)).includes('flee'));
+
+			// Caverna: grupo de 3 ou 4 selvagens, sem captura, com um fóssil de recompensa
+			const cave = start('cave');
+			assert([3, 4].includes(cave.data.species.length));
+			const caveBattle = cave.event.choose(cave.context, 'enter');
+			assert.equal(caveBattle.battle.noCapture, true);
+			assert(economy.FOSSILS.some(fossil => fossil.item === caveBattle.reward.items[0]));
+			const noCaveTheme = { ...run, settings: { ...run.settings, theme: { gens: [9], species: [] } } };
+			assert.equal(start('cave', noCaveTheme).data, null, 'sem espécies de caverna no tema');
+
+			// Cientista: reviver gasta o fóssil; trocar dá um Porygon no nível; ou uma Hyper Potion
+			run.items.push('Helix Fossil');
+			const sci = start('scientist');
+			assert.equal(sci.data.revives.length, 1);
+			assert.equal(sci.event.choose(sci.context, 'revive:0').result, true);
+			assert(!run.items.includes('Helix Fossil'));
+			assert.equal(run.decisions[run.decisions.length - 1].gift, true);
+			run.decisions = [];
+			run.team[0].item = 'Choice Band';
+			run.team[0].level = 40;
+			const uid = run.team[0].uid;
+			assert.equal(sci.event.choose(sci.context, `trade:${uid}`).result, true);
+			assert(['Porygon', 'Porygon2', 'Porygon-Z'].includes(run.team[0].species));
+			assert.equal(run.team[0].level, 40);
+			assert(run.items.includes('Choice Band'));
+			sci.event.choose(sci.context, 'potion');
+			assert(run.items.includes('hyperpotion'));
+
+			// Move Reminder: um golpe de nível já passado
+			run.team[0] = { ...base, species: 'Bulbasaur', level: 30, moves: ['tackle'], ppUsed: [0] };
+			const reminder = start('reminder');
+			assert(reminder.data.offers.length >= 1);
+			assert.equal(reminder.event.choose(reminder.context, 'remind:0').result, true);
+			assert.equal(run.team[0].moves.length, 2);
+
+			// Obstáculos: só quem aprende por TM/HM abre o caminho
+			assert(world.learnsByMachine('Bulbasaur', 'cut'));
+			assert(!world.learnsByMachine('Magikarp', 'cut'));
+			const tree = start('tree');
+			assert.deepEqual(ids(tree.event.choices(tree.context)), ['use', 'detour']);
+			run.team[0] = { ...run.team[0], species: 'Magikarp' };
+			assert.deepEqual(ids(tree.event.choices(tree.context)), ['detour']);
+			assert.equal(tree.event.choose(tree.context, 'use'), null);
+			assert.equal(tree.event.choose(tree.context, 'detour').battle.kind, 'wild');
+
+			// Lago: só no ato 2; refrescar recupera 30% do HP e do PP de quem não desmaiou; pescar exige a vara
+			run.team[0] = { ...run.team[0], hp: 0.5, fainted: false, moves: ['tackle'], ppUsed: [20] };
+			assert.equal(start('lake').data, null, 'só no ato 2');
+			run.act = 2;
+			const lake = start('lake');
+			assert(lake.event.choices(lake.context).find(choice => choice.id === 'fish').disabled);
+			lake.event.choose(lake.context, 'rest');
+			assert.equal(run.team[0].hp, 0.8);
+			assert(run.team[0].ppUsed[0] < 20);
+			run.items.push('oldrod');
+			assert.equal(lake.event.choose(lake.context, 'fish').battle.kind, 'wild');
+			run.act = 1;
+
+			// Pescador e Bicicleta: não aparecem para quem já tem o item; a Bicicleta custa 10000
+			assert.equal(start('fisherman').data, null);
+			run.items = run.items.filter(item => item !== 'bicycle');
+			const bike = start('bikeshop');
+			run.money = 100;
+			assert.equal(bike.event.choose(bike.context, 'buy'), 'nomoney');
+			run.money = world.BICYCLE_PRICE;
+			assert.equal(bike.event.choose(bike.context, 'buy').result, true);
+			assert.equal(run.money, 0);
+			assert.equal(start('bikeshop').data, null);
+
+			// Idoso envenenado: só no ato 1; o Antidote é gasto
+			const oldman = start('oldman');
+			assert(oldman.data.weedle);
+			assert(oldman.event.choices(oldman.context).find(choice => choice.id === 'cure').disabled);
+			run.items.push('antidote');
+			assert.equal(oldman.event.choose(oldman.context, 'cure').result, true);
+			assert(!run.items.includes('antidote'));
+			assert.equal(start('oldman', { ...run, act: 2 }).data, null);
+		});
+
+		it('computes the capture chance of each ball', () => {
+			const capture = require('../../../dist/server/chat-plugins/expedition/capture');
+			assert.equal(capture.catchChance('Bulbasaur', 'masterball'), 1);
+			assert.equal(capture.ballIdByName('Poké Ball'), 'pokeball', 'o toID do PS apagaria o acento');
+			assert.equal(capture.ballIdByName('Net Ball'), 'netball');
+			assert(capture.catchChance('Rattata', 'pokeball') > capture.catchChance('Bulbasaur', 'pokeball'), 'taxa 255 contra 45');
+			assert(capture.catchChance('Bulbasaur', 'ultraball') > capture.catchChance('Bulbasaur', 'greatball'));
+			assert(capture.catchChance('Bulbasaur', 'greatball') > capture.catchChance('Bulbasaur', 'pokeball'));
+			assert(capture.catchChance('Magikarp', 'netball') > capture.catchChance('Magikarp', 'pokeball'), 'Net Ball contra Water');
+			assert.equal(capture.catchChance('Bulbasaur', 'netball'), capture.catchChance('Bulbasaur', 'pokeball'));
+			assert.equal(capture.catchChance('Mewtwo', 'pokeball'), capture.LEGENDARY_MIN_CHANCE, 'lendário: chance mínima');
+			assert.equal(capture.catchRate('Pikachu-Alola'), capture.catchRate('Pikachu'), 'formas usam a taxa da espécie');
+			assert.deepEqual(capture.ballsInBag(['ultraball', 'Leftovers', 'pokeball', 'ultraball'])
+				.map(entry => [entry.ball.id, entry.count]), [['pokeball', 1], ['ultraball', 2]]);
+		});
+
+		it('captures with Poké Balls: sure or by chance, and gifts need no ball', () => {
+			const run = runs.startRun(user, 'unitteste');
+			run.settings.rules.capture = 'ball';
+			runs.chooseStarter(run, 0);
+			assert.deepEqual(run.items, Array(3).fill('pokeball'), 'captura certa: começa com 3 Poké Bolas');
+			const other = makeUser('Expedition Chance');
+			other.registered = true;
+			const withChance = runs.startRun(other, 'unitteste');
+			withChance.settings.rules.capture = 'chance';
+			runs.chooseStarter(withChance, 0);
+			assert.deepEqual(withChance.items, Array(5).fill('pokeball'), 'com chance: 5');
+			other.destroy();
+			assert.equal(run.team[0].ball, 'Poké Ball');
+			const wild = { ...run.team[0], uid: 'w1', species: 'Mewtwo', ball: undefined };
+			run.decisions = [{ kind: 'capture', uid: 'w1', mon: wild }];
+			assert.equal(runs.decideCapture(run, 'keep'), 'badchoice', 'primeiro a bola');
+			assert.equal(runs.decideCapture(run, 'ball:greatball'), 'noitem');
+			assert.equal(runs.decideCapture(run, 'ball:pokeball'), null);
+			assert.equal(run.team.length, 2, 'captura certa e entra no time');
+			assert.equal(run.team[1].ball, 'Poké Ball');
+			assert.equal(run.items.length, 2);
+
+			// Com chance: Mewtwo (taxa 3) com Poké Bola escapa quase sempre; cada tentativa gasta uma bola
+			run.settings.rules.capture = 'chance';
+			run.items = Array(40).fill('pokeball');
+			run.decisions = [{ kind: 'capture', uid: 'w2', mon: { ...wild, uid: 'w2' } }];
+			let tries = 0;
+			while (run.decisions.length && !run.decisions[0].caught && tries < 40) {
+				assert.equal(runs.decideCapture(run, 'ball:pokeball'), null);
+				tries++;
+				if (run.decisions.length && !run.decisions[0].caught) assert.equal(run.decisions[0].escaped, 'Poké Ball');
+			}
+			assert.equal(run.items.length, 40 - tries);
+			assert(tries > 1, `tentativas: ${tries}`);
+			// O resultado de cada tentativa sai da semente: o mesmo ao repetir
+			const again = { ...run, decisions: [{ kind: 'capture', uid: 'w2', mon: { ...wild, uid: 'w2' } }], items: Array(40).fill('pokeball') };
+			let triesAgain = 0;
+			while (again.decisions.length && !again.decisions[0].caught && triesAgain < 40) {
+				runs.decideCapture(again, 'ball:pokeball');
+				triesAgain++;
+			}
+			assert.equal(triesAgain, tries);
+
+			// Presente de evento: entra sem bola
+			run.decisions = [{ kind: 'capture', uid: 'g1', mon: { ...wild, uid: 'g1' }, gift: true }];
+			assert.equal(runs.decideCapture(run, 'ball:pokeball'), 'badchoice');
+			run.team = run.team.slice(0, 1);
+			assert.equal(runs.decideCapture(run, 'keep'), null);
+			assert.equal(run.team[1].ball, 'Poké Ball', 'bola padrão');
+		});
+
+		it('uses the Computer: captures and swaps go there, and the PokéCenter stores and heals', () => {
+			const run = runs.startRun(user, 'unitteste');
+			runs.chooseStarter(run, 0);
+			run.settings.rules.computer = true;
+			const base = run.team[0];
+			run.team = [0, 1, 2, 3, 4, 5].map(i => ({ ...base, uid: `t${i}`, item: i === 1 ? 'Leftovers' : '' }));
+			const wild = { ...base, uid: 'w1', species: 'Pidgey' };
+			run.decisions = [{ kind: 'capture', uid: 'w1', mon: wild }];
+			assert.equal(runs.decideCapture(run, 'pc'), null);
+			assert.deepEqual(run.box.map(mon => mon.uid), ['w1']);
+			run.decisions = [{ kind: 'capture', uid: 'w2', mon: { ...wild, uid: 'w2' } }];
+			assert.equal(runs.decideCapture(run, 't1'), null);
+			assert.equal(run.box[1].uid, 't1', 'quem sai vai para o Computador');
+			assert.equal(run.box[1].item, '', 'sem o item');
+			assert.deepEqual(run.items, ['Leftovers'], 'o item vai para a mochila');
+			run.items = [];
+
+			const nodes = require('../../../dist/server/chat-plugins/expedition/nodes');
+			const rest = nodes.getNodeType('rest');
+			const context = { run, node: { id: '5-0', floor: 5, col: 0, type: 'rest', next: [] }, TL };
+			assert.deepEqual(rest.view(context).choices.map(choice => choice.id), ['rest', 'pc']);
+			assert.equal(rest.choose(context, 'pc'), false);
+			assert.deepEqual(rest.view(context).choices.map(choice => choice.id), ['leave']);
+			assert.equal(rest.choose(context, 'rest'), null, 'curar ou usar o Computador, não os dois');
+			run.team[0].hp = 0.3;
+			run.team[0].item = 'Choice Band';
+			assert.equal(rest.choose(context, 'deposit:t0'), false);
+			assert.deepEqual(run.items, ['Choice Band'], 'o item de quem é guardado vai para a mochila');
+			assert.equal(rest.choose(context, 'withdraw:t0'), false);
+			assert.equal(run.team.find(mon => mon.uid === 't0').item, '');
+			assert.equal(run.team.find(mon => mon.uid === 't0').hp, 0.3, 'guardado agora volta como estava');
+			assert.equal(rest.choose(context, 'withdraw:w1'), 'teamfull');
+			run.team = run.team.slice(0, 1);
+			assert.equal(rest.choose(context, 'deposit:' + run.team[0].uid), 'lastmon');
+			run.box[0].hp = 0.1;
+			assert.equal(rest.choose(context, 'leave'), true);
+			assert.equal(run.box[0].hp, 1, 'quem está no Computador é curado ao sair');
+			run.settings.rules.computer = false;
+			run.nodeState = {};
+			assert.deepEqual(rest.view(context).choices.map(choice => choice.id), ['rest']);
+			assert.equal(rest.choose(context, 'pc'), null);
+		});
+
+		it('rolls shiny wild Pokémon, sells balls with Poké Ball capture and no revives in Nuzlocke', () => {
+			const { TEST_VARIANT } = require('../../../dist/server/chat-plugins/expedition/variants');
+			const encounters = require('../../../dist/server/chat-plugins/expedition/encounters');
+			const settings = variant.resolveSettings(TEST_VARIANT);
+			const at = { id: '0-0', floor: 0, col: 0, type: 'wild', next: [] };
+			settings.rules.shinyOdds = 1;
+			const shiny = encounters.generateEncounter({ seed: 'sh', act: 1, settings }, TEST_VARIANT, at);
+			assert.equal(shiny.team[0].shiny, true);
+			assert.equal(Teams.unpack(shiny.packed)[0].shiny, true);
+			settings.rules.shinyOdds = 0;
+			assert(!encounters.generateEncounter({ seed: 'sh', act: 1, settings }, TEST_VARIANT, at).team[0].shiny);
+
+			const economy = require('../../../dist/server/chat-plugins/expedition/economy');
+			const stock = rules => economy.shopStock({ seed: 's', act: 1, team: [], settings: { ...settings, rules } }, '3-0')
+				.map(entry => entry.item);
+			assert(stock({ ...settings.rules, capture: 'choose' }).includes('revive'));
+			assert(!stock({ ...settings.rules, capture: 'choose' }).includes('greatball'));
+			assert(stock({ ...settings.rules, capture: 'chance' }).includes('greatball'));
+			assert(!stock({ ...settings.rules, faint: 'nuzlocke' }).some(item => /revive/.test(item)), 'Nuzlocke sem reviver');
+
+			// Master Ball: 5% dos nós de item, só com captura por bola
+			const nodes = require('../../../dist/server/chat-plugins/expedition/nodes');
+			const itemsAt = (seed, capture) => nodes.getNodeType('item').view({
+				run: { seed, act: 1, team: [], settings: { ...settings, rules: { ...settings.rules, capture } } },
+				node: { id: '7-0', floor: 7, col: 0, type: 'item', next: [] }, TL: text => text.join(''),
+			}).choices.map(choice => choice.item);
+			let masters = 0;
+			for (let i = 0; i < 400; i++) {
+				if (itemsAt(`mb${i}`, 'chance').includes('masterball')) masters++;
+				assert(!itemsAt(`mb${i}`, 'choose').includes('masterball'));
+			}
+			assert(masters >= 8 && masters <= 35, `Master Balls em 400 nós: ${masters}`);
+		});
+
 		it('moves held items between the bag and the team, and the item node fills the bag', () => {
 			const run = runs.startRun(user, 'unitteste');
 			runs.chooseStarter(run, 0);

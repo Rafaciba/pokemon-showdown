@@ -21,6 +21,7 @@ import { MEGA_STONE_CHANCE, pickItems, pickMegaStone } from './items';
 import { buyItem, consumable, consumableDescription, itemDisplay, shopStock, tmMove } from './economy';
 import { moveDescription } from './tooltips';
 import { getEvent, pickEvent } from './events';
+import './events-world';
 import { seededRandom } from './random';
 
 export interface NodeChoice {
@@ -87,9 +88,14 @@ registerNodeType({ id: 'trainer', icon: '\u{1F9E2}', label: TL => TL`Trainer`, e
 registerNodeType({ id: 'elite', icon: '\u{2694}\u{FE0F}', label: TL => TL`Elite trainer`, encounter: true });
 registerNodeType({ id: 'boss', icon: '\u{1F451}', label: TL => TL`Boss`, encounter: true });
 registerNodeType({ id: 'legendary', icon: '\u{2728}', label: TL => TL`Legendary Pokémon`, encounter: true });
+/** Chance (%) de uma Master Ball no nó de item, nas expedições com captura por bola (decisão do usuário). */
+export const MASTER_BALL_CHANCE = 5;
+
 /**
  * Itens do nó de item: 3 sorteados pela semente da run e pelo nó (os mesmos ao voltar à
- * página); às vezes, o último é uma Mega Stone (item raro, items.ts).
+ * página); às vezes, o último é uma Mega Stone (item raro, items.ts) e, nas expedições
+ * com captura por bola, o primeiro é uma Master Ball (sorteio próprio, que não muda os
+ * outros itens).
  */
 function nodeItems({ run, node }: NodeContext) {
 	const prng = seededRandom(run.seed, `item:${run.act}:${node.id}`);
@@ -97,6 +103,11 @@ function nodeItems({ run, node }: NodeContext) {
 	if (prng.random(100) < MEGA_STONE_CHANCE) {
 		const stone = pickMegaStone(prng, run.team);
 		if (stone) items[items.length - 1] = stone;
+	}
+	const capture = run.settings.rules.capture;
+	if ((capture === 'ball' || capture === 'chance') &&
+		seededRandom(run.seed, `masterball:${run.act}:${node.id}`).random(100) < MASTER_BALL_CHANCE) {
+		items[0] = 'masterball';
 	}
 	return items;
 }
@@ -194,18 +205,69 @@ registerNodeType({
 	},
 });
 
+/** Vagas do Computador (escolha nossa; o mesmo número de runs.ts). */
+const PC_SIZE = 30;
+
+/**
+ * PokéCenter: cura o time. Com o Computador ligado (etapa 8, decisão do usuário), o
+ * jogador escolhe entre curar e usar o Computador para mexer no time (guardar e pegar
+ * Pokémon). Quem está no Computador só é curado quando o jogador sai do PokéCenter:
+ * quem é guardado agora volta curado só numa visita seguinte. O item de quem é guardado
+ * vai para a mochila (nenhum item fica no Computador).
+ */
 registerNodeType({
 	id: 'rest',
 	icon: '\u{1F3E5}',
 	// Nome pedido pelo usuário (antes "Descanso"); o id continua "rest"
 	label: TL => TL`PokéCenter`,
-	view: ({ TL }) => ({
-		text: TL`At the PokéCenter, your whole team recovers HP, PP and status, and fainted Pokémon come back.`,
-		choices: [{ id: 'rest', label: TL`Heal your team` }],
-	}),
+	view({ run, TL }) {
+		if (run.nodeState.pc) {
+			return {
+				text: TL`Computer: store Pokémon from your team or take them back. Those stored are healed when you leave the PokéCenter.`,
+				choices: [{ id: 'leave', label: TL`Leave the PokéCenter` }],
+			};
+		}
+		const choices: NodeChoice[] = [{ id: 'rest', label: TL`Heal your team` }];
+		if (run.settings.rules.computer) choices.push({ id: 'pc', label: TL`Use the Computer` });
+		return {
+			text: run.settings.rules.computer ?
+				TL`Heal your whole team (HP, PP, status and fainted Pokémon), or use the Computer to change your team.` :
+				TL`At the PokéCenter, your whole team recovers HP, PP and status, and fainted Pokémon come back.`,
+			choices,
+		};
+	},
 	choose({ run }, choice) {
-		if (choice !== 'rest') return null;
-		for (const mon of run.team) healMon(mon);
-		return true;
+		if (choice === 'rest' && !run.nodeState.pc) {
+			for (const mon of run.team) healMon(mon);
+			return true;
+		}
+		if (!run.settings.rules.computer) return null;
+		if (choice === 'pc') {
+			run.nodeState.pc = true;
+			return false;
+		}
+		if (!run.nodeState.pc) return null;
+		if (choice === 'leave') {
+			for (const mon of run.box) healMon(mon);
+			return true;
+		}
+		if (choice.startsWith('deposit:')) {
+			const index = run.team.findIndex(mon => mon.uid === choice.slice(8));
+			if (index < 0) return null;
+			if (run.team.length <= 1) return 'lastmon';
+			if (run.box.length >= PC_SIZE) return 'boxfull';
+			const [stored] = run.team.splice(index, 1);
+			if (stored.item) run.items.push(stored.item);
+			run.box.push({ ...stored, item: '' });
+			return false;
+		}
+		if (choice.startsWith('withdraw:')) {
+			const index = run.box.findIndex(mon => mon.uid === choice.slice(9));
+			if (index < 0) return null;
+			if (run.team.length >= run.settings.rules.teamSize) return 'teamfull';
+			run.team.push(...run.box.splice(index, 1));
+			return false;
+		}
+		return null;
 	},
 });

@@ -40,6 +40,10 @@ export interface RunMon {
 	 * par, psn, tox, slp ou frz; vazio (ou ausente, nas runs antigas) = nenhum.
 	 */
 	status?: string;
+	/** Shiny (etapa 8): selvagens com a chance da expedição; o capturado continua shiny. */
+	shiny?: boolean;
+	/** Bola em que o Pokémon está (só visual; etapa 8). */
+	ball?: string;
 }
 
 /** Iniciais oficiais das gerações 1 a 9 (os das variações que sorteiam iniciais dos jogos). */

@@ -19,8 +19,8 @@
  *   - insígnias do modo Completo: 8 de tipos diferentes, escolhidas ou sorteadas,
  *     travadas depois da primeira run.
  *
- * Partes que só passam a valer nas próximas etapas: captura com Poké Bola, Computador e
- * shiny (8), insígnias, agravantes e ato especial (9). O editor avisa disso.
+ * Partes que só passam a valer na etapa 9: insígnias, agravantes e ato especial. O
+ * editor avisa disso.
  *
  * Funções puras (sem banco nem estado do servidor), que rodam também no processo do
  * simulador. Os problemas são mensagens em inglês marcadas com TLkey, com {0}, {1}...

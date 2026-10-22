@@ -47,7 +47,7 @@ export interface ExpeditionRun {
 	 * Última batalha (adversário, resultado e experiência ganha): na vitória, mostrada até
 	 * o próximo nó; na derrota, no resumo da run encerrada.
 	 */
-	lastBattle: { opponent: string, result: BattleResult, gains: MonGain[], money?: number } | null;
+	lastBattle: { opponent: string, result: BattleResult, gains: MonGain[], money?: number, items?: string[] } | null;
 	/** Dinheiro da run (ganho contra treinadores, gasto na loja). */
 	money: number;
 	/** Estado do nó atual (ex.: o que já foi comprado na loja); limpo ao entrar noutro nó. */

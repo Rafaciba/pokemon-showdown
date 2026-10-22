@@ -378,7 +378,8 @@ function lastBattleSection(TL: Translator, run: ExpeditionRun) {
 			`<td><small>${learned}</small></td></tr>`;
 	}).join('');
 	const money = last.money || 0;
-	const prize = money ? `<p>${TL`You received ${money} \u20BD.`}</p>` : '';
+	const prize = (money ? `<p>${TL`You received ${money} \u20BD.`}</p>` : '') +
+		(last.items?.length ? `<p>${TL`You received:`} ${last.items.map(item => itemLabel(item)).join(', ')}</p>` : '');
 	return `${BOX}<h3 style="margin-top: 0">${TL`Victory against ${opponent}!`}</h3>` +
 		(rows ? `<table>${rows}</table>` : '') + prize + `</div>`;
 }
@@ -518,15 +519,23 @@ function runSection(TL: Translator, lang: TextLanguage, run: ExpeditionRun, vari
 		const type = getNodeType(node.type)!;
 		const priced = node.view.choices.filter(choice => choice.price !== undefined);
 		const plain = node.view.choices.filter(choice => choice.price === undefined);
-		buf += `${BOX}<h3 style="margin-top: 0">${type.icon} ${type.label(TL)}</h3>` +
+		const title = node.view.title ? Utils.escapeHTML(node.view.title) : type.label(TL);
+		const button = (choice: NodeChoice) => {
+			const html = `<button class="button" name="send" value="/expedicao escolha ${variantId},` +
+				`${Utils.escapeHTML(choice.id)}"${choice.disabled ? ' disabled' : ''}>` +
+				`${choice.item ? itemLabel(choice.item) : Utils.escapeHTML(choice.label)}</button>`;
+			// Opções com item (nó de item) ou golpe (tutor): tooltip com a descrição
+			if (choice.item) return withTip(html, itemDescription(TL, lang, choice.item));
+			return choice.move ? withTip(html, moveTooltip(choice.move, lang)) : html;
+		};
+		// Escolhas com descrição (eventos "?"): uma por linha, com o que cada uma faz
+		const choicesHtml = plain.some(choice => choice.detail) ?
+			plain.map(choice => `<p>${button(choice)}${choice.detail ?
+				` <small>${Utils.escapeHTML(choice.detail)}</small>` : ''}</p>`).join('') :
+			`<p>${plain.map(button).join(' ')}</p>`;
+		buf += `${BOX}<h3 style="margin-top: 0">${type.icon} ${title}</h3>` +
 			`<p>${encounterIcons(run)} ${Utils.escapeHTML(node.view.text)}</p>` +
-			(priced.length ? shopTable(TL, lang, priced, variantId) : '') + `<p>` + plain.map(choice => {
-			const button = `<button class="button" name="send" value="/expedicao escolha ${variantId},` +
-				`${Utils.escapeHTML(choice.id)}">${choice.item ? `${itemLabel(choice.item)}` : Utils.escapeHTML(choice.label)}` +
-				`</button>`;
-				// Opções com item (nó de item): tooltip com a descrição
-			return choice.item ? withTip(button, itemDescription(TL, lang, choice.item)) : button;
-		}).join(' ') + `</p></div>`;
+			(priced.length ? shopTable(TL, lang, priced, variantId) : '') + choicesHtml + `</div>`;
 	} else {
 		buf += `<p>${TL`Choose the next node on the map.`}</p>`;
 	}

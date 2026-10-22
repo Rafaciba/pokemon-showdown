@@ -197,6 +197,14 @@ function bisect(low: number, high: number, tooHigh: (value: number) => boolean) 
 	return high;
 }
 
+/**
+ * Teto do multiplicador de experiência. Com chances que deixam o mapa quase sem
+ * batalhas (o painel permite zerar os pesos), a calibração não tem o que medir e
+ * subiria até o limite da busca: uma vitória levaria o time do nível 6 ao 100. As
+ * variações normais ficam bem abaixo (a de teste, por volta de 44).
+ */
+const MAX_EXP_MULTIPLIER = 120;
+
 const ratesCache = new Map<string, ExpRates>();
 
 /**
@@ -211,7 +219,7 @@ export function expRates(settings: RunSettings): ExpRates {
 	const paths = calibrationPaths(settings);
 	const rates: ExpRates = { multiplier: 1, boss: 1 };
 	for (let round = 0; round < (settings.map.acts > 1 ? 4 : 1); round++) {
-		rates.multiplier = bisect(0.05, 1000, value => (
+		rates.multiplier = bisect(0.05, MAX_EXP_MULTIPLIER, value => (
 			calibrationError(settings, paths, { ...rates, multiplier: value }).arrival >= 0
 		));
 		if (settings.map.acts > 1) {

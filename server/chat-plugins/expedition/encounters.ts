@@ -26,6 +26,7 @@ import { nodeProgress, opponentLevel, opponentTeamSize } from './progression';
 import type { EncounterKind, ExpeditionVariant, OpponentSource } from './variant';
 import type { ExpeditionRun } from './store';
 import type { MapNode } from './map';
+import type { EventBattle } from './events';
 
 export interface Encounter {
 	kind: EncounterKind;
@@ -115,6 +116,22 @@ function gymTrainer(prng: PRNG, size: number, level: number, allowLegendary: boo
 		name: [trainer.title, trainer.name].filter(Boolean).join(' '),
 		avatar: trainer.avatar, team, packed: Teams.pack(sets),
 	};
+}
+
+/**
+ * Encontro de uma batalha começada por um evento "?" (events.ts): as espécies e o nível
+ * vêm do evento; o resto (golpes, IVs, natureza) sai da semente da run e do nó.
+ */
+export function encounterFromSpec(run: ExpeditionRun, variant: ExpeditionVariant, node: MapNode, spec: EventBattle) {
+	const prng = seededRandom(run.seed, `eventbattle:${run.act}:${node.id}`);
+	const team = spec.species.map((species, i) => createMon(prng, species, spec.level, `o${i}`));
+	const progress = nodeProgress(run.settings, run.act, node.floor);
+	const aiLevel = spec.ai === 'hard' ? 'hard' : variant.aiLevel(spec.kind, progress);
+	const avatar = spec.kind === 'wild' ? WILD_AVATAR : isTrainerSprite(spec.avatar) ? spec.avatar : '';
+	return {
+		kind: spec.kind, source: 'pokedex', name: spec.name, avatar, team, packed: packTeam(team), aiLevel,
+		doubles: false, trainer: spec.kind === 'trainer',
+	} as Encounter;
 }
 
 export function generateEncounter(run: ExpeditionRun, variant: ExpeditionVariant, node: MapNode): Encounter | null {

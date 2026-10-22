@@ -24,7 +24,7 @@ import { createAI } from '../gym-challenge/ai';
 import { getStore } from './state';
 import { getVariant } from './variant';
 import { findNode, generateAct } from './map';
-import { generateEncounter, type Encounter } from './encounters';
+import { encounterFromSpec, generateEncounter, type Encounter } from './encounters';
 import { EXPEDITION_STATE_LINE, expeditionFormatId, PERSISTENT_STATUSES, type MonFinalState } from './formats';
 import { expRates, gainExperience, nuzlockeBonus } from './progression';
 import { healMon, type RunMon } from './team';
@@ -52,7 +52,10 @@ export function currentEncounter(run: ExpeditionRun): Encounter | null {
 	const variant = getVariant(run.variant);
 	if (!variant || !run.node) return null;
 	const node = findNode(generateAct(run.seed, run.act, run.settings.map), run.node);
-	return node ? generateEncounter(run, variant, node) : null;
+	if (!node) return null;
+	// Batalha começada por um evento "?" (events.ts)
+	if (run.nodeState?.battle) return encounterFromSpec(run, variant, node, run.nodeState.battle);
+	return generateEncounter(run, variant, node);
 }
 
 /** Pokémon do jogador que entram na batalha (os que não estão desmaiados). */
@@ -254,9 +257,13 @@ export function finishExpeditionBattle(battleId: number, result: NpcBattleResult
 		const { decisions, gains } = gainExperience(run.team, defeated, encounter.trainer, multiplier);
 		run.decisions.push(...decisions);
 		// Dinheiro: só contra treinadores e o chefe, como nos jogos (economy.ts)
-		const money = battlePrize(encounter, run.settings);
+		// Recompensa de um evento (desafio do veterano, árvore de berries): na vitória
+		const reward = run.nodeState?.reward || {};
+		const money = battlePrize(encounter, run.settings) + (reward.money || 0);
 		run.money += money;
-		run.lastBattle = { opponent: encounter.name, result, gains, money };
+		const items: string[] = reward.items || [];
+		run.items.push(...items);
+		run.lastBattle = { opponent: encounter.name, result, gains, money, items };
 		// Captura: depois das decisões do time, o jogador escolhe se fica com o selvagem
 		const wild = encounter.kind === 'wild' || encounter.kind === 'legendary';
 		const mon = wild && run.settings.rules.capture === 'choose' ? capturedMon(run, encounter) : null;

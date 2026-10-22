@@ -622,6 +622,77 @@ describe('Expedition', () => {
 			assert.equal(runs.useBagItem(run, 'tm:surf', mon.uid), 'decisions', 'decida primeiro');
 		});
 
+		it('runs "?" events: direct results, decisions and battles with rewards', () => {
+			const events = require('../../../dist/server/chat-plugins/expedition/events');
+			const nodes = require('../../../dist/server/chat-plugins/expedition/nodes');
+			const run = runs.startRun(user, 'unitteste');
+			runs.chooseStarter(run, 0);
+			const map = runs.currentMap(run);
+			const node = { ...map.nodes[0], type: 'event' };
+			run.node = node.id;
+			const eventNode = nodes.getNodeType('event');
+			const context = { run, node, TL, lang: 'en' };
+			const start = (id, prepare) => {
+				if (prepare) prepare();
+				const event = events.getEvent(id);
+				const data = event.setup(run, node, random.seededRandom(run.seed, `test:${id}`));
+				run.nodeState = { event: id, data };
+				return data;
+			};
+			// Sorteio determinístico
+			assert.deepEqual(events.pickEvent(run, node), events.pickEvent(run, node));
+
+			// Carteira: ficar com o dinheiro
+			const wallet = start('wallet');
+			const money = run.money;
+			assert.equal(eventNode.choose(context, 'nada'), null);
+			assert.equal(eventNode.choose(context, 'keep'), false);
+			assert.equal(run.money, money + wallet.money);
+			assert.equal(eventNode.view(context).choices[0].id, 'continue', 'resultado e "Continuar"');
+			assert.equal(eventNode.choose(context, 'continue'), true);
+
+			// Evolução especial: Kadabra evolui (troca) para Alakazam
+			const evolution = start('evolution', () => { run.team[0].species = 'Kadabra'; });
+			assert.deepEqual(evolution.offers, [{ uid: run.team[0].uid, into: 'Alakazam' }], 'oferece Alakazam');
+			assert.equal(eventNode.choose(context, 'evolve:0'), false);
+			assert.equal(run.team[0].species, 'Alakazam');
+			assert.equal(events.getEvent('evolution').setup(run, node, random.seededRandom('x', 'y')), null,
+				'sem evolução especial, o evento não vale');
+
+			// Pokémon ferido: sem poção, a ajuda fica indisponível; com poção, ele entra pela captura
+			start('injured', () => { run.items = []; });
+			assert(eventNode.view(context).choices.find(choice => choice.id === 'help').disabled);
+			assert.equal(eventNode.choose(context, 'help'), null);
+			run.items = ['potion'];
+			assert.equal(eventNode.choose(context, 'help'), false);
+			assert.deepEqual(run.items, []);
+			assert.equal(run.decisions[run.decisions.length - 1].kind, 'capture');
+			run.decisions = [];
+
+			// Árvore de berries: chacoalhar começa uma batalha; a vitória dá a berry
+			const tree = start('berrytree');
+			assert.equal(eventNode.choose(context, 'shake'), false);
+			assert.deepEqual(run.nodeState.battle.species, tree.species);
+			const encounter = battles.currentEncounter(run);
+			assert.equal(encounter.kind, 'wild');
+			assert.equal(encounter.team.length, tree.species.length);
+			db.saveRun(run);
+			const battle = db.createBattle(run.id, run.act, run.node, [run.team[0].uid]);
+			battles.finishExpeditionBattle(battle.id, 'win', [{ index: 0, hp: 1, ppUsed: [0], fainted: false }]);
+			const after = db.getRun(run.id);
+			assert(after.items.includes(tree.berry), 'a berry da vitória');
+			assert.deepEqual(after.lastBattle.items, [tree.berry]);
+			assert.equal(after.nodeDone, true);
+
+			// Sombra: cura 30% do HP de quem não desmaiou
+			start('berrytree', () => {
+				run.team[0].hp = 0.5;
+				run.team[0].fainted = false;
+			});
+			assert.equal(eventNode.choose(context, 'rest'), false);
+			assert.equal(run.team[0].hp, 0.5 + events.SHADE_HEAL);
+		});
+
 		it('hides test variants from players and gives up runs', () => {
 			assert.equal(runs.startRun(user, 'teste'), 'disabled', 'a variação de teste é só para administradores');
 			assert.equal(runs.startRun(user, 'nope'), 'novariant');

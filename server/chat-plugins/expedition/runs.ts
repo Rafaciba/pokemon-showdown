@@ -93,6 +93,9 @@ export function enterNode(run: ExpeditionRun, nodeId: string): RunProblem | null
 	run.lastBattle = null;
 	run.nodeState = {};
 	run.path.push(`${run.act}:${nodeId}`);
+	const entered = findNode(map, nodeId);
+	const type = entered && getNodeType(entered.type);
+	if (entered && type?.onEnter) type.onEnter(run, entered);
 	getStore().saveRun(run);
 	return null;
 }
@@ -121,7 +124,8 @@ export function currentNodeView(
 	const node = findNode(currentMap(run), run.node!);
 	const type = node && getNodeType(node.type);
 	if (!node || !type) return null;
-	if (type.encounter) {
+	// Nós de batalha, e eventos que levaram a uma batalha
+	if (type.encounter || run.nodeState.battle) {
 		const encounter = currentEncounter(run);
 		if (!encounter) return null;
 		const name = encounter.name;
@@ -137,7 +141,8 @@ export function currentNodeView(
 		}
 		const open = hasOpenBattle(run);
 		const label = open ? TL`Continue the battle` : TL`Battle!`;
-		return { type: type.id, view: { text, choices: [{ id: 'battle', label }] } };
+		const view = type.view && !type.encounter ? type.view({ run, node, TL, lang }) : null;
+		return { type: type.id, view: { title: view?.title, text, choices: [{ id: 'battle', label }] } };
 	}
 	if (!type.view) return null;
 	return { type: type.id, view: type.view({ run, node, TL, lang }) };
@@ -149,7 +154,7 @@ export function chooseInNode(run: ExpeditionRun, choice: string, TL: Translator,
 	const node = findNode(map, run.node!);
 	const type = node && getNodeType(node.type);
 	if (!node || !type) return 'nonode';
-	if (type.encounter) {
+	if (type.encounter || run.nodeState.battle) {
 		if (choice !== 'battle') return 'badchoice';
 		return startOrResumeBattle(user, run) ? null : 'nobattle';
 	}

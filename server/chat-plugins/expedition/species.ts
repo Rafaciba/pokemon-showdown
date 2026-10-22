@@ -81,6 +81,17 @@ export function levelEvolutions(speciesName: string): Species[] {
 		.filter(evo => eligible(evo) && typeof evo.evoLevel === 'number');
 }
 
+/**
+ * Evoluções especiais (troca, pedra, amizade e outras sem nível): as que o jogador faz
+ * nos eventos "?" (decisão do usuário), e não por nível.
+ */
+export function specialEvolutions(speciesName: string): string[] {
+	const species = Dex.species.get(speciesName);
+	return species.evos.map(name => Dex.species.get(name))
+		.filter(evo => eligible(evo) && typeof evo.evoLevel !== 'number')
+		.map(evo => evo.name);
+}
+
 /** Nível em que um NPC chega a `evo`, tendo chegado à espécie anterior em `previousLevel`. */
 export function npcEvolutionLevel(evo: Species, previousLevel: number) {
 	if (typeof evo.evoLevel === 'number') return evo.evoLevel;

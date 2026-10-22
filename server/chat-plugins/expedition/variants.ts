@@ -26,7 +26,7 @@ export const TEST_VARIANT: ExpeditionVariant = {
 	id: 'teste',
 	name: TL => TL`Test expedition`,
 	description: TL => (
-		TL`A short expedition to test the mode: one act with wild Pokémon, trainers, a rest, an item and a boss.`
+		TL`A short expedition to test the mode: one act with wild Pokémon, trainers, events, items, PokéCenters, PokéMarts and a boss.`
 	),
 	adminOnly: true,
 	rules: {

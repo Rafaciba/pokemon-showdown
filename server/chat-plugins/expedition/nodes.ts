@@ -20,6 +20,7 @@ import { healMon } from './team';
 import { MEGA_STONE_CHANCE, pickItems, pickMegaStone } from './items';
 import { buyItem, consumable, consumableDescription, itemDisplay, shopStock, tmMove } from './economy';
 import { moveDescription } from './tooltips';
+import { getEvent, pickEvent } from './events';
 import { seededRandom } from './random';
 
 export interface NodeChoice {
@@ -27,6 +28,8 @@ export interface NodeChoice {
 	label: string;
 	/** Item mostrado no botão (ícone). */
 	item?: string;
+	/** Golpe da escolha (tooltip com os detalhes). */
+	move?: string;
 	/** Loja: preço, grupo, descrição e se a compra está indisponível (sem dinheiro ou esgotado). */
 	price?: number;
 	group?: string;
@@ -35,6 +38,8 @@ export interface NodeChoice {
 }
 
 export interface NodeView {
+	/** Título no lugar do nome do tipo de nó (ex.: o nome do evento). */
+	title?: string;
 	/** Texto do nó (sem HTML). */
 	text: string;
 	choices: NodeChoice[];
@@ -56,6 +61,8 @@ export interface NodeType {
 	/** Nó de batalha: a run mostra o encontro e a escolha começa a batalha (o nó termina com a vitória). */
 	encounter?: boolean;
 	view?(context: NodeContext): NodeView;
+	/** Ao entrar no nó (ex.: o evento "?" sorteia o evento e guarda em run.nodeState). */
+	onEnter?(run: ExpeditionRun, node: MapNode): void;
 	/**
 	 * Aplica a escolha à run (que é gravada depois). Devolve true se o nó terminou,
 	 * false se continua aberto, null se a escolha não existe, ou o código de um problema
@@ -72,18 +79,6 @@ export function registerNodeType(type: NodeType) {
 
 export function getNodeType(id: string): NodeType | null {
 	return registry.get(id) || null;
-}
-
-/** Nó ainda sem efeito (a loja e os eventos chegam nas próximas partes da etapa 3): só segue em frente. */
-function placeholder(id: string, icon: string, label: (TL: Translator) => string): NodeType {
-	return {
-		id, icon, label,
-		view: ({ TL }) => ({
-			text: TL`This kind of node is not playable yet: it arrives in a later development stage.`,
-			choices: [{ id: 'continue', label: TL`Continue` }],
-		}),
-		choose: (context, choice) => (choice === 'continue' ? true : null),
-	};
 }
 
 registerNodeType({ id: 'wild', icon: '\u{1F33F}', label: TL => TL`Wild Pokémon`, encounter: true });
@@ -156,7 +151,46 @@ registerNodeType({
 		return buyItem(context.run, context.node.id, choice.slice(4)) || false;
 	},
 });
-registerNodeType(placeholder('event', '\u{2753}', TL => TL`Event`));
+/** Evento "?" (events.ts): sorteado ao entrar; as escolhas levam a um resultado ou a uma batalha. */
+registerNodeType({
+	id: 'event',
+	icon: '\u{2753}',
+	label: TL => TL`Event`,
+	onEnter(run, node) {
+		run.nodeState = pickEvent(run, node) || {};
+	},
+	view(context) {
+		const { run, TL } = context;
+		const event = getEvent(run.nodeState.event);
+		if (!event) {
+			return { text: TL`Nothing happens here.`, choices: [{ id: 'continue', label: TL`Continue` }] };
+		}
+		const eventContext = { ...context, data: run.nodeState.data };
+		if (run.nodeState.outcome) {
+			return {
+				title: event.title(TL), text: event.result(eventContext, run.nodeState.outcome),
+				choices: [{ id: 'continue', label: TL`Continue` }],
+			};
+		}
+		return { title: event.title(TL), text: event.text(eventContext), choices: event.choices(eventContext) };
+	},
+	choose(context, choice) {
+		const { run } = context;
+		const event = getEvent(run.nodeState.event);
+		if (!event || run.nodeState.outcome) return choice === 'continue' ? true : null;
+		const offered = event.choices({ ...context, data: run.nodeState.data }).find(entry => entry.id === choice);
+		if (!offered || offered.disabled) return null;
+		const outcome = event.choose({ ...context, data: run.nodeState.data }, choice);
+		if (outcome === null || typeof outcome === 'string') return outcome;
+		if ('battle' in outcome) {
+			// A batalha fica no estado do nó; a vitória termina o nó (battles.ts)
+			run.nodeState = { ...run.nodeState, battle: outcome.battle, reward: outcome.reward || null };
+		} else {
+			run.nodeState = { ...run.nodeState, outcome: choice };
+		}
+		return false;
+	},
+});
 
 registerNodeType({
 	id: 'rest',

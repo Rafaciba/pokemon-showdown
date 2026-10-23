@@ -240,6 +240,8 @@ export interface ExpeditionVariant {
 	 * os desbloqueios do jogador (ex.: iniciais liberados).
 	 */
 	starterOptions(prng: PRNG, settings: RunSettings, unlocked?: { kind: string, ref: string }[]): RunMon[][];
+	/** Sprite do jogador fixado em cada time inicial ('' ou ausente = protagonista sorteado). */
+	starterSprites?: string[];
 }
 
 /** De onde vêm as expedições do banco (registrada pelo index.ts, no processo principal). */

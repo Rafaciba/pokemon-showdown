@@ -1002,7 +1002,7 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 		}
 		const options = {
 			name: user.name,
-			avatar: user.avatar,
+			avatar: this.avatarOf(user),
 		};
 		void this.stream.write(`>player ${player.slot} ` + JSON.stringify(options));
 	}
@@ -1011,7 +1011,7 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 		if (player && !player.active) {
 			player.active = true;
 			this.timer.checkActivity();
-			this.room.add(`|player|${player.slot}|${user.name}|${user.avatar}|`);
+			this.room.add(`|player|${player.slot}|${user.name}|${this.avatarOf(user)}|`);
 			Chat.runHandlers('onBattleJoin', player.slot, user, this);
 		}
 	}
@@ -1076,7 +1076,7 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 		if (playerOpts) {
 			const options = {
 				name: player.name,
-				avatar: user ? `${user.avatar}` : '',
+				avatar: user ? this.avatarOf(user) : '',
 				team: playerOpts.team || undefined,
 				rating: Math.round(playerOpts.rating || 0),
 			};
@@ -1151,6 +1151,14 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 		return null;
 	}
 
+	/**
+	 * pokemon-showdown-custom: avatar de um jogador na batalha. Por padrão, o do usuário;
+	 * as batalhas da Expedição usam o sprite da run (NpcBattle sobrescreve).
+	 */
+	avatarOf(user: User): string {
+		return `${user.avatar}`;
+	}
+
 	makePlayer(user: User) {
 		const num = (this.players.length + 1) as PlayerIndex;
 		return new RoomBattlePlayer(user, this, num);
@@ -1169,13 +1177,13 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
 			player.knownActive = true;
 			const options = {
 				name: player.name,
-				avatar: user.avatar,
+				avatar: this.avatarOf(user),
 				team: playerOpts?.team,
 			};
 			void this.stream.write(`>player ${slot} ` + JSON.stringify(options));
 			if (playerOpts) player.hasTeam = true;
 
-			this.room.add(`|player|${slot}|${player.name}|${user.avatar}|`);
+			this.room.add(`|player|${slot}|${player.name}|${this.avatarOf(user)}|`);
 			Chat.runHandlers('onBattleJoin', slot as string, user, this);
 		} else {
 			player.active = false;

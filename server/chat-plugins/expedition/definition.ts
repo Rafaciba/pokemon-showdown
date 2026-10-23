@@ -59,6 +59,8 @@ export interface ExpeditionDefinition {
 		teams: string[][],
 		/** Pool dos sorteados (vazio = os iniciais regionais do tema). */
 		pool: string[],
+		/** Times fixos: sprite do jogador de cada time ('' = protagonista sorteado; protagonists.ts). */
+		sprites: string[],
 	};
 	acts: { mode: 'complete' | 'custom', count: number };
 	startLevel: number;
@@ -117,7 +119,7 @@ export const DEFAULT_DEFINITION: ExpeditionDefinition = {
 	mode: 'standard',
 	format: { ...DEFAULT_FORMAT },
 	theme: { gens: [], species: [] },
-	starters: { size: 3, mode: 'random', teams: [[], [], []], pool: [] },
+	starters: { size: 3, mode: 'random', teams: [[], [], []], pool: [], sprites: ['', '', ''] },
 	acts: { mode: 'complete', count: COMPLETE_ACTS },
 	startLevel: 5,
 	levelCap: 95,
@@ -202,6 +204,12 @@ export function normalizeDefinition(raw: unknown): ExpeditionDefinition {
 			mode: oneOf(starters.mode, ['fixed', 'random'], d.starters.mode),
 			teams: [0, 1, 2].map(i => speciesList(teams[i], 3)),
 			pool: speciesList(starters.pool),
+			sprites: [0, 1, 2].map(i => {
+				const sprite = Array.isArray(starters.sprites) ? starters.sprites[i] : '';
+				// Só o formato do id: este arquivo é carregado com os formatos, sem o Config que a
+				// lista de sprites oficiais exige; o editor e o sorteio (protagonists.ts) conferem a lista
+				return typeof sprite === 'string' && /^[a-z0-9-]{1,40}$/.test(sprite) ? sprite : '';
+			}),
 		},
 		acts: {
 			mode: oneOf(acts.mode, ['complete', 'custom'], d.acts.mode),
@@ -550,6 +558,7 @@ export function variantFromDefinition(expedition: StoredExpedition): ExpeditionV
 			if (kind === 'elite') return AI_LEVELS[Math.min(AI_LEVELS.length - 1, AI_LEVELS.indexOf(def.ai.trainer[i]) + 1)];
 			return def.ai.boss[i];
 		},
+		starterSprites: def.starters.mode === 'fixed' ? [...def.starters.sprites] : [],
 		starterOptions(prng) {
 			const teams = def.starters.mode === 'fixed' ?
 				def.starters.teams.map(team => team.map(entry => Dex.species.get(entry).name)) : drawStarterTeams(prng, def);

@@ -73,6 +73,8 @@ interface NpcBattleOptions extends RoomBattleOptions {
 	ownerid: ID;
 	/** Batalha automática: esta IA joga pelo desafiante, que só assiste. */
 	autoPlayer?: NpcAI;
+	/** Sprite do desafiante nesta batalha, no lugar do avatar dele (a Expedição usa o da run). */
+	humanAvatar?: string;
 }
 
 /** O NPC é sempre o jogador 2; o desafiante, o jogador 1. */
@@ -155,6 +157,10 @@ export class NpcBattle extends RoomBattle {
 		void this.stream.write(`>player ${player.slot} ${JSON.stringify(options)}`);
 		player.hasTeam = true;
 		return player;
+	}
+
+	override avatarOf(user: User) {
+		return (user.id === this.options.ownerid && this.options.humanAvatar) || super.avatarOf(user);
 	}
 
 	override checkForcedUserSettings(user: User) {
@@ -435,6 +441,8 @@ export interface NpcBattleSettings {
 	turnSeconds?: number | null;
 	/** Batalha automática: IA que joga pelo desafiante. */
 	autoPlayer?: NpcAI;
+	/** Sprite do desafiante nesta batalha (vazio = o avatar dele). */
+	humanAvatar?: string;
 }
 
 /**
@@ -472,6 +480,7 @@ export function createNpcBattle(human: User, settings: NpcBattleSettings): GameR
 		hooks: settings.hooks || {},
 		ownerid: human.id,
 		autoPlayer: settings.autoPlayer,
+		humanAvatar: settings.humanAvatar,
 	};
 	const title = settings.title || `${human.name} vs. ${settings.npc.name}`;
 	const roomid = Rooms.global.prepBattleRoom(settings.format);

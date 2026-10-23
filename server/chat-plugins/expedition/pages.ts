@@ -33,7 +33,7 @@ import { getNodeType, type NodeChoice } from './nodes';
 import { BOSS_NODE, reachableNodes, type ActMap } from './map';
 import {
 	abandonRun, chooseInNode, chooseStarter, currentMap, currentNodeView, decideCapture, decideEvolve, decideLearn,
-	decideSpecial, ALL_BADGES,
+	decideSpecial, findRunMon, ALL_BADGES,
 	enterNode, runPhase, setHeldItem, startRun, useBagItem, usesBalls, variantAvailable, visitedNodes, BOX_SIZE,
 	type RunProblem,
 } from './runs';
@@ -401,7 +401,7 @@ function lastBattleSection(TL: Translator, run: ExpeditionRun) {
 	if (last?.result !== 'win') return '';
 	const opponent = Utils.escapeHTML(last.opponent);
 	const rows = last.gains.map(gain => {
-		const mon = run.team.find(entry => entry.uid === gain.uid);
+		const mon = findRunMon(run, gain.uid);
 		if (!mon) return '';
 		const species = Utils.escapeHTML(mon.species);
 		const exp = gain.exp;
@@ -411,7 +411,9 @@ function lastBattleSection(TL: Translator, run: ExpeditionRun) {
 		const moves = gain.learned.map(id => Utils.escapeHTML(Dex.moves.get(id).name)).join(', ');
 		const learned = moves ? TL`Learned ${moves}` : '';
 		// Quem desmaiou ganha metade (decisão do usuário)
-		const fainted = mon.fainted ? `<br /><small>${TL`Fainted: half Exp.`}</small>` : '';
+		// Quem está no Computador também (pedido do usuário, 2026-10-23)
+		const fainted = gain.stored ? `<br /><small>${TL`In the Computer: half Exp.`}</small>` :
+			mon.fainted ? `<br /><small>${TL`Fainted: half Exp.`}</small>` : '';
 		return `<tr><td><psicon pokemon="${species}" title="${species}" /> ${species}</td>` +
 			`<td>${TL`+${exp} Exp.`}${fainted}</td><td>${levelText}<br />${expBar(TL, mon)}</td>` +
 			`<td><small>${learned}</small></td></tr>`;
@@ -578,7 +580,7 @@ function pcSection(TL: Translator, lang: TextLanguage, run: ExpeditionRun, varia
 /** Primeira decisão pendente: golpe novo (qual esquecer), evolução (qual, ou adiar) ou captura. */
 function decisionSection(TL: Translator, lang: TextLanguage, run: ExpeditionRun, variantId: string) {
 	const decision = run.decisions[0];
-	const mon = decision.kind === 'capture' ? decision.mon : run.team.find(entry => entry.uid === decision.uid);
+	const mon = decision.kind === 'capture' ? decision.mon : findRunMon(run, decision.uid);
 	if (!mon) return '';
 	const species = Utils.escapeHTML(mon.species);
 	const icon = withTip(`<psicon pokemon="${species}" />`, monTooltip(TL, lang, mon));
@@ -683,9 +685,12 @@ function runSection(TL: Translator, lang: TextLanguage, run: ExpeditionRun, vari
 	const phase = runPhase(run);
 	if (phase === 'starter' && run.pending?.kind === 'starter') {
 		let buf = completeHeader(TL, run) + `<h3>${TL`Choose your starting team`}</h3>`;
+		// Cada time vem com o sprite do jogador para a run (protagonists.ts)
+		const avatars = run.pending.avatars || [];
 		run.pending.options.forEach((team, index) => {
 			const number = index + 1;
-			buf += `<h4>${TL`Team ${number}`}</h4>` + teamTable(TL, lang, team) +
+			const sprite = trainerSpriteImg(avatars[index], 64);
+			buf += `<h4>${sprite} ${TL`Team ${number}`}</h4>` + teamTable(TL, lang, team) +
 				`<p><button class="button" name="send" value="/expedicao inicial ${variantId},${index}">` +
 				`${TL`Choose this team`}</button></p>`;
 		});
@@ -696,7 +701,9 @@ function runSection(TL: Translator, lang: TextLanguage, run: ExpeditionRun, vari
 	const acts = run.settings.map.acts;
 	let buf = '';
 	const node = currentNodeView(run, TL, lang);
-	buf += completeHeader(TL, run) + `<p><strong>${TL`Money:`}</strong> ${formatMoney(run.money, lang)}</p>`;
+	// Sprite do jogador na run (o protagonista do time inicial)
+	const sprite = run.avatar ? `${trainerSpriteImg(run.avatar, 64)} ` : '';
+	buf += completeHeader(TL, run) + `<p>${sprite}<strong>${TL`Money:`}</strong> ${formatMoney(run.money, lang)}</p>`;
 	buf += lastBattleSection(TL, run);
 	if (phase === 'decision') {
 		buf += decisionSection(TL, lang, run, variantId);

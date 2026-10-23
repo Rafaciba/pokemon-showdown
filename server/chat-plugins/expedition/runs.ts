@@ -31,6 +31,7 @@ import { DEFAULT_BALL, getBall, rollCapture, withBall } from './capture';
 import { FEWER_CENTERS, hasPenalty, LESS_ACT_HEAL } from './difficulty';
 import { maxPP } from './tooltips';
 import { healMon } from './team';
+import { drawProtagonists } from './protagonists';
 
 export type RunProblem =
 	'novariant' | 'disabled' | 'active' | 'norun' | 'nostarter' | 'badchoice' | 'unreachable' | 'nodeopen' | 'nonode' |
@@ -138,7 +139,11 @@ export function startRun(user: User, variantId: string, startOptions: StartOptio
 	if (startOptions.shiny !== false && store.hasUnlock(user.id, 'shiny', 'starters', variant.id)) {
 		options = options.map(team => team.map(mon => ({ ...mon, shiny: true })));
 	}
-	return store.createRun({ userid: user.id, variant: variant.id, seed, settings, pending: { kind: 'starter', options } });
+	// Sprite do jogador: um protagonista sorteado por time, ou o fixado pelo admin (protagonists.ts)
+	const avatars = drawProtagonists(seededRandom(seed, 'avatars'), options.length, variant.starterSprites);
+	return store.createRun({
+		userid: user.id, variant: variant.id, seed, settings, pending: { kind: 'starter', options, avatars },
+	});
 }
 
 export function chooseStarter(run: ExpeditionRun, index: number): RunProblem | null {
@@ -146,6 +151,7 @@ export function chooseStarter(run: ExpeditionRun, index: number): RunProblem | n
 	const team = run.pending.options[index];
 	if (!team) return 'badchoice';
 	run.team = team.slice(0, run.settings.rules.teamSize).map(mon => withBall(mon, DEFAULT_BALL));
+	run.avatar = run.pending.avatars?.[index] || '';
 	run.pending = null;
 	run.money = run.settings.extra.startMoney || 0;
 	const capture = run.settings.rules.capture;
@@ -295,11 +301,16 @@ export function chooseInNode(run: ExpeditionRun, choice: string, TL: Translator,
 	return null;
 }
 
+/** Pokémon da run pelo uid: no time ou no Computador (que também ganha experiência e decide golpes e evoluções). */
+export function findRunMon(run: ExpeditionRun, uid: string) {
+	return run.team.find(entry => entry.uid === uid) || run.box.find(entry => entry.uid === uid);
+}
+
 /** Golpe novo com quatro já conhecidos: `slot` (0 a 3) é o esquecido; null = não aprende. */
 export function decideLearn(run: ExpeditionRun, slot: number | null): RunProblem | null {
 	const decision = run.decisions[0];
 	if (runPhase(run) !== 'decision' || decision?.kind !== 'learn') return 'nodecision';
-	const mon = run.team.find(entry => entry.uid === decision.uid);
+	const mon = findRunMon(run, decision.uid);
 	if (slot !== null) {
 		if (!mon || !Number.isInteger(slot) || !(slot >= 0 && slot < mon.moves.length)) return 'badchoice';
 		mon.moves[slot] = decision.move;
@@ -319,7 +330,7 @@ export function decideEvolve(run: ExpeditionRun, into: string | null): RunProble
 	const options = run.decisions.filter(entry => entry.kind === 'evolve' && entry.uid === uid);
 	if (into !== null) {
 		const option = options.find(entry => entry.kind === 'evolve' && toID(entry.into) === toID(into));
-		const mon = run.team.find(entry => entry.uid === uid);
+		const mon = findRunMon(run, uid);
 		if (!option || option.kind !== 'evolve' || !mon) return 'badchoice';
 		evolveMon(mon, option.into);
 	}

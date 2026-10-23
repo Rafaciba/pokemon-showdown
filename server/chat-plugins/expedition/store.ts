@@ -25,7 +25,8 @@ export type UnlockKind = 'starter' | 'item' | 'variant' | 'shiny';
 
 /** Escolha que a run espera antes de seguir (por enquanto, o time inicial). */
 export type RunPending =
-	{ kind: 'starter', options: RunMon[][] } |
+	/** `avatars`: o sprite do jogador que vem com cada time (protagonists.ts). */
+	{ kind: 'starter', options: RunMon[][], avatars?: string[] } |
 	/** Modo Completo: venceu o último ato com as 8 insígnias; encerrar como vencedor ou seguir ao ato especial. */
 	{ kind: 'special' };
 
@@ -58,6 +59,8 @@ export interface ExpeditionRun {
 	money: number;
 	/** Computador (etapa 8): Pokémon guardados fora do time. */
 	box: RunMon[];
+	/** Sprite do jogador na run, que veio com o time inicial ('' = o avatar do jogador). */
+	avatar: string;
 	/** Estado do nó atual (ex.: o que já foi comprado na loja); limpo ao entrar noutro nó. */
 	nodeState: AnyObject;
 	/** Configurações em vigor quando a run começou. */
@@ -209,6 +212,10 @@ const MIGRATIONS: Migration[] = [
 	DROP TABLE unlocks;
 	ALTER TABLE unlocks_new RENAME TO unlocks;
 	`,
+	// 8: sprite do jogador na run (o protagonista que veio com o time inicial)
+	`
+	ALTER TABLE runs ADD COLUMN avatar TEXT NOT NULL DEFAULT '';
+	`,
 ];
 
 type Row = Record<string, any>;
@@ -231,6 +238,7 @@ function toRun(row: Row): ExpeditionRun {
 		items: JSON.parse(row.items), pending: row.pending ? JSON.parse(row.pending) : null,
 		decisions: JSON.parse(row.decisions || '[]'), lastBattle: row.last_battle ? JSON.parse(row.last_battle) : null,
 		money: row.money || 0, nodeState: JSON.parse(row.node_state || '{}'), box: JSON.parse(row.box || '[]'),
+		avatar: row.avatar || '',
 		settings: JSON.parse(row.settings), startedAt: row.started_at, endedAt: row.ended_at,
 	};
 }
@@ -324,12 +332,12 @@ export class ExpeditionStore {
 	saveRun(run: ExpeditionRun) {
 		this.db.prepare(`
 			UPDATE runs SET status = ?, act = ?, node = ?, node_done = ?, path = ?, team = ?, items = ?, pending = ?,
-				decisions = ?, last_battle = ?, money = ?, node_state = ?, box = ?, ended_at = ?
+				decisions = ?, last_battle = ?, money = ?, node_state = ?, box = ?, avatar = ?, ended_at = ?
 			WHERE id = ?
 		`).run(run.status, run.act, run.node, run.nodeDone ? 1 : 0, JSON.stringify(run.path), JSON.stringify(run.team),
 			JSON.stringify(run.items), run.pending ? JSON.stringify(run.pending) : null, JSON.stringify(run.decisions),
 			run.lastBattle ? JSON.stringify(run.lastBattle) : null, run.money, JSON.stringify(run.nodeState || {}),
-			JSON.stringify(run.box || []), run.endedAt, run.id);
+			JSON.stringify(run.box || []), run.avatar || '', run.endedAt, run.id);
 	}
 
 	/** Runs em andamento de um jogador com batalha sem resultado (para retomar). */

@@ -43,7 +43,8 @@ import { getStore as getGymStore } from '../gym-challenge/state';
 import {
 	aiLevelLabel, formatLabel, renderProblem, selectBox, selectFilter, sortButton, teamIconsWithNames,
 } from '../gym-challenge/admin';
-import { trainerSpriteImg } from '../gym-challenge/trainer-sprites';
+import { isTrainerSprite, trainerSpriteImg } from '../gym-challenge/trainer-sprites';
+import { PROTAGONISTS } from './protagonists';
 import { fieldKey } from '../gym-challenge/challenges';
 import { BADGES } from '../gym-challenge/badge-catalog';
 import { badgeIcon, badgeLabel } from '../gym-challenge/badges';
@@ -146,6 +147,17 @@ function bankTrainers(): Map<number, BankTrainer & { avatar: string, team: strin
 }
 
 /**
+ * Sprite do jogador de um time fixo (pedido do usuário, 2026-10-23): um dos
+ * protagonistas ou sorteado. Um sprite oficial fora da lista (vindo de uma importação)
+ * continua na lista.
+ */
+function spriteSelect(TL: Translator, name: string, value = '') {
+	const ids = value && isTrainerSprite(value) && !PROTAGONISTS.includes(value) ? [value, ...PROTAGONISTS] : PROTAGONISTS;
+	const options: [string, string][] = [['', TL`Drawn protagonist`], ...ids.map((id): [string, string] => [id, id])];
+	return `${selectBox(name, options, value)} ${trainerSpriteImg(value, 40)}`;
+}
+
+/**
  * Seletor de Pokémon com busca (pedido do usuário, 2026-10-22: no lugar dos campos de
  * texto, para evitar erros de digitação). Os escolhidos vão separados por vírgula no
  * campo oculto `name`; a busca e as etiquetas rodam no cliente (client-custom.js, seção
@@ -221,7 +233,8 @@ function sectionValues(section: Section, name: string, def: ExpeditionDefinition
 		return {
 			size: String(def.starters.size), smode: def.starters.mode, teama: speciesText(def.starters.teams[0]),
 			teamb: speciesText(def.starters.teams[1]), teamc: speciesText(def.starters.teams[2]),
-			pool: speciesText(def.starters.pool),
+			pool: speciesText(def.starters.pool), spritea: def.starters.sprites[0], spriteb: def.starters.sprites[1],
+			spritec: def.starters.sprites[2],
 		};
 	case 'atos':
 		return {
@@ -291,6 +304,9 @@ function applySection(
 		def.starters.mode = values.smode === 'fixed' ? 'fixed' : 'random';
 		def.starters.teams = [values.teama, values.teamb, values.teamc].map(team => parseSpeciesText(team || ''));
 		def.starters.pool = parseSpeciesText(values.pool || '');
+		def.starters.sprites = [values.spritea, values.spriteb, values.spritec].map(id => (
+			id && isTrainerSprite(id) ? id : ''
+		));
 		break;
 	case 'atos':
 		def.acts = { mode: values.actmode === 'custom' ? 'custom' : 'complete', count: number(values.acts, def.acts.count) };
@@ -405,7 +421,7 @@ function sectionForm(
 		break;
 	}
 	case 'iniciais':
-		keys = ['size', 'smode', 'teama', 'teamb', 'teamc', 'pool'];
+		keys = ['size', 'smode', 'teama', 'teamb', 'teamc', 'spritea', 'spriteb', 'spritec', 'pool'];
 		fields.push(
 			field(TL`Pokémon per team`, selectBox('size', [['1', '1'], ['2', '2'], ['3', '3']], values.size)),
 			field(TL`Teams`, selectBox('smode', [
@@ -414,8 +430,12 @@ function sectionForm(
 			], values.smode), TL`The player always chooses one of 3 teams. Each team has a regional starter, and they do not repeat between the teams.`),
 			`<p><strong>${TL`Fixed teams`}</strong></p>`,
 			field(TL`Team 1`, speciesPicker(TL, 'teama', values.teama || '', 3)),
+			field(TL`Player sprite of team 1`, spriteSelect(TL, 'spritea', values.spritea)),
 			field(TL`Team 2`, speciesPicker(TL, 'teamb', values.teamb || '', 3)),
+			field(TL`Player sprite of team 2`, spriteSelect(TL, 'spriteb', values.spriteb)),
 			field(TL`Team 3`, speciesPicker(TL, 'teamc', values.teamc || '', 3)),
+			field(TL`Player sprite of team 3`, spriteSelect(TL, 'spritec', values.spritec),
+				TL`Each team comes with the player's sprite for the run. In drawn teams, and without a choice here, it is a drawn protagonist.`),
 			field(TL`Pool of the drawn teams`, speciesPicker(TL, 'pool', values.pool || ''),
 				TL`Empty = the regional starters of the theme. It needs at least 3 regional starters, and the Pokémon must fit the starting level.`),
 		);

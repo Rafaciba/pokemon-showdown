@@ -54,6 +54,8 @@ export interface MonGain {
 	to: number;
 	/** Golpes aprendidos na hora (com espaço livre). */
 	learned: string[];
+	/** Pokémon do Computador (ganhou metade). */
+	stored?: boolean;
 }
 
 export const DEFAULT_LEVELS_PER_ACT = 30;
@@ -275,16 +277,34 @@ export function nuzlockeBonus(teamCount: number, teamSize: number) {
 	return 1 + 0.5 * (teamSize - Math.max(1, teamCount)) / (teamSize - 1);
 }
 
-/** Fração da experiência para quem desmaiou na batalha (modo padrão). */
+/**
+ * Handicap de experiência (decisão do usuário, 2026-10-23, no lugar de 10% fixos): a
+ * calibração acerta o caminho médio, e quem pega poucos nós de batalha ficava muito
+ * abaixo da curva. Cada Pokémon abaixo do nível da curva no andar da batalha ganha
+ * `HANDICAP_PER_LEVEL` a mais por nível abaixo, até `HANDICAP_MAX`; na curva ou acima,
+ * nada muda.
+ */
+export const HANDICAP_PER_LEVEL = 0.05;
+export const HANDICAP_MAX = 0.5;
+
+/** Multiplicador do handicap para um Pokémon do nível dado, com a curva em `curve`. */
+export function expHandicap(level: number, curve: number | undefined) {
+	if (!curve || level >= curve) return 1;
+	return 1 + Math.min(HANDICAP_MAX, HANDICAP_PER_LEVEL * Math.floor(curve - level));
+}
+
+/** Fração da experiência para quem desmaiou na batalha (modo padrão) e para quem está no Computador. */
 export const FAINTED_EXP_SHARE = 0.5;
 
 /**
  * Experiência de uma vitória para o time: cada Pokémon ganha a experiência da batalha
- * (`battleExp`); quem desmaiou ganha `FAINTED_EXP_SHARE` dela. Devolve as decisões
- * novas (golpes e evoluções) e o ganho de cada Pokémon.
+ * (`battleExp`); quem desmaiou ganha `FAINTED_EXP_SHARE` dela. Com `stored` (os Pokémon
+ * do Computador; pedido do usuário, 2026-10-23), todos ganham como se tivessem
+ * desmaiado. Com `curve` (nível da curva no andar), vale o handicap (`expHandicap`). Devolve as decisões novas (golpes e evoluções) e o ganho de cada Pokémon.
  */
 export function gainExperience(
-	team: RunMon[], defeated: { species: string, level: number }[], trainer: boolean, multiplier: number, theme?: Theme
+	team: RunMon[], defeated: { species: string, level: number }[], trainer: boolean, multiplier: number, theme?: Theme,
+	options: { stored?: boolean, curve?: number } = {}
 ): { decisions: RunDecision[], gains: MonGain[] } {
 	const decisions: RunDecision[] = [];
 	const gains: MonGain[] = [];
@@ -292,11 +312,12 @@ export function gainExperience(
 		if (mon.level >= MAX_LEVEL) continue;
 		const before = mon.level;
 		const expBefore = mon.exp;
-		const share = mon.fainted ? FAINTED_EXP_SHARE : 1;
+		const share = (mon.fainted || options.stored ? FAINTED_EXP_SHARE : 1) * expHandicap(mon.level, options.curve);
 		mon.exp += Math.floor(battleExp(defeated, mon.level, trainer, multiplier) * share);
 		mon.exp = Math.min(mon.exp, expForLevel(MAX_LEVEL));
 		mon.level = levelForExp(mon.exp);
 		const gain: MonGain = { uid: mon.uid, exp: mon.exp - expBefore, from: before, to: mon.level, learned: [] };
+		if (options.stored) gain.stored = true;
 		gains.push(gain);
 		if (mon.level === before) continue;
 		const result = levelUpEffects(mon, before, theme);

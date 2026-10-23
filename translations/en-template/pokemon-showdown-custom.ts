@@ -937,4 +937,10 @@ export const translations: TranslationCatalog = {
 	"Optional. Each Pokémon brings its whole evolution line. With a list, the generations do not count.": null,
 	"Empty = the regional starters of the theme. It needs at least 3 regional starters, and the Pokémon must fit the starting level.": null,
 	"Between acts, your team recovers only half of its HP and PP.": null,
+	"Drawn protagonist": null,
+	"Player sprite of team 1": null,
+	"Player sprite of team 2": null,
+	"Player sprite of team 3": null,
+	"Each team comes with the player's sprite for the run. In drawn teams, and without a choice here, it is a drawn protagonist.": null,
+	"In the Computer: half Exp.": null,
 };

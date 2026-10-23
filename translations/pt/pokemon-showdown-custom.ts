@@ -937,4 +937,10 @@ export const translations: TranslationCatalog = {
 	"Optional. Each Pokémon brings its whole evolution line. With a list, the generations do not count.": "Opcional. Cada Pokémon traz a linha evolutiva inteira. Com lista, as gerações não contam.",
 	"Empty = the regional starters of the theme. It needs at least 3 regional starters, and the Pokémon must fit the starting level.": "Vazio = os iniciais regionais do tema. Precisa de pelo menos 3 iniciais regionais, e os Pokémon precisam caber no nível inicial.",
 	"Between acts, your team recovers only half of its HP and PP.": "Entre os atos, o time recupera só metade do HP e do PP.",
+	"Drawn protagonist": "Protagonista sorteado",
+	"Player sprite of team 1": "Sprite do jogador no time 1",
+	"Player sprite of team 2": "Sprite do jogador no time 2",
+	"Player sprite of team 3": "Sprite do jogador no time 3",
+	"Each team comes with the player's sprite for the run. In drawn teams, and without a choice here, it is a drawn protagonist.": "Cada time vem com o sprite do jogador para a run. Nos times sorteados, e sem escolha aqui, é um protagonista sorteado.",
+	"In the Computer: half Exp.": "No Computador: metade da Exp.",
 };

@@ -162,6 +162,22 @@ describe('Expedition', () => {
 			assert.deepEqual(definition.normalizeDefinition(null), definition.DEFAULT_DEFINITION);
 		});
 
+		it('keeps only official sprites as the fixed player sprites, used only with fixed teams', () => {
+			const def = definition.normalizeDefinition({ starters: { mode: 'fixed', sprites: ['red', '<img>', 7] } });
+			assert.deepEqual(def.starters.sprites, ['red', '', '']);
+			const built = definition.variantFromDefinition({ id: 9, name: 'S', status: 'open', definition: def });
+			assert.deepEqual(built.starterSprites, ['red', '', '']);
+			const drawn = definition.variantFromDefinition({
+				id: 10, name: 'D', status: 'open', definition: { ...def, starters: { ...def.starters, mode: 'random' } },
+			});
+			assert.deepEqual(drawn.starterSprites, [], 'times sorteados: protagonistas sorteados');
+			const { drawProtagonists, PROTAGONISTS } = require('../../../dist/server/chat-plugins/expedition/protagonists');
+			const avatars = drawProtagonists(random.seededRandom('avatars', 'test'), 3, built.starterSprites);
+			assert.equal(avatars[0], 'red');
+			assert(avatars.slice(1).every(id => PROTAGONISTS.includes(id) && id !== 'red'), avatars.join());
+			assert.notEqual(avatars[1], avatars[2]);
+		});
+
 		it('turns a definition into a variant with the decided map and levels', () => {
 			const def = definition.normalizeDefinition({});
 			const built = definition.variantFromDefinition({ id: 7, name: 'A <b>', status: 'open', definition: def });
@@ -453,6 +469,34 @@ describe('Expedition', () => {
 			assert.equal(bulba.ability, 'Overgrow');
 		});
 
+		it('gives the Pokémon in the Computer half the experience, as if fainted', () => {
+			const prng = random.seededRandom('xp-box', 'test');
+			const active = team.createMon(prng, 'Bulbasaur', 5, 'a');
+			const stored = team.createMon(prng, 'Bulbasaur', 5, 'b');
+			const defeated = [{ species: 'Onix', level: 20 }];
+			const full = progression.gainExperience([active], defeated, true, 10).gains[0];
+			const half = progression.gainExperience([stored], defeated, true, 10, undefined, { stored: true }).gains[0];
+			assert.equal(half.exp, Math.floor(full.exp * progression.FAINTED_EXP_SHARE));
+			assert.equal(half.stored, true);
+			assert.equal(full.stored, undefined);
+		});
+
+		it('gives Pokémon below the curve a handicap: 5% per level below, up to 50%', () => {
+			assert.equal(progression.expHandicap(30, 30), 1, 'na curva, nada muda');
+			assert.equal(progression.expHandicap(35, 30), 1, 'acima, nada muda');
+			assert.equal(progression.expHandicap(26, 30), 1.2);
+			assert.equal(progression.expHandicap(29.5, 30), 1, 'menos de um nível abaixo');
+			assert.equal(progression.expHandicap(5, 30), 1.5, 'teto de 50%');
+			assert.equal(progression.expHandicap(5, undefined), 1, 'sem curva (ato especial)');
+			const prng = random.seededRandom('xp-handicap', 'test');
+			const onCurve = team.createMon(prng, 'Bulbasaur', 20, 'a');
+			const behind = team.createMon(prng, 'Bulbasaur', 20, 'b');
+			const defeated = [{ species: 'Onix', level: 20 }];
+			const normal = progression.gainExperience([onCurve], defeated, true, 10, undefined, { curve: 20 }).gains[0];
+			const helped = progression.gainExperience([behind], defeated, true, 10, undefined, { curve: 24 }).gains[0];
+			assert.equal(helped.exp, Math.floor(normal.exp * 1.2));
+		});
+
 		it('gives a smaller Nuzlocke team a little more experience', () => {
 			assert.equal(progression.nuzlockeBonus(6, 6), 1);
 			assert.equal(progression.nuzlockeBonus(1, 6), 1.5);
@@ -515,8 +559,16 @@ describe('Expedition', () => {
 			assert.equal(runs.runPhase(run), 'starter');
 			assert.equal(runs.enterNode(run, '0-0'), 'norun', 'primeiro o time inicial');
 			assert.equal(runs.chooseStarter(run, 5), 'badchoice');
+			// Cada time vem com um protagonista sorteado, sem repetir; escolher o time escolhe o sprite
+			const { PROTAGONISTS } = require('../../../dist/server/chat-plugins/expedition/protagonists');
+			const avatars = run.pending.avatars;
+			assert.equal(avatars.length, run.pending.options.length);
+			assert(avatars.every(id => PROTAGONISTS.includes(id)), avatars.join());
+			assert.equal(new Set(avatars).size, avatars.length);
 			assert.equal(runs.chooseStarter(run, 1), null);
 			assert.equal(run.team[0].uid, 'u1');
+			assert.equal(run.avatar, avatars[1]);
+			assert.equal(state.getStore().getRun(run.id).avatar, avatars[1], 'gravado na run');
 
 			for (let act = 1; act <= 2; act++) {
 				const map = runs.currentMap(run);
@@ -1280,6 +1332,11 @@ describe('Expedition', () => {
 			run.team.push({ ...run.team[0], uid: 'down', fainted: true, hp: 0 });
 			assert.equal(rest.choose(context, 'deposit:' + run.team[0].uid), 'lastmon');
 			assert.equal(rest.choose(context, 'deposit:down'), false, 'o desmaiado pode ser guardado');
+			// Quem está no Computador também decide golpes novos (ganha experiência)
+			run.box[0].moves = ['growl', 'leer', 'scratch', 'pound'];
+			run.decisions = [{ kind: 'learn', uid: run.box[0].uid, move: 'tackle' }];
+			assert.equal(runs.decideLearn(run, 2), null);
+			assert.equal(run.box[0].moves[2], 'tackle');
 			// Golpe novo: o espaço precisa ser um número inteiro
 			run.decisions = [{ kind: 'learn', uid: run.team[0].uid, move: 'tackle' }];
 			run.team[0].moves = ['growl', 'leer', 'scratch', 'pound'];

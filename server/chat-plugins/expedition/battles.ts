@@ -23,10 +23,10 @@ import { createNpcBattle, NpcBattle, type NpcBattleHooks, type NpcBattleResult }
 import { createAI } from '../gym-challenge/ai';
 import { getStore } from './state';
 import { getVariant } from './variant';
-import { findNode, generateAct } from './map';
+import { BOSS_NODE, findNode, generateAct } from './map';
 import { encounterFromSpec, generateEncounter, type Encounter } from './encounters';
 import { EXPEDITION_STATE_LINE, expeditionFormatId, PERSISTENT_STATUSES, type MonFinalState } from './formats';
-import { expRates, gainExperience, nuzlockeBonus } from './progression';
+import { curveLevel, expRates, gainExperience, nuzlockeBonus } from './progression';
 import { healMon, type RunMon } from './team';
 import { battlePrize } from './economy';
 import { eliteReward } from './items';
@@ -111,6 +111,8 @@ function openBattleRoom(user: User, run: ExpeditionRun, encounter: Encounter, ba
 		title: `${user.name} vs. ${encounter.name}`,
 		hooks: hooksFor(battle.id),
 		autoPlayer: auto ? createAI(variant.autoAILevel || 'hard') : undefined,
+		// Sprite da run (o protagonista do time inicial); sem ele, o avatar do jogador
+		humanAvatar: run.avatar || undefined,
 	});
 	if (!room) return null;
 	getStore().setBattleRoom(battle.id, room.roomid);
@@ -260,8 +262,16 @@ export function finishExpeditionBattle(battleId: number, result: NpcBattleResult
 		const rates = expRates(run.settings);
 		let multiplier = rates.multiplier * (encounter.kind === 'boss' ? rates.boss : 1);
 		if (nuzlocke) multiplier *= nuzlockeBonus(run.team.length, run.settings.rules.teamSize);
-		const { decisions, gains } = gainExperience(run.team, defeated, encounter.trainer, multiplier, run.settings.theme);
+		// Handicap: quem está abaixo da curva do andar ganha mais (fora do ato especial, que é no nível 100)
+		const floor = run.node === BOSS_NODE ? run.settings.map.floors : Number(run.node.split('-')[0]);
+		const curve = run.act <= run.settings.map.acts ? curveLevel(run.settings, run.act, floor) : undefined;
+		const theme = run.settings.theme;
+		const { decisions, gains } = gainExperience(run.team, defeated, encounter.trainer, multiplier, theme, { curve });
 		run.decisions.push(...decisions);
+		// Computador: os guardados ganham como se tivessem desmaiado (pedido do usuário)
+		const box = gainExperience(run.box, defeated, encounter.trainer, multiplier, theme, { stored: true, curve });
+		run.decisions.push(...box.decisions);
+		gains.push(...box.gains);
 		// Dinheiro: só contra treinadores e o chefe, como nos jogos (economy.ts)
 		// Recompensa de um evento (desafio do veterano, árvore de berries): na vitória
 		const reward = run.nodeState?.reward || {};

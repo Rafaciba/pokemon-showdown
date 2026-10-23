@@ -26,7 +26,7 @@ import { getVariant } from './variant';
 import { BOSS_NODE, findNode, generateAct } from './map';
 import { encounterFromSpec, generateEncounter, type Encounter } from './encounters';
 import { EXPEDITION_STATE_LINE, expeditionFormatId, PERSISTENT_STATUSES, type MonFinalState } from './formats';
-import { curveLevel, expRates, gainExperience, nuzlockeBonus } from './progression';
+import { actRates, curveLevel, expRates, gainExperience, nuzlockeBonus } from './progression';
 import { healMon, type RunMon } from './team';
 import { battlePrize } from './economy';
 import { eliteReward } from './items';
@@ -259,7 +259,7 @@ export function finishExpeditionBattle(battleId: number, result: NpcBattleResult
 		// se menor, ganha um pouco mais
 		const nuzlocke = run.settings.rules.faint === 'nuzlocke';
 		if (nuzlocke) run.team = run.team.filter(mon => !mon.fainted);
-		const rates = expRates(run.settings);
+		const rates = actRates(expRates(run.settings), run.act);
 		let multiplier = rates.multiplier * (encounter.kind === 'boss' ? rates.boss : 1);
 		if (nuzlocke) multiplier *= nuzlockeBonus(run.team.length, run.settings.rules.teamSize);
 		// Handicap: quem está abaixo da curva do andar ganha mais (fora do ato especial, que é no nível 100)

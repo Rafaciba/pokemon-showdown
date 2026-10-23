@@ -481,12 +481,12 @@ describe('Expedition', () => {
 			assert.equal(full.stored, undefined);
 		});
 
-		it('gives Pokémon below the curve a handicap: 5% per level below, up to 50%', () => {
+		it('gives Pokémon below the curve a handicap: 10% per level below, up to 60%', () => {
 			assert.equal(progression.expHandicap(30, 30), 1, 'na curva, nada muda');
 			assert.equal(progression.expHandicap(35, 30), 1, 'acima, nada muda');
-			assert.equal(progression.expHandicap(26, 30), 1.2);
+			assert.equal(progression.expHandicap(26, 30), 1.4);
 			assert.equal(progression.expHandicap(29.5, 30), 1, 'menos de um nível abaixo');
-			assert.equal(progression.expHandicap(5, 30), 1.5, 'teto de 50%');
+			assert.equal(progression.expHandicap(5, 30), 1.6, 'teto de 60%');
 			assert.equal(progression.expHandicap(5, undefined), 1, 'sem curva (ato especial)');
 			const prng = random.seededRandom('xp-handicap', 'test');
 			const onCurve = team.createMon(prng, 'Bulbasaur', 20, 'a');
@@ -494,7 +494,7 @@ describe('Expedition', () => {
 			const defeated = [{ species: 'Onix', level: 20 }];
 			const normal = progression.gainExperience([onCurve], defeated, true, 10, undefined, { curve: 20 }).gains[0];
 			const helped = progression.gainExperience([behind], defeated, true, 10, undefined, { curve: 24 }).gains[0];
-			assert.equal(helped.exp, Math.floor(normal.exp * 1.2));
+			assert.equal(helped.exp, Math.floor(normal.exp * 1.4));
 		});
 
 		it('gives a smaller Nuzlocke team a little more experience', () => {
@@ -506,7 +506,7 @@ describe('Expedition', () => {
 		it('follows the level curve per act and calibrates the experience to it', () => {
 			const { TEST_VARIANT } = require('../../../dist/server/chat-plugins/expedition/variants');
 			const settings = variant.resolveSettings(TEST_VARIANT);
-			const { multiplier, boss } = progression.expRates(settings);
+			const { multiplier, boss } = progression.actRates(progression.expRates(settings), 1);
 			assert(multiplier > 0);
 			assert.equal(boss, 1, 'um ato só: o chefe não tem saída');
 			assert.equal(progression.nodeProgress(settings, 1, 0), 0);
@@ -517,10 +517,15 @@ describe('Expedition', () => {
 			assert.equal(progression.curveLevel({ ...settings, map: { ...settings.map, acts: 3 } }, 3, settings.map.floors), 95);
 			assert.equal(progression.curveLevel(settings, 5, settings.map.floors), 100, 'até o 100');
 			const longer = { ...settings, map: { ...settings.map, floors: 20 } };
-			assert(progression.expRates(longer).multiplier < multiplier, 'mais andares, menos experiência por batalha');
+			assert(progression.actRates(progression.expRates(longer), 1).multiplier < multiplier,
+				'mais andares, menos experiência por batalha');
+			// Calibração ato por ato; o ato especial usa as taxas do último
 			const threeActs = { ...settings, map: { ...settings.map, acts: 3 } };
 			const rates = progression.expRates(threeActs);
-			assert(rates.boss > 0 && rates.boss < 1, `peso do chefe ${rates.boss}`);
+			assert.equal(rates.acts.length, 3);
+			assert(rates.acts[0].boss > 0 && rates.acts[0].boss < 1, `peso do chefe ${rates.acts[0].boss}`);
+			assert.equal(rates.acts[2].boss, 1, 'último ato: sem saída');
+			assert.deepEqual(progression.actRates(rates, 4), rates.acts[2]);
 		});
 	});
 

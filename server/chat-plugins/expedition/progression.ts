@@ -106,7 +106,7 @@ export function opponentTeamSize(kind: EncounterKind, progress: number, prng: PR
 const sampleCache = new Map<string, string[]>();
 
 /** Espécies típicas de um nível (amostra fixa do sorteio da Pokédex, ou dos lendários, no estágio do nível). */
-function typicalSpecies(level: number, legendary = false, theme?: Theme) {
+export function typicalSpecies(level: number, legendary = false, theme?: Theme) {
 	const key = `${legendary ? 'L' : ''}${level}:${theme ? JSON.stringify(theme) : ''}`;
 	let sample = sampleCache.get(key);
 	if (!sample) {
@@ -173,48 +173,61 @@ export function calibrationPaths(settings: RunSettings): CalibrationStep[][] {
 	return paths;
 }
 
-/** Taxas de experiência de uma variação (calibradas). */
-export interface ExpRates {
-	/** Multiplicador de todas as vitórias. */
+/** Taxas de experiência de um ato (calibradas). */
+export interface ActRates {
+	/** Multiplicador das vitórias do ato. */
 	multiplier: number;
 	/** Peso extra da vitória contra o chefe (menor que 1: o chefe não joga o time muito acima do ato seguinte). */
 	boss: number;
 }
 
+/** Taxas de experiência de uma variação: uma por ato (o ato especial usa as do último). */
+export interface ExpRates {
+	acts: ActRates[];
+}
+
+/** Taxas do ato dado (depois do último, as do último). */
+export function actRates(rates: ExpRates, act: number): ActRates {
+	return rates.acts[Math.min(act, rates.acts.length) - 1] || { multiplier: 1, boss: 1 };
+}
+
+/**
+ * Meta de chegada ao chefe, em níveis acima da curva no andar do chefe: o nível do chefe
+ * (decisão do usuário, 2026-10-23: um caminho equilibrado chega perto do chefe, e quem
+ * faz só batalhas chega acima, como compensação por não pegar itens, lojas e curas).
+ */
+const ARRIVAL_MARGIN = 2;
 /** Nível médio a mais na saída do chefe, em relação ao nível dele (os atos seguintes começam equilibrados). */
 const BOSS_EXIT_MARGIN = 1;
 
 /**
- * Diferença média, nos caminhos da calibração, entre o nível do time e a meta: na
- * chegada a cada chefe (meta = curva no andar do chefe) e na saída dos chefes que não
- * são o último (meta = nível do chefe + BOSS_EXIT_MARGIN). Positiva = acima.
+ * Diferença média, nos caminhos da calibração, entre o nível do time e a meta no ato
+ * dado: na chegada ao chefe (meta = curva no andar do chefe + ARRIVAL_MARGIN) e na saída
+ * (meta = nível do chefe + BOSS_EXIT_MARGIN). Positiva = acima. Os atos anteriores usam
+ * as taxas já calibradas.
  */
-function calibrationError(settings: RunSettings, paths: CalibrationStep[][], rates: ExpRates) {
+function calibrationError(settings: RunSettings, paths: CalibrationStep[][], acts: ActRates[], act: number) {
 	let arrival = 0;
-	let arrivals = 0;
 	let exit = 0;
-	let exits = 0;
 	for (const steps of paths) {
 		let exp = expForLevel(settings.extra.startLevel);
 		for (const step of steps) {
+			if (step.act > act) break;
+			const rates = acts[step.act - 1];
 			const winner = levelForExp(exp);
-			if (step.boss) {
-				arrival += winner - curveLevel(settings, step.act, settings.map.floors);
-				arrivals++;
-			}
+			const target = curveLevel(settings, act, settings.map.floors) + ARRIVAL_MARGIN;
+			if (step.boss && step.act === act) arrival += winner - target;
 			if (!step.count) continue;
 			const sample = typicalSpecies(step.level, step.legendary, settings.theme);
 			const average = sample.reduce((sum, species) => (
 				sum + expReward({ species, level: step.level }, winner, step.trainer, rates.multiplier)
 			), 0) / sample.length;
 			exp = Math.min(expForLevel(MAX_LEVEL), exp + Math.sqrt(step.count) * average * (step.boss ? rates.boss : 1));
-			if (step.boss && step.act < settings.map.acts) {
-				exit += levelForExp(exp) - (step.level + BOSS_EXIT_MARGIN);
-				exits++;
-			}
+			if (step.boss && step.act === act) exit += levelForExp(exp) - (step.level + BOSS_EXIT_MARGIN);
 		}
 	}
-	return { arrival: arrivals ? arrival / arrivals : 0, exit: exits ? exit / exits : 0 };
+	const count = paths.length || 1;
+	return { arrival: arrival / count, exit: exit / count };
 }
 
 function bisect(low: number, high: number, tooHigh: (value: number) => boolean) {
@@ -230,33 +243,39 @@ function bisect(low: number, high: number, tooHigh: (value: number) => boolean) 
  * Teto do multiplicador de experiência. Com chances que deixam o mapa quase sem
  * batalhas (o painel permite zerar os pesos), a calibração não tem o que medir e
  * subiria até o limite da busca: uma vitória levaria o time do nível 6 ao 100. As
- * variações normais ficam bem abaixo (a de teste, por volta de 44).
+ * variações normais ficam bem abaixo.
  */
 const MAX_EXP_MULTIPLIER = 120;
 
 const ratesCache = new Map<string, ExpRates>();
 
 /**
- * Taxas de experiência da variação. O multiplicador acerta a chegada aos chefes; o
- * peso do chefe acerta a saída (com um ato só, não há saída, e o peso fica 1). As
- * duas buscas se alternam algumas vezes, porque uma mexe na outra.
+ * Taxas de experiência da variação, ato por ato (2026-10-23: com um multiplicador só, o
+ * 1º ato ficava abaixo e os outros compensavam acima). Em cada ato, o multiplicador acerta
+ * a chegada ao chefe; depois, o peso do chefe acerta a saída (no último ato, sem saída,
+ * o peso fica 1).
  */
 export function expRates(settings: RunSettings): ExpRates {
 	const key = JSON.stringify([settings.map, settings.extra.startLevel, settings.extra.levelsPerAct, settings.theme]);
 	const cached = ratesCache.get(key);
 	if (cached) return cached;
 	const paths = calibrationPaths(settings);
-	const rates: ExpRates = { multiplier: 1, boss: 1 };
-	for (let round = 0; round < (settings.map.acts > 1 ? 4 : 1); round++) {
+	const acts: ActRates[] = [];
+	for (let act = 1; act <= settings.map.acts; act++) {
+		const rates: ActRates = { multiplier: 1, boss: 1 };
+		acts.push(rates);
 		rates.multiplier = bisect(0.05, MAX_EXP_MULTIPLIER, value => (
-			calibrationError(settings, paths, { ...rates, multiplier: value }).arrival >= 0
+			calibrationError(settings, paths, [...acts.slice(0, -1), { ...rates, multiplier: value }], act).arrival >= 0
 		));
-		if (settings.map.acts > 1) {
-			rates.boss = bisect(0.01, 1, value => calibrationError(settings, paths, { ...rates, boss: value }).exit >= 0);
+		if (act < settings.map.acts) {
+			rates.boss = bisect(0.01, 1, value => (
+				calibrationError(settings, paths, [...acts.slice(0, -1), { ...rates, boss: value }], act).exit >= 0
+			));
 		}
 	}
-	ratesCache.set(key, rates);
-	return rates;
+	const result = { acts };
+	ratesCache.set(key, result);
+	return result;
 }
 
 /** Experiência de uma vitória para um Pokémon do nível dado: a média dos derrotados vezes a raiz da quantidade. */
@@ -278,14 +297,14 @@ export function nuzlockeBonus(teamCount: number, teamSize: number) {
 }
 
 /**
- * Handicap de experiência (decisão do usuário, 2026-10-23, no lugar de 10% fixos): a
- * calibração acerta o caminho médio, e quem pega poucos nós de batalha ficava muito
- * abaixo da curva. Cada Pokémon abaixo do nível da curva no andar da batalha ganha
+ * Handicap de experiência (decisão do usuário, 2026-10-23, no lugar de 10% fixos; depois
+ * aumentado de 5% até 50% para 10% até 60%): a calibração acerta o caminho médio, e quem
+ * pega poucos nós de batalha ficava muito abaixo da curva. Cada Pokémon abaixo do nível da curva no andar da batalha ganha
  * `HANDICAP_PER_LEVEL` a mais por nível abaixo, até `HANDICAP_MAX`; na curva ou acima,
  * nada muda.
  */
-export const HANDICAP_PER_LEVEL = 0.05;
-export const HANDICAP_MAX = 0.5;
+export const HANDICAP_PER_LEVEL = 0.1;
+export const HANDICAP_MAX = 0.6;
 
 /** Multiplicador do handicap para um Pokémon do nível dado, com a curva em `curve`. */
 export function expHandicap(level: number, curve: number | undefined) {
@@ -300,7 +319,8 @@ export const FAINTED_EXP_SHARE = 0.5;
  * Experiência de uma vitória para o time: cada Pokémon ganha a experiência da batalha
  * (`battleExp`); quem desmaiou ganha `FAINTED_EXP_SHARE` dela. Com `stored` (os Pokémon
  * do Computador; pedido do usuário, 2026-10-23), todos ganham como se tivessem
- * desmaiado. Com `curve` (nível da curva no andar), vale o handicap (`expHandicap`). Devolve as decisões novas (golpes e evoluções) e o ganho de cada Pokémon.
+ * desmaiado. Com `curve` (nível da curva no andar), vale o handicap (`expHandicap`).
+ * Devolve as decisões novas (golpes e evoluções) e o ganho de cada Pokémon.
  */
 export function gainExperience(
 	team: RunMon[], defeated: { species: string, level: number }[], trainer: boolean, multiplier: number, theme?: Theme,

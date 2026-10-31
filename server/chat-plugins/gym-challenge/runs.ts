@@ -338,9 +338,14 @@ export function recordResult(battleId: number, result: NpcBattleResult): RunStat
 	} else if (result === 'loss' && stage.kind !== 'gym' && challenge.hasElite4) {
 		message = `The Elite Four starts over from the first member.`;
 	}
-	// A imagem fica fora do <strong>: o texto continua num nó só (tradução na interface)
-	if (message && room) {
-		room.add(`|raw|<div class="broadcast-blue">${earned ? badgeImage : ''}<strong>${message}</strong></div>`).update();
+	// A imagem fica fora do <strong>: o texto continua num nó só (tradução na interface).
+	// O botão de volta ao desafio vem sempre (pedido do usuário, 2026-10-30): o cliente o
+	// põe no lugar dos botões do PS e volta sozinho à página (client-custom.js)
+	if (room) {
+		const text = message ? `${earned ? badgeImage : ''}<strong>${message}</strong><br />` : '';
+		room.add(`|raw|<div class="broadcast-blue">${text}` +
+			`<button class="button" name="gymReturn" value="view-ginasios-desafio-${run.challengeId}">` +
+			`Back to the challenge</button></div>`).update();
 	}
 	refreshChallengePage(run.userid, run.challengeId);
 	return status;

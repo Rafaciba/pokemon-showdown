@@ -77,6 +77,32 @@ interface NpcBattleOptions extends RoomBattleOptions {
 	humanAvatar?: string;
 }
 
+/**
+ * Sala dos avisos das batalhas contra NPC, do Desafio de Ginásios e da Expedição
+ * (decisão do usuário, 2026-10-30): o Lobby ficava cheio de avisos, um por nó de
+ * batalha na Expedição. As batalhas continuam públicas; o aviso só muda de sala, e
+ * jogador contra jogador continua anunciado no Lobby (Config.reportbattles).
+ */
+export const NPC_BATTLES_ROOM = 'batalhas' as RoomID;
+const NPC_BATTLES_TITLE = 'Batalhas';
+const NPC_BATTLES_DESC = 'Batalhas do Desafio de Ginásios e da Expedição / Gym Challenge and Expedition battles';
+
+/**
+ * Cria a sala Batalhas se ela não existir (também na VPS, sem passo manual): abre
+ * sozinha para todos, como o Lobby, e cada jogador fecha se não quiser (decisão do
+ * usuário). Como toda sala automática do PS, volta a abrir no próximo acesso. Depois
+ * de criada, as configurações da sala ficam com o admin (/roomsetting etc.).
+ */
+export function ensureNpcBattlesRoom() {
+	if (!Rooms.global || Rooms.get(NPC_BATTLES_ROOM)) return;
+	if (!Rooms.global.addChatRoom(NPC_BATTLES_TITLE)) return;
+	const room = Rooms.get(NPC_BATTLES_ROOM);
+	if (!room) return;
+	Object.assign(room.settings, { autojoin: true, section: 'official', desc: NPC_BATTLES_DESC });
+	room.saveSettings();
+	Rooms.global.autojoinList.push(NPC_BATTLES_ROOM);
+}
+
 /** O NPC é sempre o jogador 2; o desafiante, o jogador 1. */
 const NPC_SLOT = 'p2';
 /**
@@ -126,11 +152,14 @@ export class NpcBattle extends RoomBattle {
 		npcPlayer.knownActive = true;
 
 		const human = this.p1.getUser();
-		// O aviso de batalha no lobby (Config.reportbattles) lista a identidade de cada
-		// jogador; o NPC não tem usuário, então só o nome dele entra. A função só usa
-		// mais dados do jogador em batalhas com ranking, e estas nunca têm.
+		// O aviso de batalha (Config.reportbattles) lista a identidade de cada jogador; o
+		// NPC não tem usuário, então só o nome dele entra. A função só usa mais dados do
+		// jogador em batalhas com ranking, e estas nunca têm. O aviso vai para a sala
+		// Batalhas, não para o Lobby (ver NPC_BATTLES_ROOM).
 		const npcIdentity = { getIdentity: () => ` ${this.npc.name}` } as unknown as User;
-		Rooms.global.onCreateBattleRoom(human ? [human, npcIdentity] : [], this.room, { rated: this.rated });
+		Rooms.global.onCreateBattleRoom(human ? [human, npcIdentity] : [], this.room, {
+			rated: this.rated, reportRooms: [NPC_BATTLES_ROOM],
+		});
 		this.started = true;
 		this.checkActive();
 		this.forcedSettings.privacy = FORCED_PUBLIC;
@@ -455,6 +484,8 @@ export function createNpcBattle(human: User, settings: NpcBattleSettings): GameR
 		return null;
 	}
 	Ladders.cancelSearches(human);
+	// A sala do aviso (também criada ao carregar o plugin, quando as salas já existem)
+	ensureNpcBattlesRoom();
 
 	// O resultado (end) compara o id do vencedor com o do jogador: um NPC com o mesmo id
 	// (conta "Lass" contra a Lass) contaria a derrota como vitória. O nome é o mesmo na

@@ -18,6 +18,10 @@ import { resumeSavedBattles, startStageBattle } from './runs';
 import { getStore } from './state';
 import { renderProblem } from './admin';
 import { accountRenameBlockers } from '../custom-accounts';
+import { ensureNpcBattlesRoom } from './npc-battle';
+
+// Sala dos avisos das batalhas contra NPC (fora do Lobby)
+ensureNpcBattlesRoom();
 
 // Batalha salva (suspensa) guarda o nome do jogador: a troca de nome espera ela acabar
 accountRenameBlockers.push(userid => getStore().listSavedBattles(userid).length > 0);

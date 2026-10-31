@@ -1166,6 +1166,20 @@ describe('Gym Challenge', () => {
 			assert(check(), 'tempo esgotado');
 		};
 
+		it('announces NPC battles in the Batalhas room, not in the Lobby', () => {
+			const { NPC_BATTLES_ROOM } = require('../../../dist/server/chat-plugins/gym-challenge/npc-battle');
+			const lobby = Rooms.get('lobby');
+			const lobbyBefore = lobby ? lobby.log.log.length : 0;
+			user = makeUser('Report Tester');
+			room = createNpcBattle(user, { format: 'gen9customgame', team: TEAM, npc: { name: 'Gym Bot', team: TEAM, ai: createAI('random') } });
+			const battles = Rooms.get(NPC_BATTLES_ROOM);
+			assert(battles, 'a sala existe (criada pelo plugin ou na primeira batalha)');
+			assert.equal(battles.settings.autojoin, true);
+			assert(Rooms.global.autojoinList.includes(NPC_BATTLES_ROOM));
+			assert(battles.log.log.some(line => line.startsWith(`|b|${room.roomid}|`)), 'aviso na sala Batalhas');
+			if (lobby) assert(!lobby.log.log.slice(lobbyBefore).some(line => line.startsWith('|b|')), 'nenhum aviso no Lobby');
+		});
+
 		it('waits for the master AI, which answers asynchronously (simulator search)', async function () {
 			this.timeout(30000);
 			user = makeUser('Master Tester');

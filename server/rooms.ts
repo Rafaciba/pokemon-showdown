@@ -1681,7 +1681,10 @@ export class GlobalRoomState {
 			} else if (Config.reportbattles === true) {
 				Config.reportbattles = ['lobby'];
 			}
-			for (const roomid of Config.reportbattles) {
+			// pokemon-showdown-custom: options.reportRooms troca as salas do aviso (as
+			// batalhas contra NPC anunciam na sala Batalhas, não no Lobby)
+			const reportRooms: string[] = options.reportRooms || Config.reportbattles;
+			for (const roomid of reportRooms) {
 				const reportRoom = Rooms.get(roomid);
 				if (reportRoom) {
 					const reportPlayers = players.map(p => p.getIdentity()).join('|');
